@@ -1,0 +1,21 @@
+# OS / editor
+.DS_Store
+*.swp
+*.swo
+.vscode/
+.idea/
+
+# Node / TypeScript
+node_modules/
+dist/
+build/
+*.log
+*.tsbuildinfo
+.npm/
+
+# Local environment
+.env
+.env.local
+
+# Claude-private project spec
+CLAUDE.md
