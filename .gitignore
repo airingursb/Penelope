@@ -21,4 +21,5 @@ build/
 CLAUDE.md
 
 *.penz
+*.penc
 package-lock.json
