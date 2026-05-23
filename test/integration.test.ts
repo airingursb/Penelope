@@ -479,3 +479,23 @@ test('pen exec runs a .penc file', () => {
   expect(r.stdout).toContain('hello vm');
   fs.unlinkSync(srcPath); fs.unlinkSync(pencPath);
 });
+
+test('pen run compiles + executes via VM (no .penc on disk required)', () => {
+  const srcPath = path.join(os.tmpdir(), `r-${Date.now()}.pen`);
+  fs.writeFileSync(srcPath, 'print("hello from run");');
+  const r = spawnSync(PEN, ['run', srcPath], { encoding: 'utf8' });
+  expect(r.status).toBe(0);
+  expect(r.stdout).toContain('hello from run');
+  // No .penc file created (in-memory build).
+  expect(fs.existsSync(srcPath.replace(/\.pen$/, '.penc'))).toBe(false);
+  fs.unlinkSync(srcPath);
+});
+
+test('pen run preserves --time flag', () => {
+  const srcPath = path.join(os.tmpdir(), `f-${Date.now()}.pen`);
+  fs.writeFileSync(srcPath, 'let t = now(); print(to_str(t));');
+  const r = spawnSync(PEN, ['run', '--time', '1234567890', srcPath], { encoding: 'utf8' });
+  expect(r.status).toBe(0);
+  expect(r.stdout).toContain('1234567890');
+  fs.unlinkSync(srcPath);
+});

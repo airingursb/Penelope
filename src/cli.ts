@@ -16,10 +16,9 @@ import { serialize, sha256, deserialize } from './snapshot.js';
 import type { Snapshot } from './snapshot.js';
 import type { Value } from './ast.js';
 
-// Suppress unused-import warnings during migration (T30 will use these).
+// Suppress unused-import warnings during migration.
 void (deserialize as unknown);
-void (freshState as unknown);
-void (resolve as unknown); void (dirname as unknown); void (basename as unknown); void (join as unknown);
+void (dirname as unknown); void (basename as unknown); void (join as unknown);
 
 // ============================================================
 // Argv parsing
@@ -143,13 +142,53 @@ function cmdExec(args: ParsedArgs): number {
 }
 
 // ============================================================
-// run subcommand
-// TODO(T28-T30): rewire to VM
+// run subcommand (T30) — in-memory compile + VM
 // ============================================================
 
-function cmdRun(_args: ParsedArgs): number {
-  process.stderr.write('pen run is being migrated to VM in T28-T30\n');
-  process.exit(1);
+function cmdRun(args: ParsedArgs): number {
+  const filePath = args.positional[1];
+  if (!filePath) {
+    process.stderr.write('usage: pen run <file.pen> [--time N] [--no-replay]\n');
+    return 2;
+  }
+  const absPath = resolve(filePath);
+  let source: string;
+  try { source = readFileSync(absPath, 'utf8'); }
+  catch { process.stderr.write(`cli error: cannot read source: ${filePath}\n`); return 3; }
+
+  const timeFlag = args.flags['time'];
+  const timeOverride = timeFlag && timeFlag !== true ? parseInt(String(timeFlag), 10) : null;
+  const noReplay = args.flags['no-replay'] === true;
+
+  const tokens = tokenize(source);
+  const ast = parse(tokens);
+  const prog = compile(ast);
+
+  const state = freshState();
+  state.timeOverride = timeOverride;
+  state.noReplay = noReplay;
+
+  const r = run(prog, state);
+
+  if (r.status === 'paused') {
+    // Write .penc to disk so snapshot has a stable programPath/programHash.
+    const pencPath = absPath.replace(/\.pen$/, '.penc');
+    prog.sourceHash = 'sha256:' + sha256(source);
+    writePencFile(pencPath, prog);
+    const snapPath = absPath.replace(/\.pen$/, '.penz');
+    const snap = {
+      version: 3 as const,
+      programPath: pencPath,
+      programHash: 'sha256:' + sha256(readFileSync(pencPath, 'utf8')),
+      pausedAtIP: r.state.ip,
+      pausedAtMs: Date.now(),
+      state: r.state,
+    };
+    writeFileSync(snapPath, serialize(snap));
+    process.stdout.write(`paused at ip ${r.state.ip} → ${snapPath}\n`);
+  }
+
+  return 0;
 }
 
 // ============================================================
