@@ -118,3 +118,37 @@ test('F3: write_file errors propagate first time', () => {
 
   cleanup(source);
 });
+
+test('D1+D2+H2: net_fetch records body; replay does not hit network', () => {
+  const source = resolve('examples/05-net-fetch.pen');
+  const snap = resolve('examples/05-net-fetch.penz');
+  cleanup(snap);
+
+  const r1 = spawnSync(PEN, ['run', source], { encoding: 'utf8' });
+  expect(r1.status).toBe(0);
+  expect(existsSync(snap)).toBe(true);
+
+  const snapJson = JSON.parse(readFileSync(snap, 'utf8'));
+  const fetchEntry = snapJson.state.effects.find((e: any) => e.effect === 'net_fetch');
+  expect(fetchEntry).toBeDefined();
+  expect(fetchEntry.status).toBe('committed');
+  expect(fetchEntry.recordedValue.tag).toBe('str');
+  const recordedBody = fetchEntry.recordedValue.v;
+
+  const r2 = spawnSync(PEN, ['resume', snap, 'true'], { encoding: 'utf8' });
+  expect(r2.status).toBe(0);
+  expect(r2.stdout.trim()).toBe(recordedBody.trim());
+
+  cleanup(snap);
+}, 15000);
+
+test('D3: two distinct net_fetch call sites get separate log entries', () => {
+  const source = resolve('/tmp/penelope-2fetch.pen');
+  cleanup(source);
+  writeFileSync(source, 'let a = net_fetch("https://httpbin.org/uuid"); let b = net_fetch("https://httpbin.org/uuid"); print(to_str(str_length(a) + str_length(b)));');
+
+  const r = spawnSync(PEN, ['run', source], { encoding: 'utf8' });
+  expect(r.status).toBe(0);
+
+  cleanup(source);
+}, 15000);

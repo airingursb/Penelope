@@ -6,7 +6,7 @@
 // No closures, no Maps, no symbols, no class instances.
 
 import type { ASTBundle, ASTNode, BinOp, NodeId, ScopeId, Value } from './ast.js';
-import { EFFECT_NAMES as EFFECT_NAMES_SET, categoryOf, performWriteFile } from './effects.js';
+import { EFFECT_NAMES as EFFECT_NAMES_SET, categoryOf, performWriteFile, performNetFetch } from './effects.js';
 import type { EffectName } from './effects.js';
 
 // ============================================================
@@ -423,6 +423,28 @@ function applyEffect(
     return cont({
       ...state, control: rest,
       valueStack: [...newStack, { tag: 'unit' as const }],
+      effects: [...state.effects, entry],
+    });
+  }
+
+  if (name === 'net_fetch') {
+    if (argCount !== 1) return { kind: 'error', message: `net_fetch expects 1 arg, got ${argCount}` };
+    const url = args[0];
+    if (url.tag !== 'str') return { kind: 'error', message: `net_fetch url must be str, got ${url.tag}` };
+    let body: string;
+    try {
+      body = performNetFetch(url.v);
+    } catch (e) {
+      return { kind: 'error', message: `net_fetch failed: ${(e as Error).message}`, atNode: nodeId };
+    }
+    const entry = {
+      nodeId, invocationCount, effect: 'net_fetch' as const,
+      recordedValue: { tag: 'str' as const, v: body },
+      status: 'committed' as const,
+    };
+    return cont({
+      ...state, control: rest,
+      valueStack: [...newStack, { tag: 'str' as const, v: body }],
       effects: [...state.effects, entry],
     });
   }

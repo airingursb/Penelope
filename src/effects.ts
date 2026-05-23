@@ -4,9 +4,18 @@
 // On replay, `interpreter.ts` reads from the effect log and does NOT call this module.
 
 import { writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 
 export function performWriteFile(path: string, body: string): void {
   writeFileSync(path, body, 'utf8');
+}
+
+export function performNetFetch(url: string): string {
+  const r = spawnSync('curl', ['-sS', '--fail', '-A', 'Penelope/0.2', url], { encoding: 'utf8' });
+  if (r.status !== 0) {
+    throw new Error(`curl exit ${r.status}: ${r.stderr}`);
+  }
+  return r.stdout;
 }
 
 export type EffectName =
