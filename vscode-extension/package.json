@@ -1,0 +1,57 @@
+{
+  "name": "penelope-vscode",
+  "displayName": "Penelope",
+  "description": "Language support for Penelope (.pen) — syntax highlighting, parse-error diagnostics via LSP",
+  "version": "0.0.1",
+  "publisher": "airing",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": ["Programming Languages"],
+  "activationEvents": [
+    "onLanguage:penelope"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "penelope",
+        "aliases": ["Penelope", "penelope", "pen"],
+        "extensions": [".pen"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "penelope",
+        "scopeName": "source.penelope",
+        "path": "./syntaxes/penelope.tmLanguage.json"
+      }
+    ],
+    "configuration": {
+      "title": "Penelope",
+      "properties": {
+        "penelope.lspPath": {
+          "type": "string",
+          "default": "",
+          "description": "Absolute path to bin/penelope-lsp. If empty, uses 'penelope-lsp' from PATH."
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "penelope.runCurrentFile",
+        "title": "Penelope: Run current file"
+      }
+    ]
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.0"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.80.0"
+  },
+  "scripts": {
+    "vscode:prepublish": "echo 'prepublish hook — no-op'"
+  }
+}
