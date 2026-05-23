@@ -6,6 +6,8 @@
 
 import { tokenize } from './lexer.js';
 import { parse } from './parser.js';
+import { checkWithTypes, typeStr } from './typecheck.js';
+import type { ASTNode } from './ast.js';
 
 type Diagnostic = {
   range: { start: { line: number; character: number }; end: { line: number; character: number } };
@@ -62,10 +64,15 @@ export function handleMessage(msg: LspMessage): void {
       result: {
         capabilities: {
           textDocumentSync: { openClose: true, change: 1 /* full */, save: true },
+          hoverProvider: true,
         },
         serverInfo: { name: 'penelope-lsp', version: '0.0.1' },
       },
     });
+    return;
+  }
+  if (msg.method === 'textDocument/hover') {
+    handleHover(msg);
     return;
   }
   if (msg.method === 'initialized' || msg.method === 'workspace/didChangeConfiguration') {
@@ -105,6 +112,53 @@ export function handleMessage(msg: LspMessage): void {
       error: { code: -32601, message: `method not found: ${msg.method}` },
     });
   }
+}
+
+function handleHover(msg: LspMessage): void {
+  const p = msg.params as {
+    textDocument: { uri: string };
+    position: { line: number; character: number };
+  };
+  const source = documents.get(p.textDocument.uri);
+  if (!source) {
+    send({ jsonrpc: '2.0', id: msg.id, result: null });
+    return;
+  }
+  const lspLine = p.position.line;
+  const lspChar = p.position.character;
+  // Penelope uses 1-based lines/cols; LSP uses 0-based.
+  const targetLine = lspLine + 1;
+  const targetCol = lspChar + 1;
+
+  let result: object | null = null;
+  try {
+    const ast = parse(tokenize(source));
+    const { types } = checkWithTypes(ast);
+    // Find best-matching Var node: same line, col range covers target.
+    let best: ASTNode | null = null;
+    for (const id of Object.keys(ast.nodes)) {
+      const node = ast.nodes[id];
+      if (node.kind !== 'Var' || !node.pos) continue;
+      if (node.pos.line !== targetLine) continue;
+      const endCol = node.pos.col + node.name.length;
+      if (targetCol >= node.pos.col && targetCol < endCol) {
+        if (!best || (best.pos && node.pos.col > best.pos.col)) best = node;
+      }
+    }
+    if (best && best.kind === 'Var') {
+      const t = types.get(best.id);
+      const typeText = t ? typeStr(t) : 'unknown';
+      result = {
+        contents: {
+          kind: 'markdown',
+          value: `\`${best.name}\`: \`${typeText}\``,
+        },
+      };
+    }
+  } catch {
+    // ignore parse errors during hover
+  }
+  send({ jsonrpc: '2.0', id: msg.id, result });
 }
 
 export function runLsp(): void {

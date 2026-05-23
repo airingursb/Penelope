@@ -86,6 +86,47 @@ test('shutdown returns null result', () => {
   expect(reply.result).toBeNull();
 });
 
+test('initialize advertises hoverProvider capability', () => {
+  handleMessage({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} });
+  const reply = lastJsonReply();
+  expect(reply.result.capabilities.hoverProvider).toBe(true);
+});
+
+test('hover on a Var returns the inferred type', () => {
+  handleMessage({
+    jsonrpc: '2.0',
+    method: 'textDocument/didOpen',
+    params: { textDocument: { uri: 'file:///h.pen', text: 'let x = 42; x;' } },
+  });
+  writes = [];
+  handleMessage({
+    jsonrpc: '2.0',
+    id: 7,
+    method: 'textDocument/hover',
+    params: { textDocument: { uri: 'file:///h.pen' }, position: { line: 0, character: 12 } },
+  });
+  const reply = lastJsonReply();
+  expect(reply.id).toBe(7);
+  expect(reply.result.contents.value).toMatch(/`x`: `int`/);
+});
+
+test('hover on whitespace returns null', () => {
+  handleMessage({
+    jsonrpc: '2.0',
+    method: 'textDocument/didOpen',
+    params: { textDocument: { uri: 'file:///h2.pen', text: 'let x = 1;\n' } },
+  });
+  writes = [];
+  handleMessage({
+    jsonrpc: '2.0',
+    id: 8,
+    method: 'textDocument/hover',
+    params: { textDocument: { uri: 'file:///h2.pen' }, position: { line: 1, character: 0 } },
+  });
+  const reply = lastJsonReply();
+  expect(reply.result).toBeNull();
+});
+
 test('unknown method returns method-not-found error', () => {
   handleMessage({ jsonrpc: '2.0', id: 99, method: 'workspace/wat' });
   const reply = lastJsonReply();
