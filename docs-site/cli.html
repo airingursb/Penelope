@@ -20,6 +20,7 @@
     <a href="debugger.html">Debugger</a>
     <a href="phase4.html">Phase 4</a>
     <a href="distributed.html">Distributed</a>
+    <a href="jit.html">JIT</a>
     <a href="https://github.com/airingursb/Penelope">GitHub →</a>
   </nav>
 </header>
@@ -142,7 +143,8 @@ next:
 <h2>pen edit</h2>
 
 <p>Resume a paused snapshot against an edited source file. The old <code>VMState</code> is remapped onto the recompiled program by source position, with opcode-kind sanity checks to reject semantic drift. See <a href="phase4.html">Phase 4</a>
-    <a href="distributed.html">Distributed</a> for the model.</p>
+    <a href="distributed.html">Distributed</a>
+    <a href="jit.html">JIT</a> for the model.</p>
 
 <pre><code>$ pen edit snapshot.penz
 resumed (frame@line 14) — printing: 42</code></pre>
@@ -150,7 +152,8 @@ resumed (frame@line 14) — printing: 42</code></pre>
 <h2>pen self-test</h2>
 
 <p>Three-stage self-hosting verification: (1) pen-built bytecode is byte-identical to ts-built on samples and on all <code>std/*.pen</code> files (self-bootstrap), and (2) the pen-built pen-frontend, when run, correctly compiles new programs (fixpoint). See <a href="phase4.html">Phase 4</a>
-    <a href="distributed.html">Distributed</a> for the diagram.</p>
+    <a href="distributed.html">Distributed</a>
+    <a href="jit.html">JIT</a> for the diagram.</p>
 
 <pre><code>$ pen self-test
 Stage 1: round-trip on inline samples
