@@ -99,3 +99,54 @@ test('BIN_OP / by 0 throws', () => {
   };
   expect(() => run(prog)).toThrow(/divide by zero/);
 });
+
+test('JUMP advances IP unconditionally', () => {
+  const prog: Program = {
+    version: 1,
+    constants: [{ tag: 'int', v: 1 }, { tag: 'int', v: 2 }],
+    code: [
+      ['LOAD_CONST', 0],
+      ['JUMP', 3],
+      ['LOAD_CONST', 1],
+      ['HALT'],
+    ],
+  };
+  expect(run(prog).state.valueStack).toEqual([{ tag: 'int', v: 1 }]);
+});
+
+test('JUMP_IF_FALSE pops and jumps when false', () => {
+  const prog: Program = {
+    version: 1,
+    constants: [{ tag: 'bool', v: false }, { tag: 'int', v: 99 }],
+    code: [
+      ['LOAD_CONST', 0],
+      ['JUMP_IF_FALSE', 3],
+      ['LOAD_CONST', 1],
+      ['HALT'],
+    ],
+  };
+  expect(run(prog).state.valueStack).toEqual([]);
+});
+
+test('JUMP_IF_FALSE falls through when true', () => {
+  const prog: Program = {
+    version: 1,
+    constants: [{ tag: 'bool', v: true }, { tag: 'int', v: 99 }],
+    code: [
+      ['LOAD_CONST', 0],
+      ['JUMP_IF_FALSE', 4],
+      ['LOAD_CONST', 1],
+      ['HALT'],
+    ],
+  };
+  expect(run(prog).state.valueStack).toEqual([{ tag: 'int', v: 99 }]);
+});
+
+test('JUMP_IF_FALSE on non-bool throws', () => {
+  const prog: Program = {
+    version: 1,
+    constants: [{ tag: 'int', v: 1 }],
+    code: [['LOAD_CONST', 0], ['JUMP_IF_FALSE', 3], ['HALT']],
+  };
+  expect(() => run(prog)).toThrow(/expected bool/);
+});

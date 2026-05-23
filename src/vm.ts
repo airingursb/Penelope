@@ -72,6 +72,16 @@ function runUntilStop(prog: Program, state: VMState): RunResult {
         state.ip++;
         break;
       }
+      case 'JUMP': {
+        state.ip = op[1] as number;
+        break;
+      }
+      case 'JUMP_IF_FALSE': {
+        const c = pop(state);
+        if (c.tag !== 'bool') throw new Error(`JUMP_IF_FALSE: expected bool, got ${c.tag}`);
+        state.ip = !c.v ? (op[1] as number) : state.ip + 1;
+        break;
+      }
       default:
         throw new Error(`VM: unhandled opcode '${op[0]}' at ip ${state.ip}`);
     }
