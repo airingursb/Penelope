@@ -9,6 +9,7 @@ import { run, freshState, makeProfile } from './vm.js';
 import { writePencFile, readPencFile } from './encoder.js';
 import { runOptimizer, type OLevel } from './optimizer.js';
 import { check as typeCheck } from './typecheck.js';
+import { format as fmtSource } from './format.js';
 import { formatDiagnostic, diagnosticFromMessage } from './diagnostic.js';
 import { serialize, sha256, deserialize } from './snapshot.js';
 import type { Snapshot, VMState } from './snapshot.js';
@@ -249,6 +250,29 @@ function cmdBench(args: ParsedArgs): number {
   return 0;
 }
 
+function cmdFmt(args: ParsedArgs): number {
+  const srcPath = args.positional[1];
+  if (!srcPath) { process.stderr.write('usage: pen fmt [--write] <file.pen>\n'); return 2; }
+  let source: string;
+  try { source = readFileSync(resolve(srcPath), 'utf8'); }
+  catch { process.stderr.write(`cli error: cannot read source: ${srcPath}\n`); return 3; }
+  try {
+    const ast = parse(tokenize(source));
+    const formatted = fmtSource(ast);
+    if (args.flags['write'] === true) {
+      writeFileSync(resolve(srcPath), formatted);
+      process.stdout.write(`formatted ${srcPath}\n`);
+    } else {
+      process.stdout.write(formatted);
+    }
+    return 0;
+  } catch (e) {
+    const diag = diagnosticFromMessage((e as Error).message, source, srcPath);
+    process.stderr.write(formatDiagnostic(diag) + '\n');
+    return 1;
+  }
+}
+
 function cmdProfile(args: ParsedArgs): number {
   const srcPath = args.positional[1];
   if (!srcPath) { process.stderr.write('usage: pen profile [-O0|-O1|-O2] <file.pen>\n'); return 2; }
@@ -438,7 +462,8 @@ export async function main(argv: string[]): Promise<number> {
   if (sub === 'repl')    return await cmdRepl(args);
   if (sub === 'check')   return cmdCheck(args);
   if (sub === 'profile') return cmdProfile(args);
-  process.stderr.write(`usage: penelope <build|exec|run|resume|fork|disasm|bench|inspect|repl|check|profile> [-O0|-O1|-O2] [args]\n`);
+  if (sub === 'fmt')     return cmdFmt(args);
+  process.stderr.write(`usage: penelope <build|exec|run|resume|fork|disasm|bench|inspect|repl|check|profile|fmt> [-O0|-O1|-O2] [args]\n`);
   return 2;
 }
 
