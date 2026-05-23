@@ -125,9 +125,83 @@ function compileNode(node: ASTNode, ast: ASTBundle, prog: Program, tail: boolean
       emit(prog, ['PAUSE'], node);
       return;
     }
+    case 'Match': {
+      compileMatch(node, ast, prog, tail);
+      return;
+    }
     default:
       throw new Error(`compile: unhandled node kind '${(node as ASTNode).kind}'`);
   }
+}
+
+function compileMatch(
+  node: Extract<ASTNode, { kind: 'Match' }>,
+  ast: ASTBundle,
+  prog: Program,
+  tail: boolean,
+): void {
+  // Wrap the whole match in a block so the temp doesn't leak.
+  emit(prog, ['ENTER_BLOCK'], node);
+  compileNode(ast.nodes[node.scrutineeId], ast, prog, false);
+  emit(prog, ['STORE_VAR', '__match_tmp'], node);
+
+  const endJumps: number[] = [];   // JUMP IPs to back-patch at the end
+  for (let i = 0; i < node.arms.length; i++) {
+    const arm = node.arms[i];
+    const isLast = i === node.arms.length - 1;
+
+    let nextArmJif = -1;   // JUMP_IF_FALSE that skips this arm
+    if (arm.pattern.kind !== 'wildcard' && arm.pattern.kind !== 'var') {
+      // Emit: LOAD_VAR __match_tmp, LOAD_CONST pattern_value, BIN_OP ==, JUMP_IF_FALSE next
+      emit(prog, ['LOAD_VAR', '__match_tmp', null], node);
+      const pat = arm.pattern;
+      if (pat.kind === 'int') {
+        const idx = internConstant(prog.constants, { tag: 'int', v: pat.value });
+        emit(prog, ['LOAD_CONST', idx], node);
+      } else if (pat.kind === 'bool') {
+        const idx = internConstant(prog.constants, { tag: 'bool', v: pat.value });
+        emit(prog, ['LOAD_CONST', idx], node);
+      } else if (pat.kind === 'str') {
+        const idx = internConstant(prog.constants, { tag: 'str', v: pat.value });
+        emit(prog, ['LOAD_CONST', idx], node);
+      }
+      emit(prog, ['BIN_OP', '=='], node);
+      nextArmJif = emit(prog, ['JUMP_IF_FALSE', -1], node);
+    }
+
+    // Arm body — give var pattern a binding scope.
+    emit(prog, ['ENTER_BLOCK'], node);
+    if (arm.pattern.kind === 'var') {
+      emit(prog, ['LOAD_VAR', '__match_tmp', null], node);
+      emit(prog, ['STORE_VAR', arm.pattern.name], node);
+    }
+    compileNode(ast.nodes[arm.bodyId], ast, prog, tail);
+    emit(prog, ['EXIT_BLOCK'], node);
+
+    if (!isLast) {
+      // Jump past remaining arms.
+      const jmp = emit(prog, ['JUMP', -1], node);
+      endJumps.push(jmp);
+    }
+    // Back-patch the JIF for this arm to land on the next arm's start.
+    if (nextArmJif >= 0) {
+      (prog.code[nextArmJif] as ['JUMP_IF_FALSE', number])[1] = prog.code.length;
+    }
+  }
+
+  // If the last arm wasn't a catch-all and didn't match, the JIF would land here
+  // with nothing pushed. Push unit so the EXIT_BLOCK below has something to preserve.
+  const lastPat = node.arms[node.arms.length - 1].pattern;
+  if (lastPat.kind !== 'wildcard' && lastPat.kind !== 'var') {
+    emit(prog, ['PUSH_UNIT'], node);
+  }
+
+  // Back-patch all end-jumps.
+  for (const j of endJumps) {
+    (prog.code[j] as ['JUMP', number])[1] = prog.code.length;
+  }
+
+  emit(prog, ['EXIT_BLOCK'], node);
 }
 
 // Helper: emit a single opcode and return its IP. Records source position for VM error messages.

@@ -3,10 +3,10 @@
 
 export type TokenKind =
   | 'INT' | 'IDENT' | 'STRING' | 'TEMPLATE_STRING'
-  | 'LET' | 'FN' | 'IF' | 'ELSE' | 'TRUE' | 'FALSE' | 'PAUSE' | 'PRINT'
+  | 'LET' | 'FN' | 'IF' | 'ELSE' | 'TRUE' | 'FALSE' | 'PAUSE' | 'PRINT' | 'MATCH' | 'IMPORT'
   | 'PLUS' | 'MINUS' | 'STAR' | 'SLASH'
   | 'LT' | 'GT' | 'LE' | 'GE' | 'EQ_EQ' | 'BANG_EQ'
-  | 'EQ'
+  | 'EQ' | 'FAT_ARROW'
   | 'LPAREN' | 'RPAREN' | 'LBRACE' | 'RBRACE' | 'COMMA' | 'SEMI'
   | 'EOF';
 
@@ -29,6 +29,8 @@ const KEYWORDS: Record<string, TokenKind> = {
   true:   'TRUE',
   false:  'FALSE',
   pause:  'PAUSE',
+  match:  'MATCH',
+  import: 'IMPORT',
 };
 
 function isDigit(c: string): boolean { return c >= '0' && c <= '9'; }
@@ -159,7 +161,7 @@ export function tokenizeWithComments(source: string): { tokens: Token[]; comment
     if (i + 1 < source.length) {
       const two = source[i] + source[i + 1];
       const twoChar: Record<string, TokenKind> = {
-        '<=': 'LE', '>=': 'GE', '==': 'EQ_EQ', '!=': 'BANG_EQ',
+        '<=': 'LE', '>=': 'GE', '==': 'EQ_EQ', '!=': 'BANG_EQ', '=>': 'FAT_ARROW',
       };
       if (twoChar[two]) {
         advance(); advance();

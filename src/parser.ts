@@ -200,6 +200,46 @@ function parseIf(c: Cursor, b: Builder): ASTNode {
   }), pos);
 }
 
+function parseMatch(c: Cursor, b: Builder): ASTNode {
+  const startTok = c.peek();
+  const pos = { line: startTok.line, col: startTok.col };
+  c.eat('MATCH');
+  const scrutinee = parseExpression(c, b);
+  c.eat('LBRACE');
+  const arms: import('./ast.js').MatchArm[] = [];
+  while (c.peekKind() !== 'RBRACE') {
+    const pattern = parsePattern(c);
+    c.eat('FAT_ARROW');
+    const body = parseExpression(c, b);
+    arms.push({ pattern, bodyId: body.id });
+    if (c.peekKind() === 'COMMA') c.eat('COMMA');
+  }
+  c.eat('RBRACE');
+  if (arms.length === 0) {
+    throw new Error(`parser: match must have at least one arm at line ${pos.line} col ${pos.col}`);
+  }
+  return b.addNode(id => ({
+    id, kind: 'Match', scrutineeId: scrutinee.id, arms,
+  }), pos);
+}
+
+function parsePattern(c: Cursor): import('./ast.js').Pattern {
+  const t = c.peek();
+  if (t.kind === 'INT') {
+    c.eat('INT');
+    return { kind: 'int', value: t.value! };
+  }
+  if (t.kind === 'TRUE')  { c.eat('TRUE');  return { kind: 'bool', value: true  }; }
+  if (t.kind === 'FALSE') { c.eat('FALSE'); return { kind: 'bool', value: false }; }
+  if (t.kind === 'STRING') { c.eat('STRING'); return { kind: 'str', value: t.text! }; }
+  if (t.kind === 'IDENT') {
+    c.eat('IDENT');
+    if (t.text === '_') return { kind: 'wildcard' };
+    return { kind: 'var', name: t.text! };
+  }
+  throw new Error(`parser: unexpected pattern token ${t.kind} at line ${t.line} col ${t.col}`);
+}
+
 function parseFn(c: Cursor, b: Builder): ASTNode {
   const startTok = c.peek();
   const pos = { line: startTok.line, col: startTok.col };
@@ -248,6 +288,8 @@ function parsePrimary(c: Cursor, b: Builder): ASTNode {
       return parseIf(c, b);
     case 'FN':
       return parseFn(c, b);
+    case 'MATCH':
+      return parseMatch(c, b);
     case 'LPAREN': {
       c.eat('LPAREN');
       const inner = parseExpression(c, b);
