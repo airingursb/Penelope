@@ -49,6 +49,38 @@
         "command": "penelope.runCurrentFile",
         "title": "Penelope: Run current file"
       }
+    ],
+    "debuggers": [
+      {
+        "type": "penelope",
+        "label": "Penelope Debugger",
+        "program": "../bin/penelope-dap",
+        "runtime": "sh",
+        "languages": ["penelope"],
+        "configurationAttributes": {
+          "launch": {
+            "required": ["program"],
+            "properties": {
+              "program": {
+                "type": "string",
+                "description": "Absolute path to a .pen file"
+              },
+              "stopOnEntry": {
+                "type": "boolean",
+                "default": false
+              }
+            }
+          }
+        },
+        "initialConfigurations": [
+          {
+            "type": "penelope",
+            "request": "launch",
+            "name": "Launch Penelope file",
+            "program": "${workspaceFolder}/${file}"
+          }
+        ]
+      }
     ]
   },
   "dependencies": {

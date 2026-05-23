@@ -36,15 +36,45 @@ export function run(prog: Program, initialState?: VMState, profile?: ProfileData
   const state = initialState ?? freshState();
   const t0 = profile ? process.hrtime.bigint() : 0n;
   try {
-    return runUntilStop(prog, state, profile);
+    const r = runUntilStop(prog, state, profile);
+    if (r.status === 'breakpoint') {
+      // No breakpoints passed; can't happen at runtime but narrows the type.
+      throw new Error('unreachable: breakpoint without breakpoints set');
+    }
+    return r;
   } finally {
     if (profile) profile.totalNs += process.hrtime.bigint() - t0;
   }
 }
 
-function runUntilStop(prog: Program, state: VMState, profile?: ProfileData): RunResult {
+// Debug stop reason for DAP — adds breakpoint variant.
+export type DebugStop =
+  | { status: 'halted';     state: VMState }
+  | { status: 'paused';     state: VMState }
+  | { status: 'breakpoint'; state: VMState; ip: number };
+
+// Run until HALT, PAUSE, or the next ip is in `breakpoints`.
+// Breakpoints are checked BEFORE executing each opcode. Skips initial ip if it's
+// already in the set (so resume-from-breakpoint doesn't immediately re-trigger).
+export function runUntilBreakpoint(prog: Program, state: VMState, breakpoints: Set<number>): DebugStop {
+  const r = runUntilStop(prog, state, undefined, breakpoints);
+  if (r.status === 'breakpoint') return r;
+  return r as DebugStop;
+}
+
+function runUntilStop(
+  prog: Program,
+  state: VMState,
+  profile?: ProfileData,
+  breakpoints?: Set<number>,
+): DebugStop {
   const replayIdx = new Map<number, number>();
+  let firstIter = true;
   while (true) {
+    if (breakpoints && !firstIter && breakpoints.has(state.ip)) {
+      return { status: 'breakpoint', state, ip: state.ip };
+    }
+    firstIter = false;
     const op = prog.code[state.ip];
     if (!op) throw new Error(`VM: IP ${state.ip} out of bounds`);
     if (profile) {
