@@ -69,3 +69,21 @@ test('H5: hash mismatch with --force preserves effects log on deserialize', () =
   expect(r.snap.state.effects).toHaveLength(1);
   expect(r.snap.state.effects[0].effect).toBe('print');
 });
+
+import { tokenize } from '../src/lexer.js';
+import { parse } from '../src/parser.js';
+import { runToCompletion } from '../src/interpreter.js';
+
+test('reserved builtin name cannot be shadowed via let', () => {
+  const ast = parse(tokenize('let net_fetch = 0;'));
+  const r = runToCompletion(ast);
+  expect(r.kind).toBe('error');
+  if (r.kind === 'error') expect(r.message).toMatch(/reserved/);
+});
+
+test('reserved pure builtin name cannot be shadowed via let', () => {
+  const ast = parse(tokenize('let str_length = 0;'));
+  const r = runToCompletion(ast);
+  expect(r.kind).toBe('error');
+  if (r.kind === 'error') expect(r.message).toMatch(/reserved/);
+});

@@ -124,6 +124,15 @@ export function step(state: State, ast: ASTBundle): StepResult {
         valueStack: state.valueStack.slice(0, -1) });
     }
     case 'bindLet': {
+      // Reserved builtin name guard
+      const reserved = new Set<string>([
+        'str_length', 'str_slice', 'to_str',
+        'print', 'net_fetch', 'now', 'random_int', 'read_file', 'write_file', 'wait_until', 'wait_for',
+      ]);
+      if (reserved.has(instr.name)) {
+        return { kind: 'error', message: `'${instr.name}' is a reserved builtin name; cannot let-bind` };
+      }
+      // ... existing code unchanged ...
       const v = state.valueStack[state.valueStack.length - 1];
       const scope = state.scopes[state.currentScopeId];
       return cont({ ...state, control: rest,
