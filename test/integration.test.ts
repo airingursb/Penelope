@@ -426,3 +426,28 @@ test('H4: 24h HITL agent demo — crashes twice, completes correctly', () => {
 
   cleanup(snap); cleanup(auditLog);
 }, 20000);
+
+test('I1+I2+I3+C3: fork copies effect log; branches diverge after fork', () => {
+  const source = resolve('/tmp/penelope-fork-effects.pen');
+  const snap = resolve('/tmp/penelope-fork-effects.penz');
+  const fork0 = resolve('/tmp/penelope-fork-effects.fork0.penz');
+  const fork1 = resolve('/tmp/penelope-fork-effects.fork1.penz');
+  cleanup(source); cleanup(snap); cleanup(fork0); cleanup(fork1);
+
+  writeFileSync(source, 'print("base"); let x = pause; print(to_str(x));');
+
+  spawnSync(PEN, ['run', source], { encoding: 'utf8' });
+
+  const r = spawnSync(PEN, ['fork', snap, '1', '2'], { encoding: 'utf8' });
+  expect(r.status).toBe(0);
+
+  // Neither branch re-prints "base" (effect log was copied to each branch).
+  expect(r.stdout).not.toMatch(/\[fork-0\] base/);
+  expect(r.stdout).not.toMatch(/\[fork-1\] base/);
+
+  // Each branch prints its own injected value.
+  expect(r.stdout).toMatch(/\[fork-0\] 1/);
+  expect(r.stdout).toMatch(/\[fork-1\] 2/);
+
+  cleanup(source); cleanup(snap); cleanup(fork0); cleanup(fork1);
+});
