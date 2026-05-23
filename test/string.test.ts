@@ -51,6 +51,15 @@ test('A10: int + str is a runtime error', () => {
   if (result.kind === 'error') expect(result.message).toMatch(/cannot apply/);
 });
 
+test('A5: str_length returns int length', () => {
+  const ast = parse(tokenize('str_length("hello");'));
+  const stmt = Object.values(ast.nodes).find(n => n.kind === 'ExprStmt');
+  if (!stmt || stmt.kind !== 'ExprStmt') throw new Error('no ExprStmt');
+  const result = runToCompletion(ast, stmt.exprId);
+  if (result.kind !== 'done') throw new Error('expected done');
+  expect(result.finalValue).toEqual({ tag: 'int', v: 5 });
+});
+
 test('A4: string equality (== and !=)', () => {
   const ast1 = parse(tokenize('"a" == "a";'));
   const s1 = Object.values(ast1.nodes).find(n => n.kind === 'ExprStmt');

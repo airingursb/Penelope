@@ -35,8 +35,9 @@ export type ControlInstr =
   | { op: 'applyPrint' }
   | { op: 'bindLet';   name: string }
   | { op: 'branch';    thenBlockId: NodeId; elseBlockId: NodeId }
-  | { op: 'invoke';    argCount: number }
-  | { op: 'popScope';  restoreScopeId: ScopeId }
+  | { op: 'invoke';          argCount: number }
+  | { op: 'applyPureBuiltin'; name: string; argCount: number }
+  | { op: 'popScope';        restoreScopeId: ScopeId }
   | { op: 'pushUnit' }
   | { op: 'discard' };
 
@@ -54,6 +55,10 @@ export type StepResult =
   | { kind: 'done';     finalValue: Value | null }
   | { kind: 'paused';   state: State; pausedAt: NodeId }
   | { kind: 'error';    message: string; atNode?: NodeId };
+
+const PURE_BUILTINS: ReadonlySet<string> = new Set([
+  'str_length', 'str_slice', 'to_str',
+]);
 
 // ============================================================
 // Construction
@@ -146,6 +151,8 @@ export function step(state: State, ast: ASTBundle): StepResult {
     }
     case 'invoke':
       return invokeClosure(state, rest, instr.argCount);
+    case 'applyPureBuiltin':
+      return applyPureBuiltin(state, rest, instr.name, instr.argCount);
     default:
       return { kind: 'error', message: `unimplemented op: ${(instr as ControlInstr).op}` };
   }
@@ -234,14 +241,26 @@ function stepEval(state: State, rest: ControlInstr[], node: ASTNode, _ast: ASTBu
       return cont({ ...state, control: rest,
         valueStack: [...state.valueStack, closure] });
     }
-    case 'Call':
-      // Evaluate callee, then args left-to-right (push reversed so they pop in order), then invoke.
+    case 'Call': {
+      const callee = _ast.nodes[node.calleeId];
+
+      // Pure builtin dispatch
+      if (callee.kind === 'Var' && PURE_BUILTINS.has(callee.name)) {
+        return cont({ ...state, control: [
+          ...rest,
+          { op: 'applyPureBuiltin', name: callee.name, argCount: node.argIds.length },
+          ...[...node.argIds].reverse().map(id => ({ op: 'eval' as const, nodeId: id })),
+        ]});
+      }
+
+      // Normal closure call (unchanged from Phase 1)
       return cont({ ...state, control: [
         ...rest,
         { op: 'invoke', argCount: node.argIds.length },
         ...[...node.argIds].reverse().map(id => ({ op: 'eval' as const, nodeId: id })),
         { op: 'eval', nodeId: node.calleeId },
       ]});
+    }
     case 'Pause':
       return { kind: 'paused',
                state: { ...state, control: rest },
@@ -278,6 +297,23 @@ function invokeClosure(state: State, rest: ControlInstr[], argCount: number): St
     currentScopeId: newScopeId,
     nextScopeIdCounter: state.nextScopeIdCounter + 1,
   });
+}
+
+function applyPureBuiltin(state: State, rest: ControlInstr[], name: string, argCount: number): StepResult {
+  const stack = state.valueStack;
+  const args = stack.slice(stack.length - argCount);
+  const newStack = stack.slice(0, stack.length - argCount);
+
+  if (name === 'str_length') {
+    if (argCount !== 1) return { kind: 'error', message: `str_length expects 1 arg, got ${argCount}` };
+    const a = args[0];
+    if (a.tag !== 'str') return { kind: 'error', message: `str_length expects str, got ${a.tag}` };
+    return cont({ ...state, control: rest,
+      valueStack: [...newStack, { tag: 'int', v: a.v.length }] });
+  }
+
+  // str_slice and to_str fill in via Tasks 8 and 9.
+  return { kind: 'error', message: `unimplemented pure builtin: ${name}` };
 }
 
 function cont(state: State): StepResult {
