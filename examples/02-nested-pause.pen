@@ -1,0 +1,9 @@
+let outer = fn() {
+  let a = 1;
+  let inner = fn() {
+    let b = pause;
+    a + b
+  };
+  inner()
+};
+print(outer());
