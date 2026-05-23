@@ -159,6 +159,9 @@ function stepEval(state: State, rest: ControlInstr[], node: ASTNode, _ast: ASTBu
     case 'BoolLit':
       return cont({ ...state, control: rest,
         valueStack: [...state.valueStack, { tag: 'bool', v: node.value }] });
+    case 'StringLit':
+      return cont({ ...state, control: rest,
+        valueStack: [...state.valueStack, { tag: 'str', v: node.value }] });
     case 'Var': {
       const v = lookup(state.scopes, state.currentScopeId, node.name);
       if (v === undefined)
