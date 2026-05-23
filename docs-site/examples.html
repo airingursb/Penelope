@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Penelope — examples gallery</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <h1>Penelope</h1>
+  <p class="tagline">Examples — every feature in 16 small programs.</p>
+  <nav>
+    <a href="index.html">Overview</a>
+    <a href="tour.html">Tour</a>
+    <a href="stdlib.html">Stdlib</a>
+    <a href="cli.html">CLI</a>
+    <a href="snapshot.html">Snapshot v3</a>
+    <a href="play.html">Playground</a>
+    <a href="debugger.html">Debugger</a>
+    <a href="phase4.html">Phase 4</a>
+    <a href="distributed.html">Distributed</a>
+    <a href="jit.html">JIT</a>
+    <a href="examples.html" class="active">Examples</a>
+    <a href="https://github.com/airingursb/Penelope">GitHub →</a>
+  </nav>
+</header>
+
+<h2>The 16 examples</h2>
+
+<p>Every example lives in <code>examples/</code> and is exercised by the test suite. Run any one with <code>bin/penelope run examples/NN-name.pen</code>.</p>
+
+<h3>Pause primitives</h3>
+
+<dl>
+  <dt><a href="https://github.com/airingursb/Penelope/blob/main/examples/01-toplevel-pause.pen">01-toplevel-pause.pen</a></dt>
+  <dd>The simplest possible pause. A <code>let y = pause;</code> followed by <code>print(x + y)</code>. Run, snapshot, resume with a fork value.</dd>
+
+  <dt><a href="https://github.com/airingursb/Penelope/blob/main/examples/02-nested-pause.pen">02-nested-pause.pen</a></dt>
+  <dd>Pause inside a nested function. State captures the full frame stack; resume picks up exactly where it left off.</dd>
+
+  <dt><a href="https://github.com/airingursb/Penelope/blob/main/examples/03-fork.pen">03-fork.pen</a></dt>
+  <dd>One snapshot, multiple forks — resume the same paused state with different injected values.</dd>
+
+  <dt><a href="https://github.com/airingursb/Penelope/blob/main/examples/04-print-replay.pen">04-print-replay.pen</a></dt>
+  <dd>Demonstrates effect replay: <code>print("before")</code> happens once, even across pause/resume cycles.</dd>
+</dl>
+
+<h3>Effects</h3>
+
+<dl>
+  <dt><a href="https://github.com/airingursb/Penelope/blob/main/examples/05-net-fetch.pen">05-net-fetch.pen</a></dt>
+  <dd><code>net_fetch</code> over HTTP. The first run records the response; replays use the recorded value.</dd>
+
+  <dt><a href="https://github.com/airingursb/Penelope/blob/main/examples/06-now-random.pen">06-now-random.pen</a></dt>
+  <dd>Time and randomness as effects. Recorded so replays are deterministic; overridable with <code>--time</code> and <code>--no-replay</code>.</dd>
+
+  <dt><a href="https://github.com/airingursb/Penelope/blob/main/examples/07-wait-for.pen">07-wait-for.pen</a></dt>
+  <dd><code>wait_for("event")</code> pauses until an external event arrives. Resume with <code>--event approval=true</code>.</dd>
+
+  <dt><a href="https://github.com/airingursb/Penelope/blob/main/examples/08-24h-agent.pen">08-24h-agent.pen</a></dt>
+  <dd>A 24-hour approval workflow. Pause for human approval, time-out, escalate — pure durable execution.</dd>
+</dl>
+
+<h3>Algorithms (no-pause)</h3>
+
+<dl>
+  <dt><a href="https://github.com/airingursb/Penelope/blob/main/examples/09-fib.pen">09-fib.pen</a></dt>
+  <dd>Recursive fibonacci — the JIT/interpreter benchmark target. Run with <code>bin/penelope bench examples/09-fib.pen</code>.</dd>
+
+  <dt><a href="https://github.com/airingursb/Penelope/blob/main/examples/10-sort.pen">10-sort.pen</a></dt>
+  <dd>Bubble sort. Exercises list builtins and recursion.</dd>
+
+  <dt><a href="https://github.com/airingursb/Penelope/blob/main/examples/11-bfs.pen">11-bfs.pen</a></dt>
+  <dd>Breadth-first search over an in-line graph dictionary.</dd>
+</dl>
+
+<h3>Agent patterns</h3>
+
+<dl>
+  <dt><a href="https://github.com/airingursb/Penelope/blob/main/examples/12-retry-agent.pen">12-retry-agent.pen</a></dt>
+  <dd>Up-to-N retries with pause between attempts — the canonical durable-execution pattern.</dd>
+</dl>
+
+<h3>Language features</h3>
+
+<dl>
+  <dt><a href="https://github.com/airingursb/Penelope/blob/main/examples/13-interp.pen">13-interp.pen</a></dt>
+  <dd>Template strings (<code>"${expr}"</code>).</dd>
+
+  <dt><a href="https://github.com/airingursb/Penelope/blob/main/examples/14-match.pen">14-match.pen</a></dt>
+  <dd>Pattern matching: a vending-machine state machine. Nested match, literal patterns, wildcard.</dd>
+
+  <dt><a href="https://github.com/airingursb/Penelope/blob/main/examples/15-modules-main.pen">15-modules-main.pen</a> + <a href="https://github.com/airingursb/Penelope/blob/main/examples/15-modules-math.pen">15-modules-math.pen</a></dt>
+  <dd>Module imports — <code>import "./math.pen";</code> at the top of main.</dd>
+</dl>
+
+<h2>Adjacent demos</h2>
+
+<dl>
+  <dt><strong>Self-hosting</strong></dt>
+  <dd><code>std/lexer.pen</code> + <code>std/parser.pen</code> + <code>std/compiler.pen</code> — the Penelope frontend, written in Penelope. Run <code>bin/penelope self-test</code> for the three-stage fixpoint proof.</dd>
+
+  <dt><strong>Distributed runtime</strong></dt>
+  <dd>Coordinator + workers + lease recovery — see the <a href="distributed.html">Distributed page</a>.</dd>
+
+  <dt><strong>JIT</strong></dt>
+  <dd>Bytecode → JS Function, ~2.4× faster than interpreter — see <a href="jit.html">JIT</a>.</dd>
+</dl>
+
+</body>
+</html>

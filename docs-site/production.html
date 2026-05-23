@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Penelope — production checklist</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <h1>Penelope</h1>
+  <p class="tagline">Production checklist — running Penelope past the demo stage.</p>
+  <nav>
+    <a href="index.html">Overview</a>
+    <a href="tour.html">Tour</a>
+    <a href="stdlib.html">Stdlib</a>
+    <a href="cli.html">CLI</a>
+    <a href="snapshot.html">Snapshot v3</a>
+    <a href="play.html">Playground</a>
+    <a href="debugger.html">Debugger</a>
+    <a href="phase4.html">Phase 4</a>
+    <a href="distributed.html">Distributed</a>
+    <a href="jit.html">JIT</a>
+    <a href="examples.html">Examples</a>
+    <a href="production.html" class="active">Production</a>
+    <a href="https://github.com/airingursb/Penelope">GitHub →</a>
+  </nav>
+</header>
+
+<h2>What "production" means here</h2>
+
+<p>Penelope is good enough for: small services, durable workflows, agent runtimes, side-projects with snapshot-based state. It is <em>not</em> a substitute for a tier-1 language runtime at scale — there is no GC tuning, no JIT bailout machinery, no contiguous-arena allocator. The thesis is correct and the implementation is clean, but you should expect to operate it the way you'd operate a careful in-house tool.</p>
+
+<h2>Snapshot retention</h2>
+
+<p>The <code>.penz</code> format is a versioned JSON blob (gzip-compressed by default since 5.D). It includes the program path, the program SHA-256, the paused IP, and the full VM state. Treat snapshots as durable values: store them in an object store, rotate them on a TTL, audit them when you redeploy.</p>
+
+<table>
+  <tr><th>Concern</th><th>Recommendation</th></tr>
+  <tr><td>Long-lived snapshots</td><td>Retain in S3 / GCS with a TTL matching your workflow SLA.</td></tr>
+  <tr><td>Schema migration</td><td>If you rev the source, the hash check rejects old snapshots by default. Use <code>--force</code> only when you've audited the IP map (see <a href="phase4.html">live editing</a>).</td></tr>
+  <tr><td>Sensitive data</td><td>Snapshots include all live bindings. Encrypt at rest. Audit which workflows could capture PII into the state.</td></tr>
+  <tr><td>Size</td><td>gzip default: ~5–20× smaller than JSON. Inspect with <code>pen inspect &lt;snap.penz&gt;</code>.</td></tr>
+</table>
+
+<h2>Effect replay invariants</h2>
+
+<p>The VM records every external effect (<code>print</code>, <code>net_fetch</code>, <code>now</code>, <code>random_int</code>, <code>read_file</code>, <code>write_file</code>, <code>wait_until</code>, <code>wait_for</code>) into the snapshot's effect log. On resume, those effects are <em>not re-performed</em>: the recorded value is reused. This is what makes resume safe.</p>
+
+<p>The implications:</p>
+
+<ul>
+  <li><strong>Side effects between pause and resume aren't observed.</strong> If a database row changes while a workflow is paused, the workflow won't see it. Re-fetch on resume if freshness matters.</li>
+  <li><strong>Time advances only at <code>now()</code> calls.</strong> A workflow that sleeps for hours and then calls <code>now()</code> gets the recorded earlier timestamp on replay. Use <code>--time N</code> to override.</li>
+  <li><strong><code>--no-replay</code> opts out</strong> of the entire effect log — every effect re-fires. Useful for forking a snapshot into a "what if" alternate timeline.</li>
+</ul>
+
+<h2>Observability</h2>
+
+<p>The VM has a tracer hook (<code>src/tracer.ts</code>). Pass an implementer of the <code>Tracer</code> interface to <code>run(prog, state, profile, tracer)</code>, and you'll get structured events: <code>fn_call</code>, <code>fn_return</code>, <code>effect</code>, <code>pause</code>, <code>resume</code>, <code>error</code>. The shape mirrors OpenTelemetry's span events closely enough that a 50-line adapter ports it.</p>
+
+<pre><code>import { run, freshState } from 'penelope-lang';
+import { JsonLinesTracer } from 'penelope-lang/dist/tracer';
+
+run(prog, freshState(), undefined, new JsonLinesTracer(process.stderr));
+</code></pre>
+
+<p>Built-in tracers:</p>
+
+<ul>
+  <li><code>MemoryTracer</code> — buffer events in memory; for tests.</li>
+  <li><code>JsonLinesTracer</code> — write one JSON object per line to any writable stream.</li>
+  <li><code>CompositeTracer</code> — fan out to multiple sinks.</li>
+</ul>
+
+<h2>Distributed runtime</h2>
+
+<p>The coordinator in <code>src/dist/coordinator.ts</code> is single-node. That is fine for workloads up to ~thousands of in-flight jobs per process. For HA, run the coordinator behind a process supervisor (systemd, supervisord, k8s Deployment) and back it with a <code>FileStore</code> pointing at a persistent volume — when the coordinator restarts, jobs survive.</p>
+
+<p>What is <em>not</em> built in: consensus / leader election. If you need multi-coordinator HA, you're looking at a different project (Raft + state replication). For most use cases, "one coordinator with a persistent store and quick restart" is fine.</p>
+
+<h2>Security</h2>
+
+<table>
+  <tr><th>Vector</th><th>Mitigation</th></tr>
+  <tr><td>Untrusted source code</td><td>Don't run untrusted <code>.pen</code> files. The VM has no sandbox — effects (<code>read_file</code>, <code>net_fetch</code>) hit the host directly.</td></tr>
+  <tr><td>Coordinator API</td><td>Unauthenticated. Run behind a private network or wrap with an auth proxy.</td></tr>
+  <tr><td>Snapshot tampering</td><td>The program-hash check catches accidental drift but is not a cryptographic signature. Verify your own integrity (HMAC, signed envelope) if snapshots cross trust boundaries.</td></tr>
+</table>
+
+<h2>Performance</h2>
+
+<ul>
+  <li>The interpreter is fine for IO-bound workflows (the typical use case).</li>
+  <li>For CPU-heavy hot paths, switch to the JIT (<code>pen exec --jit</code>). ~2.4× on tight loops.</li>
+  <li>The <code>-O2</code> optimizer (default) handles constant folding, dead-code elimination, peephole IC insertion. <code>-O0</code> disables it; useful for debugger sessions.</li>
+  <li>Profile with <code>pen profile &lt;file.pen&gt;</code> — shows per-opcode hit counts and time.</li>
+</ul>
+
+<h2>Versioning</h2>
+
+<p>Snapshot format is v3 (since Phase 3). Pre-v3 snapshots are not migratable (the VM model changed). When the format revs again, this page will document the migration path. Until then, treat <code>.penz</code> files as bound to the language version that produced them.</p>
+
+</body>
+</html>
