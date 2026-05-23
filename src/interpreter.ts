@@ -363,6 +363,62 @@ function applyEffect(
   const invocationCount = state.effects.filter(e => e.nodeId === nodeId).length;
   const existing = state.effects.find(e => e.nodeId === nodeId && e.invocationCount === invocationCount);
 
+  // Wait effects have time-based or external-event semantics; handle ahead of generic replay.
+  if (name === 'wait_until') {
+    if (argCount !== 1) return { kind: 'error', message: `wait_until expects 1 arg, got ${argCount}` };
+    const msArg = args[0];
+    if (msArg.tag !== 'int') return { kind: 'error', message: `wait_until ms must be int, got ${msArg.tag}` };
+
+    // For pending wait_until, find the pending entry for this node (invocationCount may differ
+    // because the filter count includes the pending entry itself).
+    const pendingEntry = state.effects.find(e => e.nodeId === nodeId && e.status === 'pending' && e.effect === 'wait_until');
+
+    if (pendingEntry !== undefined) {
+      // Already paused; check if elapsed.
+      const targetVal = pendingEntry.recordedValue;
+      if (!targetVal || targetVal.tag !== 'int') {
+        return { kind: 'error', message: 'wait_until: corrupted target time' };
+      }
+      const currentMs = state.timeOverride ?? Date.now();
+      if (currentMs >= targetVal.v) {
+        // Time elapsed — commit and continue.
+        const updatedEffects = state.effects.map(e =>
+          e.nodeId === nodeId && e.invocationCount === pendingEntry.invocationCount
+            ? { ...e, status: 'committed' as const }
+            : e
+        );
+        return cont({
+          ...state, control: rest,
+          valueStack: [...newStack, { tag: 'unit' as const }],
+          effects: updatedEffects,
+        });
+      } else {
+        // Still pending — re-pause.
+        return { kind: 'paused', state, pausedAt: nodeId };
+      }
+    }
+
+    if (existing !== undefined && existing.status === 'committed') {
+      // Already completed — return unit.
+      return cont({ ...state, control: rest,
+        valueStack: [...newStack, { tag: 'unit' as const }] });
+    }
+
+    // First execution: append pending entry with target time.
+    const nowMs = state.timeOverride ?? Date.now();
+    const target = nowMs + msArg.v;
+    const entry = {
+      nodeId, invocationCount, effect: 'wait_until' as const,
+      recordedValue: { tag: 'int' as const, v: target },
+      status: 'pending' as const,
+    };
+    return {
+      kind: 'paused',
+      state: { ...state, effects: [...state.effects, entry] },
+      pausedAt: nodeId,
+    };
+  }
+
   // REPLAY path: committed entry already exists.
   if (existing !== undefined && existing.status === 'committed') {
     const category = categoryOf(name);

@@ -215,3 +215,35 @@ test('F1: read_file recorded then replayed (file can be deleted after)', () => {
 
   cleanup(source); cleanup(snap);
 });
+
+test('G1: wait_until pauses, resume after target time continues', () => {
+  const source = resolve('/tmp/penelope-wu.pen');
+  const snap = resolve('/tmp/penelope-wu.penz');
+  cleanup(source); cleanup(snap);
+  writeFileSync(source, 'wait_until(50); print("done");');
+
+  spawnSync(PEN, ['run', source, '--time', '1000'], { encoding: 'utf8' });
+  expect(existsSync(snap)).toBe(true);
+
+  const r2 = spawnSync(PEN, ['resume', snap, '--time', '2000'], { encoding: 'utf8' });
+  expect(r2.status).toBe(0);
+  expect(r2.stdout.trim()).toBe('done');
+
+  cleanup(source); cleanup(snap);
+});
+
+test('G2: wait_until resume too early re-pauses', () => {
+  const source = resolve('/tmp/penelope-wu-early.pen');
+  const snap = resolve('/tmp/penelope-wu-early.penz');
+  cleanup(source); cleanup(snap);
+  writeFileSync(source, 'wait_until(10000); print("done");');
+
+  spawnSync(PEN, ['run', source, '--time', '1000'], { encoding: 'utf8' });
+
+  const r2 = spawnSync(PEN, ['resume', snap, '--time', '2000'], { encoding: 'utf8' });
+  expect(r2.status).toBe(0);
+  expect(r2.stdout).not.toMatch(/done/);
+  expect(existsSync(snap)).toBe(true);
+
+  cleanup(source); cleanup(snap);
+});

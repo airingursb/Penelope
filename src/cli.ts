@@ -139,9 +139,9 @@ function cmdRun(args: ParsedArgs): number {
 
 function cmdResume(args: ParsedArgs): number {
   const snapPath = args.positional[1];
-  const valueText = args.positional[2];
-  if (!snapPath || valueText === undefined) {
-    process.stderr.write('usage: penelope resume <file.penz> <value> [--source <path>] [--force] [--out <path>]\n');
+  const valueText = args.positional[2];  // may be undefined now
+  if (!snapPath) {
+    process.stderr.write('usage: penelope resume <file.penz> [<value>] [--time MS] [--force] [--out <path>]\n');
     return 2;
   }
 
@@ -168,19 +168,21 @@ function cmdResume(args: ParsedArgs): number {
     return 3;
   }
 
-  const v = parseResumeValue(valueText);
-  if ('error' in v) {
-    process.stderr.write(`cli error: ${v.error}\n`);
-    return 2;
-  }
-
   const ast = parse(tokenize(dr.source));
 
-  // Inject resume value onto valueStack, then continue stepping.
-  let resumedState: State = {
-    ...dr.snap.state,
-    valueStack: [...dr.snap.state.valueStack, v],
-  };
+  let resumedState: State = { ...dr.snap.state };
+
+  // Phase 1 pause value injection (only if value provided)
+  if (valueText !== undefined) {
+    const v = parseResumeValue(valueText);
+    if ('error' in v) {
+      process.stderr.write(`cli error: ${v.error}\n`);
+      return 2;
+    }
+    resumedState = { ...resumedState, valueStack: [...resumedState.valueStack, v] };
+  }
+
+  // Phase 2: time override
   if (typeof args.flags.time === 'string') {
     resumedState = { ...resumedState, timeOverride: Number(args.flags.time) };
   }
