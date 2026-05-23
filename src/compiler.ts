@@ -40,6 +40,10 @@ function compileNode(node: ASTNode, ast: ASTBundle, prog: Program): void {
       emit(prog, ['LOAD_CONST', idx]);
       return;
     }
+    case 'Var': {
+      emit(prog, ['LOAD_VAR', node.name, null]);  // null = ic slot, filled by VM
+      return;
+    }
     default:
       throw new Error(`compile: unhandled node kind '${(node as ASTNode).kind}'`);
   }

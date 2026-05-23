@@ -50,3 +50,12 @@ test('repeated string literals share one constant pool entry', () => {
   const loads = prog.code.filter(op => op[0] === 'LOAD_CONST');
   expect(loads).toEqual([['LOAD_CONST', 0], ['LOAD_CONST', 0], ['LOAD_CONST', 1]]);
 });
+
+test('Var compiles to LOAD_VAR', () => {
+  const prog = compile(parse(tokenize('x;')));
+  expect(prog.code).toEqual([
+    ['LOAD_VAR', 'x', null],
+    ['POP'],
+    ['HALT'],
+  ]);
+});
