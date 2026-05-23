@@ -50,3 +50,19 @@ test('A10: int + str is a runtime error', () => {
   expect(result.kind).toBe('error');
   if (result.kind === 'error') expect(result.message).toMatch(/cannot apply/);
 });
+
+test('A4: string equality (== and !=)', () => {
+  const ast1 = parse(tokenize('"a" == "a";'));
+  const s1 = Object.values(ast1.nodes).find(n => n.kind === 'ExprStmt');
+  if (!s1 || s1.kind !== 'ExprStmt') throw new Error('no ExprStmt');
+  const r1 = runToCompletion(ast1, s1.exprId);
+  if (r1.kind !== 'done') throw new Error('expected done');
+  expect(r1.finalValue).toEqual({ tag: 'bool', v: true });
+
+  const ast2 = parse(tokenize('"a" != "b";'));
+  const s2 = Object.values(ast2.nodes).find(n => n.kind === 'ExprStmt');
+  if (!s2 || s2.kind !== 'ExprStmt') throw new Error('no ExprStmt');
+  const r2 = runToCompletion(ast2, s2.exprId);
+  if (r2.kind !== 'done') throw new Error('expected done');
+  expect(r2.finalValue).toEqual({ tag: 'bool', v: true });
+});

@@ -346,6 +346,7 @@ function applyBinOp(state: State, rest: ControlInstr[], op: BinOp): StepResult {
     let same: boolean;
     if (left.tag === 'int' && right.tag === 'int') same = left.v === right.v;
     else if (left.tag === 'bool' && right.tag === 'bool') same = left.v === right.v;
+    else if (left.tag === 'str' && right.tag === 'str') same = left.v === right.v;
     else if (left.tag === 'unit' && right.tag === 'unit') same = true;
     else return { kind: 'error', message: `cannot compare ${left.tag} values` };
     return cont({ ...state, control: rest,
