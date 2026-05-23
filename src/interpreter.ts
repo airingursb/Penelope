@@ -51,6 +51,7 @@ export type State = {
   nextScopeIdCounter: number;
   effects: EffectEntry[];  // Phase 2: effect log
   timeOverride?: number | null;  // optional time override for now()
+  noReplay?: boolean;  // Phase 2: skip effect-log replay for write/read effects
 };
 
 export type StepResult =
@@ -458,7 +459,7 @@ function applyEffect(
   }
 
   // REPLAY path: committed entry already exists.
-  if (existing !== undefined && existing.status === 'committed') {
+  if (!state.noReplay && existing !== undefined && existing.status === 'committed') {
     const category = categoryOf(name);
     if (category === 'write') {
       // Skip the IO; push unit.

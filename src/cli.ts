@@ -197,6 +197,11 @@ function cmdResume(args: ParsedArgs): number {
     resumedState = { ...resumedState, timeOverride: Number(args.flags.time) };
   }
 
+  // Phase 2: --no-replay flag
+  if (args.flags['no-replay'] === true) {
+    resumedState = { ...resumedState, noReplay: true };
+  }
+
   // Phase 2 wait_for event delivery: --event NAME=VALUE → committed entry with parsed VALUE.
   const updatedEffects = resumedState.effects.map(e => {
     if (e.effect !== 'wait_for' || e.status !== 'pending') return e;
