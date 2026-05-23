@@ -1,7 +1,8 @@
-// Penelope snapshot format: JSON.
+// Penelope snapshot format: JSON, optionally gzipped on disk.
 // Self-contained except for the source file, which is referenced by path+hash.
 
 import { createHash } from 'node:crypto';
+import { gzipSync, gunzipSync } from 'node:zlib';
 import type { Value } from './ast.js';
 
 export type Frame = {
@@ -44,6 +45,38 @@ export function sha256(input: string): string {
 
 export function serialize(snap: Snapshot): string {
   return JSON.stringify(snap, null, 2);
+}
+
+/**
+ * Serialize to a Buffer, optionally gzip-compressed. Compressed output starts
+ * with the gzip magic bytes (0x1f 0x8b) so deserializeBytes can auto-detect.
+ *
+ * For large states (long effect logs, deep value stacks) gzip cuts disk size
+ * 5-20×. The CPU cost is negligible compared to the snapshot's evaluation cost.
+ */
+export function serializeBytes(snap: Snapshot, opts: { compress?: boolean } = { compress: true }): Buffer {
+  const json = serialize(snap);
+  if (opts.compress === false) return Buffer.from(json, 'utf8');
+  return gzipSync(Buffer.from(json, 'utf8'));
+}
+
+/** True if the buffer starts with the gzip magic number 1f 8b. */
+function isGzip(bytes: Buffer): boolean {
+  return bytes.length >= 2 && bytes[0] === 0x1f && bytes[1] === 0x8b;
+}
+
+/**
+ * Deserialize from raw bytes (auto-detects gzip vs plain JSON). Older
+ * uncompressed .penz files continue to work; new files written via
+ * serializeBytes default to gzip.
+ */
+export function deserializeBytes(
+  bytes: Buffer,
+  resolveSource: (programPath: string) => string,
+  options: DeserializeOptions = {},
+): DeserializeResult {
+  const json = isGzip(bytes) ? gunzipSync(bytes).toString('utf8') : bytes.toString('utf8');
+  return deserialize(json, resolveSource, options);
 }
 
 export type DeserializeResult =

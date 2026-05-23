@@ -32,16 +32,37 @@ export function freshState(): VMState {
   };
 }
 
-export function run(prog: Program, initialState?: VMState, profile?: ProfileData): RunResult {
+export function run(
+  prog: Program,
+  initialState?: VMState,
+  profile?: ProfileData,
+  tracer?: import('./tracer.js').Tracer,
+): RunResult {
   const state = initialState ?? freshState();
   const t0 = profile ? process.hrtime.bigint() : 0n;
+  // Resume detection: a fresh state has ip=0, empty stack, empty effects, and
+  // exactly one frame (the root). Any deviation means we're resuming.
+  const isResume = state.ip > 0
+    || state.effects.length > 0
+    || state.valueStack.length > 0
+    || state.frames.length > 1
+    || Object.keys(state.frames[0]?.bindings ?? {}).length > 0;
+  if (tracer && isResume) {
+    tracer.emit({ kind: 'resume', ip: state.ip, t: Date.now() });
+  }
   try {
-    const r = runUntilStop(prog, state, profile);
+    const r = runUntilStop(prog, state, profile, undefined, undefined, tracer);
     if (r.status === 'breakpoint') {
       // No breakpoints passed; can't happen at runtime but narrows the type.
       throw new Error('unreachable: breakpoint without breakpoints set');
     }
+    if (tracer && r.status === 'paused') {
+      tracer.emit({ kind: 'pause', ip: state.ip, t: Date.now(), reason: 'pause-op' });
+    }
     return r;
+  } catch (e) {
+    if (tracer) tracer.emit({ kind: 'error', ip: state.ip, t: Date.now(), message: (e as Error).message });
+    throw e;
   } finally {
     if (profile) profile.totalNs += process.hrtime.bigint() - t0;
   }
@@ -82,6 +103,7 @@ function runUntilStop(
   profile?: ProfileData,
   breakpoints?: Set<number>,
   stepCtx?: StepCtx,
+  tracer?: import('./tracer.js').Tracer,
 ): DebugStop {
   const replayPool = new Map<number, EffectEntry[]>();
   for (const e of state.effects) {
@@ -203,6 +225,7 @@ function runUntilStop(
         const bindings: Record<string, Value> = {};
         for (let i = 0; i < args.length; i++) bindings[callee.params[i]] = args[i];
         state.frames.push({ bindings, returnIP: state.ip + 1, parentIdx: callee.capturedFrameIdx });
+        if (tracer) tracer.emit({ kind: 'fn_call', ip: state.ip, bodyIp: callee.bodyIp, argc, t: Date.now() });
         state.ip = callee.bodyIp;
         break;
       }
@@ -253,6 +276,7 @@ function runUntilStop(
       case 'RETURN': {
         const f = state.frames.pop();
         if (!f || f.returnIP === undefined) throw new Error(`RETURN: invalid return frame`);
+        if (tracer) tracer.emit({ kind: 'fn_return', ip: state.ip, t: Date.now() });
         state.ip = f.returnIP;
         break;
       }
@@ -272,10 +296,16 @@ function runUntilStop(
         const argc = op[2] as number;
         const args: Value[] = [];
         for (let i = 0; i < argc; i++) args.unshift(pop(state));
+        // If a replay entry exists, this effect is being replayed (not freshly
+        // executed). The tracer surfaces that distinction so audits can separate
+        // first-execution effects from replay-on-resume effects.
+        const isReplay = (replayPool.get(state.ip)?.length ?? 0) > (replayIdx.get(state.ip) ?? 0);
         const step = executeEffect(state, name, args, replayIdx, replayPool);
+        if (tracer) tracer.emit({ kind: 'effect', ip: state.ip, name, t: Date.now(), replayed: isReplay });
         if (step.kind === 'pause') {
           // Restore args so a future resume can re-pop them.
           for (const a of args) push(state, a);
+          if (tracer) tracer.emit({ kind: 'pause', ip: state.ip, t: Date.now(), reason: 'wait-effect' });
           return { status: 'paused', state };
         }
         push(state, step.v);

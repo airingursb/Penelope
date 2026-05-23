@@ -7,6 +7,7 @@ import { parse } from './parser.js';
 import { compile } from './compiler.js';
 import { run, freshState, makeProfile } from './vm.js';
 import { jitCompile } from './jit.js';
+import { JsonLinesTracer } from './tracer.js';
 import { writePencFile, readPencFile } from './encoder.js';
 import { runOptimizer, type OLevel } from './optimizer.js';
 import { check as typeCheck, checkWithEffects, typeStr, effectsStr } from './typecheck.js';
@@ -19,7 +20,7 @@ import { remapState } from './live-edit.js';
 import { extractExpectations, checkExpectations } from './test-runner.js';
 import { spawnSync } from 'node:child_process';
 import { formatDiagnostic, diagnosticFromMessage } from './diagnostic.js';
-import { serialize, sha256, deserialize } from './snapshot.js';
+import { sha256, serializeBytes, deserializeBytes } from './snapshot.js';
 import type { Snapshot, VMState } from './snapshot.js';
 import type { Value } from './ast.js';
 
@@ -64,7 +65,7 @@ function parseArgs(argv: string[]): ParsedArgs {
   return { positional, flags, events, oLevel };
 }
 
-function writeSnapshot(pencPath: string, state: VMState): string {
+function writeSnapshot(pencPath: string, state: VMState, opts: { compress?: boolean } = {}): string {
   const snapPath = pencPath.replace(/\.penc$/, '.penz');
   const snap = {
     version: 3 as const,
@@ -74,8 +75,18 @@ function writeSnapshot(pencPath: string, state: VMState): string {
     pausedAtMs: Date.now(),
     state,
   };
-  writeFileSync(snapPath, serialize(snap));
+  // Default: gzip-compress. Older uncompressed .penz files are still readable
+  // (deserializeBytes auto-detects gzip vs plain JSON).
+  const compress = opts.compress !== false;
+  writeFileSync(snapPath, serializeBytes(snap, { compress }));
   return snapPath;
+}
+
+// Read a .penz file (auto-detects gzip vs plain JSON, runs the same hash check
+// as the legacy text-only path). Pass through to deserializeBytes.
+function readSnapshotBytes(snapPath: string, opts: { force?: boolean } = {}) {
+  const bytes = readFileSync(snapPath);
+  return deserializeBytes(bytes, (p: string) => readFileSync(p, 'utf8'), opts);
 }
 
 function cmdBuild(args: ParsedArgs): number {
@@ -132,6 +143,7 @@ function runOnce(absPath: string, filePath: string, args: ParsedArgs): number {
   const timeFlag = args.flags['time'];
   const timeOverride = timeFlag && timeFlag !== true ? parseInt(String(timeFlag), 10) : null;
   const noReplay = args.flags['no-replay'] === true;
+  const traceEnabled = args.flags['trace'] === true || args.flags['trace'] === 'true';
 
   try {
     const ast = parse(tokenize(source));
@@ -139,7 +151,10 @@ function runOnce(absPath: string, filePath: string, args: ParsedArgs): number {
     const state = freshState();
     state.timeOverride = timeOverride;
     state.noReplay = noReplay;
-    const r = run(prog, state);
+    // Tracer writes JSON-lines to stderr when --trace is on. Keeps stdout
+    // clean for the program's own output so pipelines aren't disturbed.
+    const tracer = traceEnabled ? new JsonLinesTracer(process.stderr) : undefined;
+    const r = run(prog, state, undefined, tracer);
     if (r.status === 'paused') {
       const pencPath = absPath.replace(/\.pen$/, '.penc');
       prog.sourceHash = 'sha256:' + sha256(source);
@@ -201,11 +216,9 @@ function cmdResume(args: ParsedArgs): number {
   const snapPath = args.positional[1];
   if (!snapPath) { process.stderr.write('usage: pen resume <file.penz> [--time N] [--no-replay]\n'); return 2; }
   const absSnap = resolve(snapPath);
-  let snapText: string;
-  try { snapText = readFileSync(absSnap, 'utf8'); }
-  catch { process.stderr.write(`cli error: cannot read snapshot: ${snapPath}\n`); return 3; }
-
-  const sr = deserialize(snapText, (p) => readFileSync(p, 'utf8'));
+  let sr;
+  try { sr = readSnapshotBytes(absSnap); }
+  catch (e) { process.stderr.write(`cli error: cannot read snapshot: ${(e as Error).message}\n`); return 3; }
   if ('error' in sr) { process.stderr.write(`cli error: ${sr.error}\n`); return 1; }
   if (sr.snap.version !== 3) { process.stderr.write('cli error: snapshot version mismatch (expected 3)\n'); return 1; }
 
@@ -541,11 +554,9 @@ function cmdEdit(args: ParsedArgs): number {
   if (!snapPath) { process.stderr.write('usage: pen edit <file.penz>\n'); return 2; }
   const absSnap = resolve(snapPath);
 
-  let snapText: string;
-  try { snapText = readFileSync(absSnap, 'utf8'); }
-  catch { process.stderr.write(`cli error: cannot read snapshot: ${snapPath}\n`); return 3; }
-
-  const sr = deserialize(snapText, (p) => readFileSync(p, 'utf8'));
+  let sr;
+  try { sr = readSnapshotBytes(absSnap); }
+  catch (e) { process.stderr.write(`cli error: cannot read snapshot: ${(e as Error).message}\n`); return 3; }
   if ('error' in sr) { process.stderr.write(`cli error: ${sr.error}\n`); return 1; }
   if (sr.snap.version !== 3) { process.stderr.write('cli error: snapshot version mismatch\n'); return 1; }
 
@@ -827,12 +838,18 @@ function cmdInspect(args: ParsedArgs): number {
   const snapPath = args.positional[1];
   if (!snapPath) { process.stderr.write('usage: pen inspect <file.penz>\n'); return 2; }
   const absSnapPath = resolve(snapPath);
-  let snapJson: string;
-  try { snapJson = readFileSync(absSnapPath, 'utf8'); }
-  catch { process.stderr.write(`cli error: cannot read snapshot: ${snapPath}\n`); return 3; }
+  // Auto-detects gzip; the (p) → readFileSync resolver isn't used here because we
+  // skip the source-hash check (this is `inspect`, just shows metadata).
   let snap: Snapshot;
-  try { snap = JSON.parse(snapJson); }
-  catch { process.stderr.write(`cli error: snapshot is corrupted (invalid JSON)\n`); return 3; }
+  try {
+    const result = readSnapshotBytes(absSnapPath, { force: true });
+    if ('error' in result) {
+      process.stderr.write(`cli error: ${result.error}\n`); return 3;
+    }
+    snap = result.snap;
+  } catch (e) {
+    process.stderr.write(`cli error: cannot read snapshot: ${(e as Error).message}\n`); return 3;
+  }
 
   let sourceStatus = '? source missing';
   try {

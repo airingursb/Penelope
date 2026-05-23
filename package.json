@@ -1,17 +1,72 @@
 {
-  "name": "penelope",
-  "version": "0.0.1",
-  "description": "A language that knows how to wait.",
-  "private": true,
+  "name": "penelope-lang",
+  "version": "0.5.0",
+  "description": "A programming language where pause is a first-class primitive. Self-hosted, distributed, JIT-accelerated.",
+  "keywords": [
+    "language",
+    "interpreter",
+    "bytecode",
+    "vm",
+    "durable-execution",
+    "pause-resume",
+    "snapshot",
+    "workflow",
+    "self-hosted"
+  ],
+  "homepage": "https://github.com/airingursb/Penelope",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/airingursb/Penelope.git"
+  },
+  "bugs": "https://github.com/airingursb/Penelope/issues",
+  "license": "MIT",
+  "author": "Airing <airingursb@gmail.com>",
   "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
   "bin": {
     "penelope": "./bin/penelope",
     "pen": "./bin/penelope"
   },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./vm": {
+      "types": "./dist/vm.d.ts",
+      "default": "./dist/vm.js"
+    },
+    "./jit": {
+      "types": "./dist/jit.d.ts",
+      "default": "./dist/jit.js"
+    },
+    "./dist/coordinator": {
+      "types": "./dist/dist/coordinator.d.ts",
+      "default": "./dist/dist/coordinator.js"
+    },
+    "./dist/worker": {
+      "types": "./dist/dist/worker.d.ts",
+      "default": "./dist/dist/worker.js"
+    }
+  },
+  "files": [
+    "bin",
+    "dist",
+    "src",
+    "std",
+    "examples",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "build": "tsc",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "prepublishOnly": "npm run build && npm run test"
   },
   "devDependencies": {
     "typescript": "^5.4.0",
