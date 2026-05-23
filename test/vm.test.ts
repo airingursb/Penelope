@@ -11,3 +11,26 @@ test('HALT-only program completes with empty stack', () => {
   expect(result.state.valueStack).toEqual([]);
   expect(result.state.frames).toHaveLength(1);
 });
+
+test('LOAD_CONST pushes constant; POP removes top', () => {
+  const prog: Program = {
+    version: 1,
+    constants: [{ tag: 'int', v: 42 }],
+    code: [['LOAD_CONST', 0], ['POP'], ['HALT']],
+  };
+  expect(run(prog).state.valueStack).toEqual([]);
+});
+
+test('LOAD_CONST without POP leaves value on stack', () => {
+  const prog: Program = {
+    version: 1,
+    constants: [{ tag: 'int', v: 7 }],
+    code: [['LOAD_CONST', 0], ['HALT']],
+  };
+  expect(run(prog).state.valueStack).toEqual([{ tag: 'int', v: 7 }]);
+});
+
+test('PUSH_UNIT pushes unit', () => {
+  const prog: Program = { version: 1, constants: [], code: [['PUSH_UNIT'], ['HALT']] };
+  expect(run(prog).state.valueStack).toEqual([{ tag: 'unit' }]);
+});

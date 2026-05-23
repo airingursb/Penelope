@@ -32,6 +32,13 @@ function runUntilStop(prog: Program, state: VMState): RunResult {
     if (!op) throw new Error(`VM: IP ${state.ip} out of bounds`);
     switch (op[0]) {
       case 'HALT': return { status: 'halted', state };
+      case 'LOAD_CONST': {
+        push(state, constantToValue(prog.constants[op[1] as number]));
+        state.ip++;
+        break;
+      }
+      case 'POP':       { pop(state); state.ip++; break; }
+      case 'PUSH_UNIT': { push(state, { tag: 'unit' }); state.ip++; break; }
       default:
         throw new Error(`VM: unhandled opcode '${op[0]}' at ip ${state.ip}`);
     }
