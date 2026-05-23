@@ -1,0 +1,4 @@
+#!/bin/sh
+# Penelope launcher. Forwards to the compiled CLI.
+DIR="$(dirname "$0")"
+exec node "$DIR/../dist/cli.js" "$@"
