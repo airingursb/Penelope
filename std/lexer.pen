@@ -1,0 +1,289 @@
+/// Penelope lexer — written in Penelope.
+///
+/// Scope: handles the subset of Penelope used to write the self-hosted compiler:
+/// decimal INT, IDENT/keywords, STRING (no template interpolation), all single +
+/// two-char operators, punctuation, // line comments, whitespace.
+///
+/// NOT supported in this MVP self-hosted lexer:
+///   - template strings ("${...}")
+///   - /// doc comments (treated as plain line comments)
+///   - hex/binary/underscore numeric literals
+///   - block comments (/* ... */)
+///   - DOTDOTDOT, PIPE pattern operators
+///
+/// Output: list of token dicts of shape {kind, line, col, text?, value?}.
+
+import "./iter.pen";
+
+/// Single keyword -> kind map.
+let keyword_kind = fn(text) {
+  match text {
+    "let" => "LET",
+    "fn" => "FN",
+    "if" => "IF",
+    "else" => "ELSE",
+    "true" => "TRUE",
+    "false" => "FALSE",
+    "pause" => "PAUSE",
+    "match" => "MATCH",
+    "import" => "IMPORT",
+    _ => "",
+  }
+};
+
+let make_token = fn(kind, line, col) {
+  dict_set(dict_set(dict_set(dict_new(),
+    "kind", kind),
+    "line", line),
+    "col", col)
+};
+
+let token_with_text = fn(kind, line, col, text) {
+  dict_set(make_token(kind, line, col), "text", text)
+};
+
+let token_with_value = fn(kind, line, col, value) {
+  dict_set(make_token(kind, line, col), "value", value)
+};
+
+/// State for the scanner: {source, i, line, col, tokens}.
+let mk_state = fn(source) {
+  dict_set(dict_set(dict_set(dict_set(dict_set(dict_new(),
+    "source", source),
+    "i", 0),
+    "line", 1),
+    "col", 1),
+    "tokens", list_new())
+};
+
+let st_at = fn(st) {
+  let s = dict_get(st, "source");
+  let i = dict_get(st, "i");
+  if (i >= str_length(s)) { "" } else { str_at(s, i) }
+};
+
+let st_peek = fn(st, offset) {
+  let s = dict_get(st, "source");
+  let i = dict_get(st, "i") + offset;
+  if (i >= str_length(s)) { "" } else { str_at(s, i) }
+};
+
+let st_done = fn(st) {
+  dict_get(st, "i") >= str_length(dict_get(st, "source"))
+};
+
+let st_advance = fn(st) {
+  let c = st_at(st);
+  let new_i = dict_get(st, "i") + 1;
+  if (c == "\n") {
+    dict_set(dict_set(dict_set(st, "i", new_i), "line", dict_get(st, "line") + 1), "col", 1)
+  } else {
+    dict_set(dict_set(st, "i", new_i), "col", dict_get(st, "col") + 1)
+  }
+};
+
+let st_push = fn(st, tok) {
+  dict_set(st, "tokens", list_push(dict_get(st, "tokens"), tok))
+};
+
+/// Skip whitespace and // line comments. Returns new state.
+let skip_trivia = fn(st) {
+  let go = fn(s) {
+    if (st_done(s)) {
+      s
+    } else {
+      let c = st_at(s);
+      if (char_is_whitespace(c)) {
+        go(st_advance(s))
+      } else {
+        if (c == "/") {
+          if (st_peek(s, 1) == "/") {
+            // Line comment — skip until newline.
+            let s2 = st_advance(st_advance(s));
+            let skip_line = fn(ss) {
+              if (st_done(ss)) { ss }
+              else {
+                if (st_at(ss) == "\n") { ss }
+                else { skip_line(st_advance(ss)) }
+              }
+            };
+            go(skip_line(s2))
+          } else { s }
+        } else { s }
+      }
+    }
+  };
+  go(st)
+};
+
+/// Lex an integer literal starting at current position.
+let lex_int = fn(st) {
+  let start_line = dict_get(st, "line");
+  let start_col = dict_get(st, "col");
+  let acc = fn(s, text) {
+    if (st_done(s)) {
+      dict_set(dict_set(dict_new(), "text", text), "state", s)
+    } else {
+      let c = st_at(s);
+      if (char_is_digit(c)) {
+        acc(st_advance(s), text + c)
+      } else {
+        dict_set(dict_set(dict_new(), "text", text), "state", s)
+      }
+    }
+  };
+  let r = acc(st, "");
+  let value = int_of_str(dict_get(r, "text"));
+  let tok = token_with_value("INT", start_line, start_col, value);
+  st_push(dict_get(r, "state"), tok)
+};
+
+/// Lex an identifier or keyword starting at current position.
+let lex_ident = fn(st) {
+  let start_line = dict_get(st, "line");
+  let start_col = dict_get(st, "col");
+  let acc = fn(s, text) {
+    if (st_done(s)) {
+      dict_set(dict_set(dict_new(), "text", text), "state", s)
+    } else {
+      let c = st_at(s);
+      if (char_is_alphanum(c)) {
+        acc(st_advance(s), text + c)
+      } else {
+        dict_set(dict_set(dict_new(), "text", text), "state", s)
+      }
+    }
+  };
+  let r = acc(st, "");
+  let text = dict_get(r, "text");
+  let kw_kind = keyword_kind(text);
+  let tok = if (kw_kind == "") {
+    token_with_text("IDENT", start_line, start_col, text)
+  } else {
+    make_token(kw_kind, start_line, start_col)
+  };
+  st_push(dict_get(r, "state"), tok)
+};
+
+/// Lex a string literal. Handles \n \t \r \\ \"  escapes. No interpolation.
+let lex_string = fn(st) {
+  let start_line = dict_get(st, "line");
+  let start_col = dict_get(st, "col");
+  let s1 = st_advance(st);   // consume opening quote
+  let acc = fn(s, text) {
+    if (st_done(s)) {
+      panic("lexer: unterminated string")
+    } else {
+      let c = st_at(s);
+      if (c == "\"") {
+        dict_set(dict_set(dict_new(), "text", text), "state", st_advance(s))
+      } else {
+        if (c == "\\") {
+          let s2 = st_advance(s);
+          let esc = st_at(s2);
+          let ch = match esc {
+            "n" => "\n",
+            "t" => "\t",
+            "r" => "\r",
+            "\\" => "\\",
+            "\"" => "\"",
+            _ => panic("lexer: bad escape"),
+          };
+          acc(st_advance(s2), text + ch)
+        } else {
+          acc(st_advance(s), text + c)
+        }
+      }
+    }
+  };
+  let r = acc(s1, "");
+  let tok = token_with_text("STRING", start_line, start_col, dict_get(r, "text"));
+  st_push(dict_get(r, "state"), tok)
+};
+
+/// Try to match a two-char operator at the current position. Returns "" on no match.
+let two_char_kind = fn(a, b) {
+  let pair = a + b;
+  match pair {
+    "<=" => "LE",
+    ">=" => "GE",
+    "==" => "EQ_EQ",
+    "!=" => "BANG_EQ",
+    "=>" => "FAT_ARROW",
+    _ => "",
+  }
+};
+
+let one_char_kind = fn(c) {
+  match c {
+    "+" => "PLUS",
+    "-" => "MINUS",
+    "*" => "STAR",
+    "/" => "SLASH",
+    "<" => "LT",
+    ">" => "GT",
+    "=" => "EQ",
+    "(" => "LPAREN",
+    ")" => "RPAREN",
+    "{" => "LBRACE",
+    "}" => "RBRACE",
+    "[" => "LBRACK",
+    "]" => "RBRACK",
+    "," => "COMMA",
+    ";" => "SEMI",
+    ":" => "COLON",
+    "|" => "PIPE",
+    _ => "",
+  }
+};
+
+/// One iteration: skip trivia, then either dispatch on the current char or stop.
+let lex_one = fn(st) {
+  let s = skip_trivia(st);
+  if (st_done(s)) {
+    s
+  } else {
+    let c = st_at(s);
+    if (char_is_digit(c)) {
+      lex_int(s)
+    } else {
+      if (char_is_alpha(c)) {
+        lex_ident(s)
+      } else {
+        if (c == "\"") {
+          lex_string(s)
+        } else {
+          let two = two_char_kind(c, st_peek(s, 1));
+          if (two != "") {
+            let tok = make_token(two, dict_get(s, "line"), dict_get(s, "col"));
+            st_push(st_advance(st_advance(s)), tok)
+          } else {
+            let one = one_char_kind(c);
+            if (one != "") {
+              let tok = make_token(one, dict_get(s, "line"), dict_get(s, "col"));
+              st_push(st_advance(s), tok)
+            } else {
+              panic("lexer: unexpected character '" + c + "'")
+            }
+          }
+        }
+      }
+    }
+  }
+};
+
+/// Main entry point: tokenize a source string. Returns list of token dicts
+/// (terminated by an EOF token).
+let pen_tokenize = fn(source) {
+  let loop = fn(st) {
+    let s = skip_trivia(st);
+    if (st_done(s)) {
+      let eof = make_token("EOF", dict_get(s, "line"), dict_get(s, "col"));
+      st_push(s, eof)
+    } else {
+      loop(lex_one(s))
+    }
+  };
+  let final = loop(mk_state(source));
+  dict_get(final, "tokens")
+};
