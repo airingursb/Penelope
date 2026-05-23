@@ -206,6 +206,86 @@ function cmdResume(args: ParsedArgs): number {
 }
 
 // ============================================================
+// fork subcommand
+// ============================================================
+
+function cmdFork(args: ParsedArgs): number {
+  const snapPath = args.positional[1];
+  const v1text = args.positional[2];
+  const v2text = args.positional[3];
+  if (!snapPath || v1text === undefined || v2text === undefined) {
+    process.stderr.write('usage: penelope fork <file.penz> <v1> <v2> [--out1 <path>] [--out2 <path>]\n');
+    return 2;
+  }
+
+  const absSnapPath = resolve(snapPath);
+  let snapJson: string;
+  try { snapJson = readFileSync(absSnapPath, 'utf8'); }
+  catch { process.stderr.write(`cli error: cannot read snapshot: ${snapPath}\n`); return 3; }
+
+  const resolveSource = (programPath: string): string =>
+    readFileSync(resolve(dirname(absSnapPath), programPath), 'utf8');
+
+  const dr = deserialize(snapJson, resolveSource, { force: !!args.flags.force });
+  if ('error' in dr) { process.stderr.write(`cli error: ${dr.error}\n`); return 3; }
+
+  const v1 = parseResumeValue(v1text);
+  if ('error' in v1) { process.stderr.write(`cli error: ${v1.error}\n`); return 2; }
+  const v2 = parseResumeValue(v2text);
+  if ('error' in v2) { process.stderr.write(`cli error: ${v2.error}\n`); return 2; }
+
+  const ast = parse(tokenize(dr.source));
+
+  const baseDir = dirname(absSnapPath);
+  const baseName = basename(absSnapPath).replace(/\.penz$/, '');
+  const out1 = typeof args.flags.out1 === 'string'
+    ? args.flags.out1
+    : join(baseDir, `${baseName}.fork0.penz`);
+  const out2 = typeof args.flags.out2 === 'string'
+    ? args.flags.out2
+    : join(baseDir, `${baseName}.fork1.penz`);
+
+  const runFork = (label: string, injected: Value, outPath: string): number => {
+    const origLog = console.log;
+    console.log = (msg: string) => origLog(`[${label}] ${msg}`);
+    try {
+      // Deep clone via JSON — the axiom in action: state is just data
+      const cloned: State = JSON.parse(JSON.stringify(dr.snap.state));
+      const state: State = {
+        ...cloned,
+        valueStack: [...cloned.valueStack, injected],
+      };
+      const result = loop(state, ast);
+      if (result.kind === 'error') {
+        process.stderr.write(`[${label}] runtime error: ${result.message}\n`);
+        return 1;
+      }
+      if (result.kind === 'paused') {
+        const newSnap: Snapshot = {
+          version: 1,
+          programPath: dr.snap.programPath,
+          programHash: dr.snap.programHash,
+          pausedAt: result.pausedAt,
+          pausedAtMs: Date.now(),
+          state: result.state,
+        };
+        writeFileSync(outPath, serialize(newSnap));
+        if (!args.flags.quiet) {
+          process.stderr.write(`[${label}] paused again; snapshot → ${outPath}\n`);
+        }
+      }
+      return 0;
+    } finally {
+      console.log = origLog;
+    }
+  };
+
+  const c1 = runFork('fork-0', v1, out1);
+  const c2 = runFork('fork-1', v2, out2);
+  return (c1 === 0 && c2 === 0) ? 0 : 1;
+}
+
+// ============================================================
 // Main
 // ============================================================
 
@@ -214,6 +294,7 @@ export function main(argv: string[]): number {
   const sub = args.positional[0];
   if (sub === 'run')     return cmdRun(args);
   if (sub === 'resume')  return cmdResume(args);
+  if (sub === 'fork')    return cmdFork(args);
   process.stderr.write(`usage: penelope <run|resume|fork|inspect> [args]\n`);
   return 2;
 }
