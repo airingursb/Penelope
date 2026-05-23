@@ -1,0 +1,18 @@
+// String interpolation with ${...}.
+
+let name = "Penelope";
+let version = 3;
+let phase = "polish round 5";
+
+print("welcome to ${name} v${version} (${phase})");
+
+let greet = fn(who, count) {
+  "hello ${who}, this is message #${count}"
+};
+
+print(greet("Alice", 1));
+print(greet("Bob", 2));
+
+// Expressions inside ${} can be arbitrary.
+let n = 7;
+print("sum 1..${n} = ${n * (n + 1) / 2}");

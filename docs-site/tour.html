@@ -105,6 +105,45 @@ Snapshot: pause.penz
   effects: 0 entries
   value stack (0): (empty)</code></pre>
 
+<h2>String interpolation</h2>
+
+<p>Strings may embed expressions with <code>${...}</code>. Each <code>${expr}</code> is desugared to <code>to_str(expr)</code> + concat.</p>
+
+<pre><code><span class="kw">let</span> name = <span class="str">"Penelope"</span>;
+<span class="kw">let</span> age = <span class="num">42</span>;
+<span class="bi">print</span>(<span class="str">"hello </span><span class="bi">${name}</span><span class="str">, you are </span><span class="bi">${age + 1}</span><span class="str">"</span>);
+<span class="cm">// → hello Penelope, you are 43</span></code></pre>
+
+<p>Escape a literal <code>$</code> with <code>\$</code>.</p>
+
+<h2>Pattern matching</h2>
+
+<p><code>match expr { pattern => body, ... }</code>. Patterns supported (MVP): int / bool / string literals, wildcard <code>_</code>, variable binding <code>x</code>.</p>
+
+<pre><code><span class="kw">let</span> describe = <span class="kw">fn</span>(n) {
+  <span class="kw">match</span> n {
+    <span class="num">0</span> =&gt; <span class="str">"zero"</span>,
+    <span class="num">1</span> =&gt; <span class="str">"one"</span>,
+    x =&gt; <span class="str">"many: </span><span class="bi">${x}</span><span class="str">"</span>,
+  }
+};
+<span class="bi">print</span>(describe(<span class="num">42</span>));   <span class="cm">// → many: 42</span></code></pre>
+
+<p>Arms are checked top-to-bottom. A variable pattern (lowercase identifier) matches anything and binds; <code>_</code> matches anything and discards. No exhaustiveness checking — a non-matching scrutinee with no wildcard returns <code>unit</code>.</p>
+
+<h2>Modules</h2>
+
+<p><code>import "./path.pen";</code> expands the imported file's top-level bindings into the current scope. Paths are resolved relative to the importing file. Re-imports are idempotent; cycles are safe.</p>
+
+<pre><code><span class="cm">// math.pen</span>
+<span class="kw">let</span> square = <span class="kw">fn</span>(n) { n * n };</code></pre>
+
+<pre><code><span class="cm">// main.pen</span>
+<span class="kw">import</span> <span class="str">"./math.pen"</span>;
+<span class="bi">print</span>(<span class="bi">to_str</span>(square(<span class="num">7</span>)));    <span class="cm">// 49</span></code></pre>
+
+<p>The loader expands imports before tokenization. Source positions in errors refer to the inlined source — preserving original file:line is a future improvement.</p>
+
 <h2>Optimizations</h2>
 
 <p>Compile with <code>-O2</code> to enable all 5 passes (constant folding, dead-code elimination, inline caches, function inlining, peephole):</p>

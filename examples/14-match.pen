@@ -1,0 +1,31 @@
+// Pattern matching: a tiny state machine for a vending machine.
+
+let step = fn(state, input) {
+  match state {
+    "idle" => match input {
+      "coin" => "ready",
+      _ => "idle",
+    },
+    "ready" => match input {
+      "select" => "dispensing",
+      "refund" => "idle",
+      _ => "ready",
+    },
+    "dispensing" => "idle",
+    _ => "idle",
+  }
+};
+
+let trace = fn(state, inputs, depth) {
+  if (depth >= list_len(inputs)) {
+    state
+  } else {
+    let next = step(state, list_get(inputs, depth));
+    print("[${depth}] ${state} + '${list_get(inputs, depth)}' → ${next}");
+    trace(next, inputs, depth + 1)
+  }
+};
+
+let inputs = list_new("coin", "select", "coin", "refund");
+let final = trace("idle", inputs, 0);
+print("final state: ${final}");

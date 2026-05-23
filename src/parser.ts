@@ -83,6 +83,13 @@ export function parse(tokens: Token[]): ASTBundle {
 
   const stmtIds: NodeId[] = [];
   while (c.peekKind() !== 'EOF') {
+    // Tolerate bare `import "..."` statements (already expanded by the loader)
+    if (c.peekKind() === 'IMPORT') {
+      c.eat('IMPORT');
+      c.eat('STRING');
+      c.eat('SEMI');
+      continue;
+    }
     stmtIds.push(parseStatement(c, b).id);
   }
 
