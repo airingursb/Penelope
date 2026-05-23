@@ -6,7 +6,7 @@
 // No closures, no Maps, no symbols, no class instances.
 
 import type { ASTBundle, ASTNode, BinOp, NodeId, ScopeId, Value } from './ast.js';
-import { EFFECT_NAMES as EFFECT_NAMES_SET, categoryOf } from './effects.js';
+import { EFFECT_NAMES as EFFECT_NAMES_SET, categoryOf, performWriteFile } from './effects.js';
 import type { EffectName } from './effects.js';
 
 // ============================================================
@@ -396,6 +396,28 @@ function applyEffect(
     console.log(formatValue(args[0]));
     const entry = {
       nodeId, invocationCount, effect: 'print' as const,
+      recordedValue: null, status: 'committed' as const,
+    };
+    return cont({
+      ...state, control: rest,
+      valueStack: [...newStack, { tag: 'unit' as const }],
+      effects: [...state.effects, entry],
+    });
+  }
+
+  if (name === 'write_file') {
+    if (argCount !== 2) return { kind: 'error', message: `write_file expects 2 args, got ${argCount}` };
+    const path = args[0];
+    const body = args[1];
+    if (path.tag !== 'str') return { kind: 'error', message: `write_file path must be str, got ${path.tag}` };
+    if (body.tag !== 'str') return { kind: 'error', message: `write_file body must be str, got ${body.tag}` };
+    try {
+      performWriteFile(path.v, body.v);
+    } catch (e) {
+      return { kind: 'error', message: `write_file failed: ${(e as Error).message}`, atNode: nodeId };
+    }
+    const entry = {
+      nodeId, invocationCount, effect: 'write_file' as const,
       recordedValue: null, status: 'committed' as const,
     };
     return cont({

@@ -3,6 +3,12 @@
 // `interpreter.ts` delegates here on first execution of an effect call.
 // On replay, `interpreter.ts` reads from the effect log and does NOT call this module.
 
+import { writeFileSync } from 'node:fs';
+
+export function performWriteFile(path: string, body: string): void {
+  writeFileSync(path, body, 'utf8');
+}
+
 export type EffectName =
   | 'print'
   | 'net_fetch'

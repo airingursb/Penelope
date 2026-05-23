@@ -1,6 +1,6 @@
 import { test, expect } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { existsSync, unlinkSync } from 'node:fs';
+import { existsSync, unlinkSync, writeFileSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 const PEN = resolve('bin/penelope');
@@ -83,4 +83,38 @@ test('C1/H1: print before pause is not re-printed on resume', () => {
   expect(r2.stdout.trim()).toBe('42');  // "before" must NOT appear
 
   cleanup(snap);
+});
+
+test('F2: write_file skipped on replay (manual override preserved)', () => {
+  const source = resolve('/tmp/penelope-wf.pen');
+  const snap = resolve('/tmp/penelope-wf.penz');
+  const target = '/tmp/penelope-wf-output.txt';
+  cleanup(snap); cleanup(target); cleanup(source);
+
+  writeFileSync(source, 'write_file("/tmp/penelope-wf-output.txt", "first"); let _ = pause; print("done");');
+
+  const r1 = spawnSync(PEN, ['run', source], { encoding: 'utf8' });
+  expect(r1.status).toBe(0);
+  expect(readFileSync(target, 'utf8')).toBe('first');
+
+  writeFileSync(target, 'manual override');
+
+  const r2 = spawnSync(PEN, ['resume', snap, 'true'], { encoding: 'utf8' });
+  expect(r2.status).toBe(0);
+  expect(r2.stdout.trim()).toBe('done');
+  expect(readFileSync(target, 'utf8')).toBe('manual override');
+
+  cleanup(source); cleanup(snap); cleanup(target);
+});
+
+test('F3: write_file errors propagate first time', () => {
+  const source = resolve('/tmp/penelope-wf-err.pen');
+  cleanup(source);
+  writeFileSync(source, 'write_file("/nonexistent_dir_xyz/file", "x"); print("never");');
+
+  const r1 = spawnSync(PEN, ['run', source], { encoding: 'utf8' });
+  expect(r1.status).toBe(1);
+  expect(r1.stderr).toMatch(/write_file/);
+
+  cleanup(source);
 });
