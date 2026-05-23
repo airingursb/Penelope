@@ -32,3 +32,21 @@ test('A9: print prints a string without quotes', () => {
     expect(logged).toEqual(['hello']);
   } finally { console.log = origLog; }
 });
+
+test('A3: string + string concat', () => {
+  const ast = parse(tokenize('"abc" + "def";'));
+  const stmt = Object.values(ast.nodes).find(n => n.kind === 'ExprStmt');
+  if (!stmt || stmt.kind !== 'ExprStmt') throw new Error('no ExprStmt');
+  const result = runToCompletion(ast, stmt.exprId);
+  if (result.kind !== 'done') throw new Error('expected done');
+  expect(result.finalValue).toEqual({ tag: 'str', v: 'abcdef' });
+});
+
+test('A10: int + str is a runtime error', () => {
+  const ast = parse(tokenize('1 + "a";'));
+  const stmt = Object.values(ast.nodes).find(n => n.kind === 'ExprStmt');
+  if (!stmt || stmt.kind !== 'ExprStmt') throw new Error('no ExprStmt');
+  const result = runToCompletion(ast, stmt.exprId);
+  expect(result.kind).toBe('error');
+  if (result.kind === 'error') expect(result.message).toMatch(/cannot apply/);
+});

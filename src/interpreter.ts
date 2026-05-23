@@ -300,12 +300,25 @@ function applyBinOp(state: State, rest: ControlInstr[], op: BinOp): StepResult {
   const left  = stack[stack.length - 2];
   const newStack = stack.slice(0, -2);
 
-  if (op === '+' || op === '-' || op === '*' || op === '/') {
+  if (op === '+') {
+    // String concat overload
+    if (left.tag === 'str' && right.tag === 'str') {
+      return cont({ ...state, control: rest,
+        valueStack: [...newStack, { tag: 'str', v: left.v + right.v }] });
+    }
+    // Integer addition
+    if (left.tag === 'int' && right.tag === 'int') {
+      return cont({ ...state, control: rest,
+        valueStack: [...newStack, { tag: 'int', v: left.v + right.v }] });
+    }
+    return { kind: 'error', message: `cannot apply '+' to ${left.tag} and ${right.tag}` };
+  }
+
+  if (op === '-' || op === '*' || op === '/') {
     if (left.tag !== 'int' || right.tag !== 'int')
       return { kind: 'error', message: `cannot apply '${op}' to ${left.tag} and ${right.tag}` };
     let result: number;
-    if (op === '+') result = left.v + right.v;
-    else if (op === '-') result = left.v - right.v;
+    if (op === '-') result = left.v - right.v;
     else if (op === '*') result = left.v * right.v;
     else {
       if (right.v === 0) return { kind: 'error', message: 'division by zero' };
