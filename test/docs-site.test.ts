@@ -5,7 +5,7 @@ import { readFileSync, existsSync, readdirSync } from 'node:fs';
 import * as path from 'node:path';
 
 const SITE = 'docs-site';
-const PAGES = ['index.html', 'tour.html', 'stdlib.html', 'cli.html', 'snapshot.html'];
+const PAGES = ['index.html', 'tour.html', 'stdlib.html', 'cli.html', 'snapshot.html', 'play.html', 'debugger.html'];
 
 test('all expected pages exist + share style.css', () => {
   for (const p of PAGES) expect(existsSync(path.join(SITE, p))).toBe(true);

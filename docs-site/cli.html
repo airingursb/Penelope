@@ -17,6 +17,7 @@
     <a href="cli.html" class="active">CLI</a>
     <a href="snapshot.html">Snapshot v3</a>
     <a href="play.html">Playground</a>
+    <a href="debugger.html">Debugger</a>
     <a href="https://github.com/airingursb/Penelope">GitHub →</a>
   </nav>
 </header>
@@ -38,7 +39,10 @@ $ pen bench foo.pen                      <span class="cm"># compare -O0/-O1/-O2 
 $ pen repl                               <span class="cm"># interactive REPL</span>
 $ pen fmt [--write] foo.pen              <span class="cm"># AST-based code formatter</span>
 $ pen test foo.pen                       <span class="cm"># doctest runner (// EXPECT: lines)</span>
-$ pen run --watch foo.pen                <span class="cm"># re-run on file change</span></code></pre>
+$ pen run --watch foo.pen                <span class="cm"># re-run on file change</span>
+$ pen test --watch foo.pen               <span class="cm"># tdd loop</span>
+$ pen check --watch foo.pen              <span class="cm"># typecheck loop</span>
+$ pen doc foo.pen                        <span class="cm"># /// → markdown</span></code></pre>
 
 <h2>Flags</h2>
 <table>
@@ -71,6 +75,44 @@ print("ok");
 
 <pre><code>$ pen test add.pen
 ✓ add.pen  (2 expectations)</code></pre>
+
+<h2>pen doc (markdown from /// comments)</h2>
+
+<p>Doc comments use a triple slash (<code>///</code>). <code>pen doc</code> walks top-level <code>let</code> bindings and emits a markdown page summarizing them.</p>
+
+<pre><code><span class="cm">/// Double the input. Useful for nothing in particular.</span>
+<span class="kw">let</span> double = <span class="kw">fn</span>(x) { x * <span class="num">2</span> };
+
+<span class="cm">/// The official greeting.</span>
+<span class="kw">let</span> greeting = <span class="str">"hello"</span>;</code></pre>
+
+<pre><code>$ pen doc demo.pen
+# `demo.pen`
+
+## `double(x)`
+
+*defined at line 2*
+
+Double the input. Useful for nothing in particular.
+
+## `greeting`
+
+*defined at line 5*
+
+The official greeting.</code></pre>
+
+<p>Regular <code>//</code> comments survive <code>pen fmt</code> too (they used to be dropped).</p>
+
+<h2>Tail-call optimization</h2>
+
+<p>The compiler tags tail-position function calls. The VM reuses the current call frame for them, so deep tail recursion doesn't blow the JS stack.</p>
+
+<pre><code><span class="kw">let</span> sum = <span class="kw">fn</span>(n, acc) {
+  <span class="kw">if</span> (n == <span class="num">0</span>) { acc } <span class="kw">else</span> { sum(n - <span class="num">1</span>, acc + n) }
+};
+<span class="bi">print</span>(<span class="bi">to_str</span>(sum(<span class="num">100000</span>, <span class="num">0</span>)));  <span class="cm">// 5000050000 — no stack overflow</span></code></pre>
+
+<p>A call is in tail position when it's the trailing expression of a function body, or recursively the trailing expression of an if-branch or block in tail position. When tail-calling a closure whose captured scope would be invalidated by frame reuse, the VM falls back to a regular call (no observable difference, just no stack savings).</p>
 
 <h2>pen run --watch</h2>
 
