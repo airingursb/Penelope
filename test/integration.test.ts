@@ -67,3 +67,20 @@ test('demo 3: fork produces two independent futures from one snapshot', () => {
 
   cleanup(snap); cleanup(fork0); cleanup(fork1);
 });
+
+test('C1/H1: print before pause is not re-printed on resume', () => {
+  const source = resolve('examples/04-print-replay.pen');
+  const snap = resolve('examples/04-print-replay.penz');
+  cleanup(snap);
+
+  const r1 = spawnSync(PEN, ['run', source], { encoding: 'utf8' });
+  expect(r1.status).toBe(0);
+  expect(r1.stdout.trim()).toBe('before');
+  expect(existsSync(snap)).toBe(true);
+
+  const r2 = spawnSync(PEN, ['resume', snap, '42'], { encoding: 'utf8' });
+  expect(r2.status).toBe(0);
+  expect(r2.stdout.trim()).toBe('42');  // "before" must NOT appear
+
+  cleanup(snap);
+});

@@ -6,7 +6,7 @@
 // No closures, no Maps, no symbols, no class instances.
 
 import type { ASTBundle, ASTNode, BinOp, NodeId, ScopeId, Value } from './ast.js';
-import { EFFECT_NAMES as EFFECT_NAMES_SET } from './effects.js';
+import { EFFECT_NAMES as EFFECT_NAMES_SET, categoryOf } from './effects.js';
 import type { EffectName } from './effects.js';
 
 // ============================================================
@@ -360,9 +360,37 @@ function applyEffect(
   const newStack = stack.slice(0, stack.length - argCount);
 
   const invocationCount = state.effects.filter(e => e.nodeId === nodeId).length;
+  const existing = state.effects.find(e => e.nodeId === nodeId && e.invocationCount === invocationCount);
 
-  // First execution for print (only effect supported in this task).
-  // Other effects added in T14-T21. REPLAY path added in T14.
+  // REPLAY path: committed entry already exists.
+  if (existing !== undefined && existing.status === 'committed') {
+    const category = categoryOf(name);
+    if (category === 'write') {
+      // Skip the IO; push unit.
+      return cont({ ...state, control: rest,
+        valueStack: [...newStack, { tag: 'unit' as const }] });
+    }
+    if (category === 'read') {
+      if (existing.recordedValue === null) {
+        return { kind: 'error', message: `replay: read effect ${name} has null recordedValue (corrupted log)` };
+      }
+      return cont({ ...state, control: rest,
+        valueStack: [...newStack, existing.recordedValue] });
+    }
+    // wait category — committed wait_for returns its recordedValue (event payload)
+    if (existing.recordedValue === null) {
+      return { kind: 'error', message: `replay: wait effect ${name} committed with null recordedValue (corrupted log)` };
+    }
+    return cont({ ...state, control: rest,
+      valueStack: [...newStack, existing.recordedValue] });
+  }
+
+  // PENDING wait — re-pause (handled per-effect in T20/T21).
+  if (existing !== undefined && existing.status === 'pending') {
+    return { kind: 'paused', state, pausedAt: nodeId };
+  }
+
+  // FIRST EXECUTION path
   if (name === 'print') {
     if (argCount !== 1) return { kind: 'error', message: `print expects 1 arg, got ${argCount}` };
     console.log(formatValue(args[0]));
