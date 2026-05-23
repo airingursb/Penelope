@@ -1,0 +1,7 @@
+let t0 = now();
+let r = random_int(1, 100);
+print("started at: " + to_str(t0));
+print("random: " + to_str(r));
+let _ = pause;
+print("after pause, t0 is still: " + to_str(t0));
+print("after pause, r is still: " + to_str(r));
