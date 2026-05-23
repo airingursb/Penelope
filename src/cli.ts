@@ -336,6 +336,63 @@ function cmdGraph(args: ParsedArgs): number {
   return 0;
 }
 
+async function cmdCoordinator(args: ParsedArgs): Promise<number> {
+  const { Coordinator } = await import('./dist/coordinator.js');
+  const { FileStore, InMemoryStore } = await import('./dist/store.js');
+  const port = Number(args.flags['port'] ?? 7077);
+  const storeDir = typeof args.flags['store'] === 'string' ? args.flags['store'] as string : null;
+  const leaseMs = Number(args.flags['lease-ms'] ?? 5000);
+  const store = storeDir ? new FileStore(storeDir) : new InMemoryStore();
+  const coord = new Coordinator({ store, port, leaseMs });
+  await coord.start();
+  process.stdout.write(`pen coordinator listening on http://localhost:${port}  store=${storeDir ?? '(in-memory)'}  leaseMs=${leaseMs}\n`);
+  // Keep process alive until SIGINT/SIGTERM.
+  await new Promise<void>(resolve => {
+    const shutdown = async () => { await coord.stop(); resolve(); };
+    process.on('SIGINT', shutdown);
+    process.on('SIGTERM', shutdown);
+  });
+  return 0;
+}
+
+async function cmdWorker(args: ParsedArgs): Promise<number> {
+  const { Worker } = await import('./dist/worker.js');
+  const { randomUUID } = await import('node:crypto');
+  const coordUrl = typeof args.flags['coord'] === 'string' ? args.flags['coord'] as string : 'http://localhost:7077';
+  const workerId = typeof args.flags['id'] === 'string' ? args.flags['id'] as string : `worker-${randomUUID().slice(0, 8)}`;
+  const worker = new Worker({ workerId, coordUrl });
+  await worker.start();
+  process.stdout.write(`pen worker ${workerId} → ${coordUrl}\n`);
+  await new Promise<void>(resolve => {
+    const shutdown = async () => { await worker.stop(); resolve(); };
+    process.on('SIGINT', shutdown);
+    process.on('SIGTERM', shutdown);
+  });
+  return 0;
+}
+
+async function cmdSubmit(args: ParsedArgs): Promise<number> {
+  const { submitJob, awaitJob } = await import('./dist/worker.js');
+  const { freshState } = await import('./vm.js');
+  const srcPath = args.positional[1];
+  if (!srcPath) { process.stderr.write('usage: pen submit [--coord URL] [--wait] <file.pen>\n'); return 2; }
+  const coordUrl = typeof args.flags['coord'] === 'string' ? args.flags['coord'] as string : 'http://localhost:7077';
+  const source = loadSource(resolve(srcPath));
+  const prog = compile(parse(tokenize(source)));
+  const state = freshState();
+  const jobId = await submitJob(coordUrl, prog, state);
+  process.stdout.write(`submitted job ${jobId}\n`);
+  if (args.flags['wait']) {
+    const result = await awaitJob(coordUrl, jobId, 60000);
+    process.stdout.write(`status: ${result.status}\n`);
+    if (result.result) {
+      process.stdout.write(`bindings: ${JSON.stringify(result.result.frames[0]?.bindings ?? {})}\n`);
+    }
+    return result.status === 'completed' ? 0 : 1;
+  }
+  return 0;
+}
+
 function cmdSelfTest(_args: ParsedArgs): number {
   // Three-stage self-hosting verification:
   //
@@ -842,7 +899,10 @@ export async function main(argv: string[]): Promise<number> {
   if (sub === 'new')     return cmdNew(args);
   if (sub === 'edit')    return cmdEdit(args);
   if (sub === 'self-test') return cmdSelfTest(args);
-  process.stderr.write(`usage: penelope <build|exec|run|resume|fork|disasm|bench|inspect|repl|check|profile|fmt|test|doc|graph|new|edit|self-test> [-O0|-O1|-O2] [args]\n`);
+  if (sub === 'coordinator') return await cmdCoordinator(args);
+  if (sub === 'worker') return await cmdWorker(args);
+  if (sub === 'submit') return await cmdSubmit(args);
+  process.stderr.write(`usage: penelope <build|exec|run|resume|fork|disasm|bench|inspect|repl|check|profile|fmt|test|doc|graph|new|edit|self-test|coordinator|worker|submit> [-O0|-O1|-O2] [args]\n`);
   return 2;
 }
 
