@@ -1,0 +1,322 @@
+/// Penelope compiler — written in Penelope.
+///
+/// AST bundle → Program (constants + opcode list). Output is JSON-serializable
+/// and equivalent in structure to the TS compiler's output (for the AST subset
+/// produced by std/parser.pen).
+///
+/// Scope (matches what std/parser.pen produces):
+///   - Program / IntLit / BoolLit / StringLit / UnitLit / Var
+///   - BinOp / Let / If / Fn / Call / Pause / ExprStmt / Block
+///   - Match with simple patterns (int/bool/str/wildcard/var)
+///
+/// NOT supported:
+///   - or-patterns, guards, list/dict patterns (parser.pen doesn't emit them)
+///   - tail-call optimization (always emits CALL, never TAILCALL)
+///   - source map (positions discarded)
+///   - inline caches (EFFECT/LOAD_VAR get null ic slot)
+
+import "./iter.pen";
+
+/// State threaded through compile: {constants, code}.
+let mk_cstate = fn() {
+  dict_set(dict_set(dict_new(),
+    "constants", list_new()),
+    "code", list_new())
+};
+
+let c_emit = fn(st, op) {
+  dict_set(st, "code", list_push(dict_get(st, "code"), op))
+};
+
+let c_code_len = fn(st) {
+  list_len(dict_get(st, "code"))
+};
+
+let c_set_op = fn(st, ip, op) {
+  let code = dict_get(st, "code");
+  dict_set(st, "code", list_set(code, ip, op))
+};
+
+/// Intern a constant; returns {state, idx}.
+let c_intern_const = fn(st, entry) {
+  let pool = dict_get(st, "constants");
+  let find = fn(i) {
+    if (i >= list_len(pool)) {
+      0 - 1
+    } else {
+      let e = list_get(pool, i);
+      let same =
+        if (dict_get(e, "tag") != dict_get(entry, "tag")) { false }
+        else {
+          let tag = dict_get(e, "tag");
+          if (tag == "unit") { true }
+          else { dict_get(e, "v") == dict_get(entry, "v") }
+        };
+      if (same) { i } else { find(i + 1) }
+    }
+  };
+  let existing = find(0);
+  if (existing >= 0) {
+    dict_set(dict_set(dict_new(), "state", st), "idx", existing)
+  } else {
+    let new_pool = list_push(pool, entry);
+    let st2 = dict_set(st, "constants", new_pool);
+    dict_set(dict_set(dict_new(), "state", st2), "idx", list_len(pool))
+  }
+};
+
+/// AST node lookup helper.
+let get_node = fn(ast, id) {
+  dict_get(dict_get(ast, "nodes"), id)
+};
+
+/// List of effect builtin names — these compile to EFFECT opcode.
+let is_effect_name = fn(name) {
+  match name {
+    "print" => true,
+    "net_fetch" => true,
+    "now" => true,
+    "random_int" => true,
+    "read_file" => true,
+    "write_file" => true,
+    "wait_until" => true,
+    "wait_for" => true,
+    _ => false,
+  }
+};
+
+let is_pure_builtin = fn(name) {
+  match name {
+    "str_length" => true,
+    "str_slice" => true,
+    "to_str" => true,
+    "type_of" => true,
+    "str_chars" => true,
+    "str_at" => true,
+    "str_find" => true,
+    "str_starts_with" => true,
+    "str_ends_with" => true,
+    "int_of_str" => true,
+    "list_new" => true,
+    "list_push" => true,
+    "list_get" => true,
+    "list_set" => true,
+    "list_len" => true,
+    "list_slice" => true,
+    "list_concat" => true,
+    "list_reverse" => true,
+    "dict_new" => true,
+    "dict_set" => true,
+    "dict_get" => true,
+    "dict_has" => true,
+    "dict_keys" => true,
+    "char_is_digit" => true,
+    "char_is_alpha" => true,
+    "char_is_alphanum" => true,
+    "char_is_whitespace" => true,
+    "panic" => true,
+    _ => false,
+  }
+};
+
+/// Dispatch on AST node kind. Returns updated state.
+let compile_node = fn(node, ast, st) {
+  let kind = dict_get(node, "kind");
+  match kind {
+    "Program" => {
+      let stmts = dict_get(node, "stmtIds");
+      let go = fn(i, s) {
+        if (i >= list_len(stmts)) { s }
+        else { go(i + 1, compile_node(get_node(ast, list_get(stmts, i)), ast, s)) }
+      };
+      go(0, st)
+    },
+    "IntLit" => {
+      let r = c_intern_const(st, dict_set(dict_set(dict_new(), "tag", "int"), "v", dict_get(node, "value")));
+      c_emit(dict_get(r, "state"), list_new("LOAD_CONST", dict_get(r, "idx")))
+    },
+    "BoolLit" => {
+      let r = c_intern_const(st, dict_set(dict_set(dict_new(), "tag", "bool"), "v", dict_get(node, "value")));
+      c_emit(dict_get(r, "state"), list_new("LOAD_CONST", dict_get(r, "idx")))
+    },
+    "StringLit" => {
+      let r = c_intern_const(st, dict_set(dict_set(dict_new(), "tag", "str"), "v", dict_get(node, "value")));
+      c_emit(dict_get(r, "state"), list_new("LOAD_CONST", dict_get(r, "idx")))
+    },
+    "UnitLit" => c_emit(st, list_new("PUSH_UNIT")),
+    "Var" => c_emit(st, list_new("LOAD_VAR", dict_get(node, "name"))),
+    "Pause" => c_emit(st, list_new("PAUSE")),
+    "ExprStmt" => {
+      let s1 = compile_node(get_node(ast, dict_get(node, "exprId")), ast, st);
+      c_emit(s1, list_new("POP"))
+    },
+    "Let" => {
+      let s1 = compile_node(get_node(ast, dict_get(node, "valueId")), ast, st);
+      c_emit(s1, list_new("STORE_VAR", dict_get(node, "name")))
+    },
+    "BinOp" => {
+      let s1 = compile_node(get_node(ast, dict_get(node, "leftId")), ast, st);
+      let s2 = compile_node(get_node(ast, dict_get(node, "rightId")), ast, s1);
+      c_emit(s2, list_new("BIN_OP", dict_get(node, "op")))
+    },
+    "Block" => {
+      let s1 = c_emit(st, list_new("ENTER_BLOCK"));
+      let stmts = dict_get(node, "stmtIds");
+      let go_stmts = fn(i, s) {
+        if (i >= list_len(stmts)) { s }
+        else { go_stmts(i + 1, compile_node(get_node(ast, list_get(stmts, i)), ast, s)) }
+      };
+      let s2 = go_stmts(0, s1);
+      let trailing = dict_get(node, "trailingExprId");
+      let s3 = if (trailing == "") {
+        c_emit(s2, list_new("PUSH_UNIT"))
+      } else {
+        compile_node(get_node(ast, trailing), ast, s2)
+      };
+      c_emit(s3, list_new("EXIT_BLOCK"))
+    },
+    "If" => {
+      let s1 = compile_node(get_node(ast, dict_get(node, "condId")), ast, st);
+      let jif_ip = c_code_len(s1);
+      let s2 = c_emit(s1, list_new("JUMP_IF_FALSE", 0 - 1));
+      let s3 = compile_node(get_node(ast, dict_get(node, "thenBlockId")), ast, s2);
+      let jmp_ip = c_code_len(s3);
+      let s4 = c_emit(s3, list_new("JUMP", 0 - 1));
+      // Back-patch JIF to point to start of else
+      let s5 = c_set_op(s4, jif_ip, list_new("JUMP_IF_FALSE", c_code_len(s4)));
+      let s6 = compile_node(get_node(ast, dict_get(node, "elseBlockId")), ast, s5);
+      // Back-patch JUMP to point past else
+      c_set_op(s6, jmp_ip, list_new("JUMP", c_code_len(s6)))
+    },
+    "Fn" => {
+      let mk_ip = c_code_len(st);
+      let s1 = c_emit(st, list_new("MAKE_CLOSURE", dict_get(node, "params"), 0 - 1, 0 - 1));
+      let jmp_ip = c_code_len(s1);
+      let s2 = c_emit(s1, list_new("JUMP", 0 - 1));
+      let body_start = c_code_len(s2);
+      let s3 = compile_node(get_node(ast, dict_get(node, "bodyBlockId")), ast, s2);
+      let s4 = c_emit(s3, list_new("RETURN"));
+      let body_end = c_code_len(s4);
+      // Back-patch MAKE_CLOSURE with body_ip and body_len
+      let s5 = c_set_op(s4, mk_ip, list_new("MAKE_CLOSURE", dict_get(node, "params"), body_start, body_end - body_start));
+      // Back-patch JUMP to past body
+      c_set_op(s5, jmp_ip, list_new("JUMP", c_code_len(s5)))
+    },
+    "Call" => {
+      let callee = get_node(ast, dict_get(node, "calleeId"));
+      let arg_ids = dict_get(node, "argIds");
+      let argc = list_len(arg_ids);
+      // Special-case effect / pure-builtin calls.
+      if (dict_get(callee, "kind") == "Var") {
+        let name = dict_get(callee, "name");
+        if (is_effect_name(name)) {
+          let s = list_reduce(arg_ids, st, fn(acc, id) { compile_node(get_node(ast, id), ast, acc) });
+          c_emit(s, list_new("EFFECT", name, argc))
+        } else {
+          if (is_pure_builtin(name)) {
+            let s = list_reduce(arg_ids, st, fn(acc, id) { compile_node(get_node(ast, id), ast, acc) });
+            c_emit(s, list_new("CALL_BUILTIN", name, argc))
+          } else {
+            // closure call
+            let s1 = compile_node(callee, ast, st);
+            let s2 = list_reduce(arg_ids, s1, fn(acc, id) { compile_node(get_node(ast, id), ast, acc) });
+            c_emit(s2, list_new("CALL", argc))
+          }
+        }
+      } else {
+        let s1 = compile_node(callee, ast, st);
+        let s2 = list_reduce(arg_ids, s1, fn(acc, id) { compile_node(get_node(ast, id), ast, acc) });
+        c_emit(s2, list_new("CALL", argc))
+      }
+    },
+    "Match" => compile_match(node, ast, st),
+    _ => panic("compiler: unhandled node kind '" + kind + "'"),
+  }
+};
+
+/// Compile a match expression.
+let compile_match = fn(node, ast, st) {
+  let s1 = c_emit(st, list_new("ENTER_BLOCK"));
+  let s2 = compile_node(get_node(ast, dict_get(node, "scrutineeId")), ast, s1);
+  let s3 = c_emit(s2, list_new("STORE_VAR", "__match_tmp"));
+  let arms = dict_get(node, "arms");
+  // Process arms: collect end-jump IPs to back-patch later.
+  let go_arms = fn(i, s, end_jumps) {
+    if (i >= list_len(arms)) {
+      dict_set(dict_set(dict_new(), "state", s), "end_jumps", end_jumps)
+    } else {
+      let arm = list_get(arms, i);
+      let is_last = i + 1 >= list_len(arms);
+      let s_arm = c_emit(s, list_new("ENTER_BLOCK"));
+      let check = emit_pattern_check(dict_get(arm, "pattern"), s_arm);
+      let fail_ip = c_code_len(check);
+      let s_jif = c_emit(check, list_new("JUMP_IF_FALSE", 0 - 1));
+      let body = compile_node(get_node(ast, dict_get(arm, "bodyId")), ast, s_jif);
+      let s_exit_ok = c_emit(body, list_new("EXIT_BLOCK"));
+      let succ_ip = c_code_len(s_exit_ok);
+      let s_jmp = c_emit(s_exit_ok, list_new("JUMP", 0 - 1));
+      // Back-patch JIF to land just before EXIT_BLOCK of the failure path
+      let s_patched_jif = c_set_op(s_jmp, fail_ip, list_new("JUMP_IF_FALSE", c_code_len(s_jmp)));
+      let s_exit_fail = c_emit(s_patched_jif, list_new("EXIT_BLOCK"));
+      let s_after = if (is_last) {
+        c_emit(s_exit_fail, list_new("PUSH_UNIT"))
+      } else {
+        s_exit_fail
+      };
+      go_arms(i + 1, s_after, list_push(end_jumps, succ_ip))
+    }
+  };
+  let after_arms = go_arms(0, s3, list_new());
+  // Back-patch end jumps to here
+  let s_final = list_reduce(dict_get(after_arms, "end_jumps"), dict_get(after_arms, "state"), fn(acc, jip) {
+    c_set_op(acc, jip, list_new("JUMP", c_code_len(acc)))
+  });
+  c_emit(s_final, list_new("EXIT_BLOCK"))
+};
+
+/// Emit a pattern check that pushes a bool and registers bindings on match.
+let emit_pattern_check = fn(pat, st) {
+  let kind = dict_get(pat, "kind");
+  match kind {
+    "wildcard" => {
+      let r = c_intern_const(st, dict_set(dict_set(dict_new(), "tag", "bool"), "v", true));
+      c_emit(dict_get(r, "state"), list_new("LOAD_CONST", dict_get(r, "idx")))
+    },
+    "var" => {
+      let s1 = c_emit(st, list_new("LOAD_VAR", "__match_tmp"));
+      let s2 = c_emit(s1, list_new("STORE_VAR", dict_get(pat, "name")));
+      let r = c_intern_const(s2, dict_set(dict_set(dict_new(), "tag", "bool"), "v", true));
+      c_emit(dict_get(r, "state"), list_new("LOAD_CONST", dict_get(r, "idx")))
+    },
+    "int" => {
+      let s1 = c_emit(st, list_new("LOAD_VAR", "__match_tmp"));
+      let r = c_intern_const(s1, dict_set(dict_set(dict_new(), "tag", "int"), "v", dict_get(pat, "value")));
+      let s2 = c_emit(dict_get(r, "state"), list_new("LOAD_CONST", dict_get(r, "idx")));
+      c_emit(s2, list_new("BIN_OP", "=="))
+    },
+    "bool" => {
+      let s1 = c_emit(st, list_new("LOAD_VAR", "__match_tmp"));
+      let r = c_intern_const(s1, dict_set(dict_set(dict_new(), "tag", "bool"), "v", dict_get(pat, "value")));
+      let s2 = c_emit(dict_get(r, "state"), list_new("LOAD_CONST", dict_get(r, "idx")));
+      c_emit(s2, list_new("BIN_OP", "=="))
+    },
+    "str" => {
+      let s1 = c_emit(st, list_new("LOAD_VAR", "__match_tmp"));
+      let r = c_intern_const(s1, dict_set(dict_set(dict_new(), "tag", "str"), "v", dict_get(pat, "value")));
+      let s2 = c_emit(dict_get(r, "state"), list_new("LOAD_CONST", dict_get(r, "idx")));
+      c_emit(s2, list_new("BIN_OP", "=="))
+    },
+    _ => panic("compiler: unsupported pattern kind '" + kind + "'"),
+  }
+};
+
+/// Top-level entry: compile a parsed AST bundle into a Program dict.
+let pen_compile = fn(ast) {
+  let root = get_node(ast, dict_get(ast, "rootId"));
+  let st = compile_node(root, ast, mk_cstate());
+  let final = c_emit(st, list_new("HALT"));
+  dict_set(dict_set(dict_set(dict_new(),
+    "version", 1),
+    "constants", dict_get(final, "constants")),
+    "code", dict_get(final, "code"))
+};
