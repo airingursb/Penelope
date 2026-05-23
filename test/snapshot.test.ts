@@ -8,17 +8,15 @@ test('sha256 produces a deterministic hex digest', () => {
 
 test('serialize produces valid pretty-printed JSON', () => {
   const snap: Snapshot = {
-    version: 2,
+    version: 3,
     programPath: 'x.pen',
     programHash: 'sha256:deadbeef',
-    pausedAt: 'n5',
+    pausedAtIP: 5,
     pausedAtMs: 1234567890,
     state: {
-      control: [{ op: 'pushUnit' }],
+      ip: 5,
       valueStack: [],
-      scopes: { s0: { parentId: null, bindings: {} } },
-      currentScopeId: 's0',
-      nextScopeIdCounter: 1,
+      frames: [{ bindings: {} }],
       effects: [],
     },
   };
@@ -29,17 +27,15 @@ test('serialize produces valid pretty-printed JSON', () => {
 
 const goodSource = 'let x = 1;';
 const goodSnap = {
-  version: 2 as const,
+  version: 3 as const,
   programPath: 'x.pen',
   programHash: 'sha256:' + sha256(goodSource),
-  pausedAt: 'n5',
+  pausedAtIP: 5,
   pausedAtMs: 0,
   state: {
-    control: [],
+    ip: 5,
     valueStack: [],
-    scopes: { s0: { parentId: null, bindings: {} } },
-    currentScopeId: 's0',
-    nextScopeIdCounter: 1,
+    frames: [{ bindings: {} }],
     effects: [],
   },
 };
@@ -47,7 +43,7 @@ const goodSnap = {
 test('deserialize accepts a matching source', () => {
   const r = deserialize(serialize(goodSnap), () => goodSource);
   if ('error' in r) throw new Error(`unexpected error: ${r.error}`);
-  expect(r.snap.pausedAt).toBe('n5');
+  expect(r.snap.pausedAtIP).toBe(5);
   expect(r.source).toBe(goodSource);
 });
 
@@ -75,18 +71,45 @@ test('deserialize rejects unknown version', () => {
   if ('error' in r) expect(r.error).toMatch(/unknown snapshot version/);
 });
 
-test('deserialize rejects v1 snapshots with helpful message', () => {
-  const v1snap = { ...goodSnap, version: 1 };
-  const r = deserialize(JSON.stringify(v1snap), () => goodSource);
+test('deserialize rejects v2 snapshots with helpful message', () => {
+  const v2snap = {
+    version: 2,
+    programPath: 'x.pen',
+    programHash: 'sha256:abc',
+    pausedAt: 'n5',
+    pausedAtMs: 0,
+    state: { control: [], valueStack: [], scopes: { s0: { parentId: null, bindings: {} } }, currentScopeId: 's0', nextScopeIdCounter: 1, effects: [] },
+  };
+  const r = deserialize(JSON.stringify(v2snap), () => 'let x = 1;');
   expect('error' in r).toBe(true);
-  if ('error' in r) {
-    expect(r.error).toMatch(/version 2/);
-    expect(r.error).toMatch(/not migratable|re-run/);
-  }
+  if ('error' in r) expect(r.error).toMatch(/version 3/);
 });
 
 test('deserialize reports missing source file', () => {
   const r = deserialize(serialize(goodSnap), () => { throw new Error('ENOENT'); });
   expect('error' in r).toBe(true);
   if ('error' in r) expect(r.error).toMatch(/cannot find source file/);
+});
+
+test('v3 snapshot with VMState roundtrips', () => {
+  const source = 'let x = 1;';
+  const snap = {
+    version: 3 as const,
+    programPath: 'x.penc',
+    programHash: 'sha256:' + sha256(source),
+    pausedAtIP: 42,
+    pausedAtMs: 0,
+    state: {
+      ip: 42,
+      valueStack: [{ tag: 'int' as const, v: 10 }],
+      frames: [{ bindings: { x: { tag: 'int' as const, v: 5 } } }],
+      effects: [],
+    },
+  };
+  const r = deserialize(JSON.stringify(snap), () => source);
+  if ('error' in r) throw new Error(r.error);
+  if (r.snap.version !== 3) throw new Error('expected v3');
+  expect(r.snap.state.ip).toBe(42);
+  expect(r.snap.state.valueStack).toHaveLength(1);
+  expect(r.snap.state.frames).toHaveLength(1);
 });

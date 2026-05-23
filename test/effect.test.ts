@@ -24,21 +24,19 @@ test('categoryOf classifies effects correctly', () => {
 test('B4: snapshot with effects[] survives serialize/deserialize roundtrip', () => {
   const source = 'let x = 1;';
   const snap: Snapshot = {
-    version: 2,
+    version: 3,
     programPath: 'x.pen',
     programHash: 'sha256:' + sha256(source),
-    pausedAt: 'n5',
+    pausedAtIP: 5,
     pausedAtMs: 12345,
     state: {
-      control: [],
+      ip: 5,
       valueStack: [],
-      scopes: { s0: { parentId: null, bindings: {} } },
-      currentScopeId: 's0',
-      nextScopeIdCounter: 1,
+      frames: [{ bindings: {} }],
       effects: [
-        { nodeId: 'n2', invocationCount: 0, effect: 'print', recordedValue: null, status: 'committed' },
-        { nodeId: 'n4', invocationCount: 0, effect: 'net_fetch', recordedValue: { tag: 'str', v: 'response body' }, status: 'committed' },
-        { nodeId: 'n6', invocationCount: 0, effect: 'wait_for', recordedValue: { tag: 'str', v: 'approval' }, status: 'pending' },
+        { ip: 2, invocationCount: 0, effect: 'print', recordedValue: null, status: 'committed' },
+        { ip: 4, invocationCount: 0, effect: 'net_fetch', recordedValue: { tag: 'str', v: 'response body' }, status: 'committed' },
+        { ip: 6, invocationCount: 0, effect: 'wait_for', recordedValue: { tag: 'str', v: 'approval' }, status: 'pending' },
       ],
     },
   };
@@ -50,17 +48,17 @@ test('B4: snapshot with effects[] survives serialize/deserialize roundtrip', () 
 test('H5: hash mismatch with --force preserves effects log on deserialize', () => {
   const source = 'let x = 1;';
   const snap: Snapshot = {
-    version: 2,
+    version: 3,
     programPath: 'x.pen',
     programHash: 'sha256:' + sha256(source),
-    pausedAt: 'n5',
+    pausedAtIP: 5,
     pausedAtMs: 0,
     state: {
-      control: [], valueStack: [],
-      scopes: { s0: { parentId: null, bindings: {} } },
-      currentScopeId: 's0', nextScopeIdCounter: 1,
+      ip: 5,
+      valueStack: [],
+      frames: [{ bindings: {} }],
       effects: [
-        { nodeId: 'n1', invocationCount: 0, effect: 'print', recordedValue: null, status: 'committed' },
+        { ip: 1, invocationCount: 0, effect: 'print', recordedValue: null, status: 'committed' },
       ],
     },
   };
@@ -72,7 +70,7 @@ test('H5: hash mismatch with --force preserves effects log on deserialize', () =
 
 import { tokenize } from '../src/lexer.js';
 import { parse } from '../src/parser.js';
-import { runToCompletion } from '../src/interpreter.js';
+import { runToCompletion } from '../src/legacy-interpreter.js';
 
 test('reserved builtin name cannot be shadowed via let', () => {
   const ast = parse(tokenize('let net_fetch = 0;'));
@@ -88,7 +86,7 @@ test('reserved pure builtin name cannot be shadowed via let', () => {
   if (r.kind === 'error') expect(r.message).toMatch(/reserved/);
 });
 
-import { initialState, step } from '../src/interpreter.js';
+import { initialState, step } from '../src/legacy-interpreter.js';
 
 test('B1: print appends one effect entry', () => {
   const ast = parse(tokenize('print(1);'));

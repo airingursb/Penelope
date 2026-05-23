@@ -16,5 +16,6 @@
     "declaration": false,
     "sourceMap": true
   },
-  "include": ["src/**/*"]
+  "include": ["src/**/*"],
+  "exclude": ["node_modules", "dist", "src/legacy-interpreter.ts"]
 }

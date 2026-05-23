@@ -1,0 +1,12 @@
+// Recursive fibonacci — Phase 3 benchmark target.
+// fib(20) = 6765.
+
+let fib = fn(n) {
+  if (n < 2) {
+    n
+  } else {
+    fib(n - 1) + fib(n - 2)
+  }
+};
+
+print(to_str(fib(20)));

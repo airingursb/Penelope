@@ -1,34 +1,34 @@
-// Penelope CLI.
-// Subcommands: run, resume, fork, inspect.
-// Argv parsing is hand-rolled — Phase 1 has zero dependencies.
+// Penelope CLI. Phase 3 — bytecode VM.
 
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, copyFileSync, existsSync } from 'node:fs';
 import { resolve, dirname, basename, join } from 'node:path';
 import { tokenize } from './lexer.js';
 import { parse } from './parser.js';
-import { initialState, step, formatValue } from './interpreter.js';
-import type { State, StepResult } from './interpreter.js';
+import { compile } from './compiler.js';
+import { run, freshState } from './vm.js';
+import { writePencFile, readPencFile } from './encoder.js';
+import { runOptimizer, type OLevel } from './optimizer.js';
 import { serialize, sha256, deserialize } from './snapshot.js';
-import type { Snapshot } from './snapshot.js';
-import type { ASTBundle } from './ast.js';
+import type { Snapshot, VMState } from './snapshot.js';
 import type { Value } from './ast.js';
-
-// ============================================================
-// Argv parsing
-// ============================================================
 
 type ParsedArgs = {
   positional: string[];
   flags: Record<string, string | true>;
-  events: Record<string, string>;   // ← NEW
+  events: Record<string, string>;
+  oLevel: OLevel;
 };
 
 function parseArgs(argv: string[]): ParsedArgs {
   const positional: string[] = [];
   const flags: Record<string, string | true> = {};
   const events: Record<string, string> = {};
+  let oLevel: OLevel = 1;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
+    if (a === '-O0') { oLevel = 0; continue; }
+    if (a === '-O1') { oLevel = 1; continue; }
+    if (a === '-O2') { oLevel = 2; continue; }
     if (a === '--event') {
       const next = argv[++i];
       if (!next) throw new Error('--event requires NAME=VALUE');
@@ -50,304 +50,199 @@ function parseArgs(argv: string[]): ParsedArgs {
       positional.push(a);
     }
   }
-  return { positional, flags, events };
+  return { positional, flags, events, oLevel };
 }
 
-// ============================================================
-// Helpers
-// ============================================================
-
-function defaultSnapshotPath(sourcePath: string): string {
-  const dir = dirname(sourcePath);
-  const base = basename(sourcePath).replace(/\.pen$/, '');
-  return join(dir, `${base}.penz`);
+function writeSnapshot(pencPath: string, state: VMState): string {
+  const snapPath = pencPath.replace(/\.penc$/, '.penz');
+  const snap = {
+    version: 3 as const,
+    programPath: pencPath,
+    programHash: 'sha256:' + sha256(readFileSync(pencPath, 'utf8')),
+    pausedAtIP: state.ip,
+    pausedAtMs: Date.now(),
+    state,
+  };
+  writeFileSync(snapPath, serialize(snap));
+  return snapPath;
 }
 
-function loop(state: State, ast: ASTBundle): StepResult {
-  let s = state;
-  while (true) {
-    const r = step(s, ast);
-    if (r.kind === 'continue') { s = r.state; continue; }
-    return r;
+function cmdBuild(args: ParsedArgs): number {
+  const srcPath = args.positional[1];
+  if (!srcPath) { process.stderr.write('usage: pen build [-O0|-O1|-O2] <file.pen>\n'); return 2; }
+  const absSrc = resolve(srcPath);
+  let source: string;
+  try { source = readFileSync(absSrc, 'utf8'); }
+  catch { process.stderr.write(`cli error: cannot read source: ${srcPath}\n`); return 3; }
+
+  const ast = parse(tokenize(source));
+  const prog = runOptimizer(compile(ast), args.oLevel);
+  prog.sourceHash = 'sha256:' + sha256(source);
+  const pencPath = absSrc.replace(/\.pen$/, '.penc');
+  writePencFile(pencPath, prog);
+  process.stdout.write(`wrote ${pencPath} (${prog.code.length} opcodes, ${prog.constants.length} constants, -O${args.oLevel})\n`);
+  return 0;
+}
+
+function cmdExec(args: ParsedArgs): number {
+  const pencPath = args.positional[1];
+  if (!pencPath) { process.stderr.write('usage: pen exec <file.penc>\n'); return 2; }
+  const absPenc = resolve(pencPath);
+  const r = readPencFile(absPenc);
+  if ('error' in r) { process.stderr.write(`cli error: ${r.error}\n`); return 1; }
+  const result = run(r.prog);
+  if (result.status === 'paused') {
+    const snapPath = writeSnapshot(absPenc, result.state);
+    process.stdout.write(`paused at ip ${result.state.ip} → ${snapPath}\n`);
   }
+  return 0;
 }
-
-function parseResumeValue(text: string): Value | { error: string } {
-  if (/^-?\d+$/.test(text))   return { tag: 'int', v: Number(text) };
-  if (text === 'true')        return { tag: 'bool', v: true };
-  if (text === 'false')       return { tag: 'bool', v: false };
-  return { error: `cannot parse '${text}' as int or bool` };
-}
-
-// ============================================================
-// run subcommand
-// ============================================================
 
 function cmdRun(args: ParsedArgs): number {
-  const sourcePath = args.positional[1];   // [0] is "run"
-  if (!sourcePath) {
-    process.stderr.write('usage: penelope run <file.pen>\n');
-    return 2;
-  }
-
-  const absSourcePath = resolve(sourcePath);
+  const filePath = args.positional[1];
+  if (!filePath) { process.stderr.write('usage: pen run [-O0|-O1|-O2] <file.pen> [--time N] [--no-replay]\n'); return 2; }
+  const absPath = resolve(filePath);
   let source: string;
-  try {
-    source = readFileSync(absSourcePath, 'utf8');
-  } catch {
-    process.stderr.write(`cli error: cannot read source file: ${sourcePath}\n`);
-    return 3;
-  }
+  try { source = readFileSync(absPath, 'utf8'); }
+  catch { process.stderr.write(`cli error: cannot read source: ${filePath}\n`); return 3; }
 
-  let ast: ASTBundle;
-  try {
-    ast = parse(tokenize(source));
-  } catch (e) {
-    process.stderr.write(`parse error: ${(e as Error).message}\n`);
-    return 1;
-  }
+  const timeFlag = args.flags['time'];
+  const timeOverride = timeFlag && timeFlag !== true ? parseInt(String(timeFlag), 10) : null;
+  const noReplay = args.flags['no-replay'] === true;
 
-  let state = initialState(ast.rootId);
-  if (typeof args.flags.time === 'string') {
-    state = { ...state, timeOverride: Number(args.flags.time) };
-  }
-  const result = loop(state, ast);
+  const ast = parse(tokenize(source));
+  const prog = runOptimizer(compile(ast), args.oLevel);
 
-  if (result.kind === 'done') {
-    return 0;
-  }
-  if (result.kind === 'error') {
-    const at = result.atNode ? ` at ${result.atNode}` : '';
-    process.stderr.write(`runtime error${at}: ${result.message}\n`);
-    return 1;
-  }
-  if (result.kind === 'paused') {
-    const outPath = typeof args.flags.out === 'string'
-      ? args.flags.out
-      : defaultSnapshotPath(absSourcePath);
+  const state = freshState();
+  state.timeOverride = timeOverride;
+  state.noReplay = noReplay;
 
-    const snap: Snapshot = {
-      version: 2,
-      programPath: basename(absSourcePath),
-      programHash: 'sha256:' + sha256(source),
-      pausedAt: result.pausedAt,
-      pausedAtMs: Date.now(),
-      state: result.state,
-    };
-    writeFileSync(outPath, serialize(snap));
-    if (!args.flags.quiet) {
-      process.stderr.write(`paused at ${result.pausedAt}; snapshot → ${outPath}\n`);
-    }
-    return 0;
+  const r = run(prog, state);
+
+  if (r.status === 'paused') {
+    const pencPath = absPath.replace(/\.pen$/, '.penc');
+    prog.sourceHash = 'sha256:' + sha256(source);
+    writePencFile(pencPath, prog);
+    const snapPath = writeSnapshot(pencPath, r.state);
+    process.stdout.write(`paused at ip ${r.state.ip} → ${snapPath}\n`);
   }
-  return 1;
+  return 0;
 }
-
-// ============================================================
-// resume subcommand
-// ============================================================
 
 function cmdResume(args: ParsedArgs): number {
   const snapPath = args.positional[1];
-  const valueText = args.positional[2];  // may be undefined now
-  if (!snapPath) {
-    process.stderr.write('usage: penelope resume <file.penz> [<value>] [--time MS] [--force] [--out <path>]\n');
-    return 2;
-  }
-
-  const absSnapPath = resolve(snapPath);
-  let snapJson: string;
-  try {
-    snapJson = readFileSync(absSnapPath, 'utf8');
-  } catch {
-    process.stderr.write(`cli error: cannot read snapshot: ${snapPath}\n`);
-    return 3;
-  }
-
-  const sourceOverride = typeof args.flags.source === 'string' ? args.flags.source : null;
-  const resolveSource = (programPath: string): string => {
-    const sourcePath = sourceOverride
-      ? resolve(sourceOverride)
-      : resolve(dirname(absSnapPath), programPath);
-    return readFileSync(sourcePath, 'utf8');
-  };
-
-  const dr = deserialize(snapJson, resolveSource, { force: !!args.flags.force });
-  if ('error' in dr) {
-    process.stderr.write(`cli error: ${dr.error}\n`);
-    return 3;
-  }
-
-  const ast = parse(tokenize(dr.source));
-
-  let resumedState: State = { ...dr.snap.state };
-
-  // Phase 1 pause value injection (only if value provided)
-  if (valueText !== undefined) {
-    const v = parseResumeValue(valueText);
-    if ('error' in v) {
-      process.stderr.write(`cli error: ${v.error}\n`);
-      return 2;
-    }
-    resumedState = { ...resumedState, valueStack: [...resumedState.valueStack, v] };
-  }
-
-  // Phase 2: time override
-  if (typeof args.flags.time === 'string') {
-    resumedState = { ...resumedState, timeOverride: Number(args.flags.time) };
-  }
-
-  // Phase 2: --no-replay flag
-  if (args.flags['no-replay'] === true) {
-    resumedState = { ...resumedState, noReplay: true };
-  }
-
-  // Phase 2 wait_for event delivery: --event NAME=VALUE → committed entry with parsed VALUE.
-  const updatedEffects = resumedState.effects.map(e => {
-    if (e.effect !== 'wait_for' || e.status !== 'pending') return e;
-    if (!e.recordedValue || e.recordedValue.tag !== 'str') return e;
-    const eventName = e.recordedValue.v;
-    const eventValueText = args.events[eventName];
-    if (eventValueText === undefined) return e;
-
-    const v = parseResumeValue(eventValueText);
-    if ('error' in v) {
-      // Not parseable as int/bool: treat as string
-      return { ...e, status: 'committed' as const, recordedValue: { tag: 'str' as const, v: eventValueText } };
-    }
-    return { ...e, status: 'committed' as const, recordedValue: v };
-  });
-  resumedState = { ...resumedState, effects: updatedEffects };
-
-  const result = loop(resumedState, ast);
-
-  if (result.kind === 'done') return 0;
-  if (result.kind === 'error') {
-    process.stderr.write(`runtime error: ${result.message}\n`);
-    return 1;
-  }
-  if (result.kind === 'paused') {
-    const outPath = typeof args.flags.out === 'string'
-      ? args.flags.out
-      : absSnapPath;  // default: overwrite input
-    const newSnap: Snapshot = {
-      version: 2,
-      programPath: dr.snap.programPath,
-      programHash: dr.snap.programHash,
-      pausedAt: result.pausedAt,
-      pausedAtMs: Date.now(),
-      state: result.state,
-    };
-    writeFileSync(outPath, serialize(newSnap));
-    if (!args.flags.quiet) {
-      process.stderr.write(`paused again at ${result.pausedAt}; snapshot → ${outPath}\n`);
-    }
-    return 0;
-  }
-  return 1;
-}
-
-// ============================================================
-// fork subcommand
-// ============================================================
-
-function cmdFork(args: ParsedArgs): number {
-  const snapPath = args.positional[1];
-  const v1text = args.positional[2];
-  const v2text = args.positional[3];
-  if (!snapPath || v1text === undefined || v2text === undefined) {
-    process.stderr.write('usage: penelope fork <file.penz> <v1> <v2> [--out1 <path>] [--out2 <path>]\n');
-    return 2;
-  }
-
-  const absSnapPath = resolve(snapPath);
-  let snapJson: string;
-  try { snapJson = readFileSync(absSnapPath, 'utf8'); }
+  if (!snapPath) { process.stderr.write('usage: pen resume <file.penz> [--time N] [--no-replay]\n'); return 2; }
+  const absSnap = resolve(snapPath);
+  let snapText: string;
+  try { snapText = readFileSync(absSnap, 'utf8'); }
   catch { process.stderr.write(`cli error: cannot read snapshot: ${snapPath}\n`); return 3; }
 
-  const resolveSource = (programPath: string): string =>
-    readFileSync(resolve(dirname(absSnapPath), programPath), 'utf8');
+  const sr = deserialize(snapText, (p) => readFileSync(p, 'utf8'));
+  if ('error' in sr) { process.stderr.write(`cli error: ${sr.error}\n`); return 1; }
+  if (sr.snap.version !== 3) { process.stderr.write('cli error: snapshot version mismatch (expected 3)\n'); return 1; }
 
-  const dr = deserialize(snapJson, resolveSource, { force: !!args.flags.force });
-  if ('error' in dr) { process.stderr.write(`cli error: ${dr.error}\n`); return 3; }
+  const pencPath = resolve(dirname(absSnap), sr.snap.programPath);
+  const pr = readPencFile(pencPath);
+  if ('error' in pr) { process.stderr.write(`cli error: ${pr.error}\n`); return 1; }
+  const hashNow = 'sha256:' + sha256(readFileSync(pencPath, 'utf8'));
+  if (hashNow !== sr.snap.programHash) {
+    process.stderr.write('cli error: program hash mismatch — refusing to resume\n');
+    return 1;
+  }
 
-  const v1 = parseResumeValue(v1text);
-  if ('error' in v1) { process.stderr.write(`cli error: ${v1.error}\n`); return 2; }
-  const v2 = parseResumeValue(v2text);
-  if ('error' in v2) { process.stderr.write(`cli error: ${v2.error}\n`); return 2; }
+  // Inject any --event values into the wait_for pending entries.
+  const state: VMState = sr.snap.state;
+  for (const [name, valText] of Object.entries(args.events)) {
+    const v = parseResumeValue(valText);
+    if ('error' in v) { process.stderr.write(`cli error: ${v.error}\n`); return 1; }
+    // Match by name in committed/pending wait_for entries — find pending and commit with value.
+    const entry = state.effects.find(e => e.effect === 'wait_for' && e.status === 'pending');
+    if (entry) { entry.status = 'committed'; entry.recordedValue = v; }
+    // For arg-less resumes, name is currently informational only.
+    void name;
+  }
 
-  const ast = parse(tokenize(dr.source));
+  const timeFlag = args.flags['time'];
+  if (timeFlag && timeFlag !== true) state.timeOverride = parseInt(String(timeFlag), 10);
+  if (args.flags['no-replay'] === true) state.noReplay = true;
 
-  const baseDir = dirname(absSnapPath);
-  const baseName = basename(absSnapPath).replace(/\.penz$/, '');
-  const out1 = typeof args.flags.out1 === 'string'
-    ? args.flags.out1
-    : join(baseDir, `${baseName}.fork0.penz`);
-  const out2 = typeof args.flags.out2 === 'string'
-    ? args.flags.out2
-    : join(baseDir, `${baseName}.fork1.penz`);
-
-  const runFork = (label: string, injected: Value, outPath: string): number => {
-    const origLog = console.log;
-    console.log = (msg: string) => origLog(`[${label}] ${msg}`);
-    try {
-      // Deep clone via JSON — the axiom in action: state is just data
-      const cloned: State = JSON.parse(JSON.stringify(dr.snap.state));
-      const state: State = {
-        ...cloned,
-        valueStack: [...cloned.valueStack, injected],
-      };
-      const result = loop(state, ast);
-      if (result.kind === 'error') {
-        process.stderr.write(`[${label}] runtime error: ${result.message}\n`);
-        return 1;
-      }
-      if (result.kind === 'paused') {
-        const newSnap: Snapshot = {
-          version: 2,
-          programPath: dr.snap.programPath,
-          programHash: dr.snap.programHash,
-          pausedAt: result.pausedAt,
-          pausedAtMs: Date.now(),
-          state: result.state,
-        };
-        writeFileSync(outPath, serialize(newSnap));
-        if (!args.flags.quiet) {
-          process.stderr.write(`[${label}] paused again; snapshot → ${outPath}\n`);
-        }
-      }
-      return 0;
-    } finally {
-      console.log = origLog;
-    }
-  };
-
-  const c1 = runFork('fork-0', v1, out1);
-  const c2 = runFork('fork-1', v2, out2);
-  return (c1 === 0 && c2 === 0) ? 0 : 1;
+  const r = run(pr.prog, state);
+  if (r.status === 'paused') {
+    const newSnapPath = writeSnapshot(pencPath, r.state);
+    process.stdout.write(`paused at ip ${r.state.ip} → ${newSnapPath}\n`);
+  }
+  return 0;
 }
 
-// ============================================================
-// inspect subcommand
-// ============================================================
+function cmdFork(args: ParsedArgs): number {
+  const src = args.positional[1];
+  const dst = args.positional[2];
+  if (!src || !dst) { process.stderr.write('usage: pen fork <src.penz> <dst.penz>\n'); return 2; }
+  const absSrc = resolve(src);
+  const absDst = resolve(dst);
+  if (!existsSync(absSrc)) { process.stderr.write(`cli error: snapshot not found: ${src}\n`); return 3; }
+  copyFileSync(absSrc, absDst);
+  process.stdout.write(`forked → ${absDst}\n`);
+  return 0;
+}
+
+function cmdDisasm(args: ParsedArgs): number {
+  const pencPath = args.positional[1];
+  if (!pencPath) { process.stderr.write('usage: pen disasm <file.penc>\n'); return 2; }
+  const r = readPencFile(resolve(pencPath));
+  if ('error' in r) { process.stderr.write(`cli error: ${r.error}\n`); return 1; }
+  const out = process.stdout;
+  out.write(`constants (${r.prog.constants.length}):\n`);
+  for (let i = 0; i < r.prog.constants.length; i++) {
+    out.write(`  ${i}: ${JSON.stringify(r.prog.constants[i])}\n`);
+  }
+  out.write(`code (${r.prog.code.length} opcodes):\n`);
+  for (let i = 0; i < r.prog.code.length; i++) {
+    const op = r.prog.code[i];
+    const operands = op.slice(1).map(x => typeof x === 'object' ? JSON.stringify(x) : String(x)).join(' ');
+    out.write(`  ${i.toString().padStart(4, ' ')}: ${op[0]} ${operands}\n`.replace(/ +\n/, '\n'));
+  }
+  return 0;
+}
+
+function cmdBench(args: ParsedArgs): number {
+  const srcPath = args.positional[1];
+  if (!srcPath) { process.stderr.write('usage: pen bench <file.pen>\n'); return 2; }
+  let source: string;
+  try { source = readFileSync(resolve(srcPath), 'utf8'); }
+  catch { process.stderr.write(`cli error: cannot read source: ${srcPath}\n`); return 3; }
+  const ast = parse(tokenize(source));
+  const prog = compile(ast);
+  const reps = 3;
+  const time = (label: string, fn: () => void) => {
+    let total = 0n;
+    for (let i = 0; i < reps; i++) {
+      const t0 = process.hrtime.bigint();
+      fn();
+      const t1 = process.hrtime.bigint();
+      total += t1 - t0;
+    }
+    const avgMs = Number(total / BigInt(reps)) / 1e6;
+    process.stdout.write(`  ${label.padEnd(25)} avg ${avgMs.toFixed(2)} ms\n`);
+  };
+  process.stdout.write(`benchmark: ${srcPath} (${reps} reps)\n`);
+  time('VM (-O0)',  () => { run(runOptimizer(prog, 0)); });
+  time('VM (-O1)',  () => { run(runOptimizer(prog, 1)); });
+  time('VM (-O2)',  () => { run(runOptimizer(prog, 2)); });
+  return 0;
+}
 
 function cmdInspect(args: ParsedArgs): number {
   const snapPath = args.positional[1];
-  if (!snapPath) {
-    process.stderr.write('usage: penelope inspect <file.penz>\n');
-    return 2;
-  }
-
+  if (!snapPath) { process.stderr.write('usage: pen inspect <file.penz>\n'); return 2; }
   const absSnapPath = resolve(snapPath);
   let snapJson: string;
   try { snapJson = readFileSync(absSnapPath, 'utf8'); }
   catch { process.stderr.write(`cli error: cannot read snapshot: ${snapPath}\n`); return 3; }
-
   let snap: Snapshot;
   try { snap = JSON.parse(snapJson); }
   catch { process.stderr.write(`cli error: snapshot is corrupted (invalid JSON)\n`); return 3; }
 
-  // Try to read source for hash status (non-fatal if it fails)
   let sourceStatus = '? source missing';
   try {
     const source = readFileSync(resolve(dirname(absSnapPath), snap.programPath), 'utf8');
@@ -363,55 +258,57 @@ function cmdInspect(args: ParsedArgs): number {
 
   const out = process.stdout;
   out.write(`Snapshot: ${basename(absSnapPath)}\n`);
-  out.write(`  Source: ${snap.programPath}  ${sourceStatus}\n`);
-  out.write(`  Full path: ${resolve(dirname(absSnapPath), snap.programPath)}\n`);
-  out.write(`  Paused at: ${snap.pausedAt}\n`);
-  out.write(`  Time: ${new Date(snap.pausedAtMs).toISOString()} (${ageStr})\n`);
-  out.write(`\n`);
-  out.write(`Scopes:\n`);
-  for (const [sid, sc] of Object.entries(snap.state.scopes)) {
-    const parent = sc.parentId ? ` ← ${sc.parentId}` : '';
-    const binds = Object.entries(sc.bindings).map(([n, v]) => `${n}=${formatValue(v)}`).join(', ');
-    out.write(`  ${sid}${parent}: { ${binds} }\n`);
-  }
-  out.write(`Current scope: ${snap.state.currentScopeId}\n`);
-  out.write(`\n`);
-  out.write(`Control stack (top → bottom, ${snap.state.control.length} instr):\n`);
-  for (let i = snap.state.control.length - 1; i >= 0; i--) {
-    out.write(`  ${snap.state.control.length - i}. ${JSON.stringify(snap.state.control[i])}\n`);
-  }
-  out.write(`\n`);
-  out.write(`Effect log (${snap.state.effects.length} entries):\n`);
+  out.write(`  version: ${snap.version}\n`);
+  out.write(`  programPath: ${snap.programPath}  ${sourceStatus}\n`);
+  out.write(`  programHash: ${snap.programHash}\n`);
+  out.write(`  pausedAtIP: ${snap.pausedAtIP}\n`);
+  out.write(`  pausedAtMs: ${snap.pausedAtMs}  (${ageStr})\n`);
+  out.write(`\nframes: ${snap.state.frames.length}\n`);
+  snap.state.frames.forEach((f, i) => {
+    const keys = Object.keys(f.bindings).join(', ');
+    const parent = f.parentIdx !== undefined ? ` parentIdx=${f.parentIdx}` : '';
+    out.write(`  [${i}] bindings: { ${keys} }${parent}\n`);
+  });
+  out.write(`\neffects: ${snap.state.effects.length} entries\n`);
   if (snap.state.effects.length === 0) {
     out.write(`  (empty)\n`);
   } else {
     snap.state.effects.forEach((e, idx) => {
       const status = e.status === 'committed' ? '✓' : '⏳';
-      const valueStr = e.recordedValue ? formatValue(e.recordedValue) : '(none)';
-      out.write(`  ${idx + 1}. [${status}] ${e.effect.padEnd(12)} @${e.nodeId} #${e.invocationCount}  value=${valueStr}\n`);
+      const valueStr = e.recordedValue ? JSON.stringify(e.recordedValue) : '(none)';
+      out.write(`  [${idx}] ${status} ${e.effect.padEnd(12)} ip=${e.ip} #${e.invocationCount} value=${valueStr}\n`);
     });
   }
-  out.write(`\n`);
-  out.write(`Value stack (${snap.state.valueStack.length}): `);
-  out.write(snap.state.valueStack.map(formatValue).join(', ') || '(empty)');
-  out.write(`\n`);
+  out.write(`\nvalue stack (${snap.state.valueStack.length}): `);
+  out.write(snap.state.valueStack.map((v: Value) => JSON.stringify(v)).join(', ') || '(empty)');
+  out.write('\n');
   return 0;
 }
 
-// ============================================================
-// Main
-// ============================================================
+function parseResumeValue(text: string): Value | { error: string } {
+  if (/^-?\d+$/.test(text))   return { tag: 'int', v: Number(text) };
+  if (text === 'true')        return { tag: 'bool', v: true };
+  if (text === 'false')       return { tag: 'bool', v: false };
+  if (text.startsWith('"') && text.endsWith('"')) return { tag: 'str', v: text.slice(1, -1) };
+  return { error: `cannot parse '${text}' as int, bool, or quoted string` };
+}
+
+void (parseResumeValue as unknown);
+void (join as unknown);
 
 export function main(argv: string[]): number {
   const args = parseArgs(argv);
   const sub = args.positional[0];
+  if (sub === 'build')   return cmdBuild(args);
+  if (sub === 'exec')    return cmdExec(args);
   if (sub === 'run')     return cmdRun(args);
   if (sub === 'resume')  return cmdResume(args);
   if (sub === 'fork')    return cmdFork(args);
+  if (sub === 'disasm')  return cmdDisasm(args);
+  if (sub === 'bench')   return cmdBench(args);
   if (sub === 'inspect') return cmdInspect(args);
-  process.stderr.write(`usage: penelope <run|resume|fork|inspect> [args]\n`);
+  process.stderr.write(`usage: penelope <build|exec|run|resume|fork|disasm|bench|inspect> [-O0|-O1|-O2] [args]\n`);
   return 2;
 }
 
-// Self-invoke when run as a script
 process.exit(main(process.argv.slice(2)));

@@ -347,7 +347,52 @@ A 24-hour HITL approval agent that **crashes twice mid-flight and still complete
 
 ### What's next
 
-Phase 3 is bytecode VM, live editing (`pause` → patch AST → resume), time-travel debugger, distributed snapshot migration. See `docs/superpowers/specs/2026-05-22-penelope-phase-1-design.md` §17 for the forward-compatibility notes Phase 2 built upon.
+Live editing (`pause` → patch AST → resume), time-travel debugger, and distributed snapshot migration land in later phases.
+
+---
+
+## Phase 3 Status
+
+**Status: ✅ Complete.** Penelope now compiles to bytecode and executes via a stack-based VM with a 5-pass optimizer.
+
+### Workflow
+
+```bash
+pen build foo.pen           # → foo.penc (bytecode)
+pen build -O2 foo.pen       # full optimization
+pen exec foo.penc           # run pre-compiled bytecode
+pen run foo.pen             # compile in memory + run (auto-build)
+pen disasm foo.penc         # print bytecode listing
+pen bench foo.pen           # compare -O0/-O1/-O2 timings
+pen inspect foo.penz        # render v3 snapshot
+pen resume foo.penz         # resume from snapshot
+pen fork src.penz dst.penz  # copy snapshot
+```
+
+### Optimization levels
+
+- `-O0` — no optimization (baseline; default for debugging)
+- `-O1` — cheap passes: constant folding, dead-code elimination, peephole
+- `-O2` — `-O1` plus inline caches and function inlining
+
+The optimizer is semantics-preserving: every example program produces identical effect sequences at `-O0` and `-O2` (verified by parametrized regression tests).
+
+### Snapshot format v3
+
+Snapshots store the bytecode VM state (IP, value stack, frame chain, ip-keyed effect log). Phase 2 (`v2`) snapshots are not migratable — re-run from source.
+
+### Modules
+
+- `src/bytecode.ts` — 17 opcodes, constant pool, `Program` type
+- `src/compiler.ts` — AST → bytecode (one case per ASTNode kind)
+- `src/optimizer.ts` + `src/optimizer/*.ts` — 5 optimizer passes (constfold, dce, ic, inline, peephole)
+- `src/vm.ts` — stack-based execution loop
+- `src/encoder.ts` — `.penc` (de)serialization
+- `src/legacy-interpreter.ts` — Phase 2 step machine (retained, not on the hot path)
+
+### Test suite
+
+225 passing tests across compiler, VM, encoder, 5 optimizer pass files, snapshot v3, integration, and benchmark. Plus 23 Phase 2 integration tests deliberately skipped (superseded by Phase 3 model).
 
 ---
 

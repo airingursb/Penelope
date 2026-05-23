@@ -1,7 +1,7 @@
 // Penelope effects module.
 // Owns real-world IO (HTTP, FS, console, time, RNG) and the effect-name catalog.
-// `interpreter.ts` delegates here on first execution of an effect call.
-// On replay, `interpreter.ts` reads from the effect log and does NOT call this module.
+// `legacy-interpreter.ts` delegates here on first execution of an effect call.
+// On replay, `legacy-interpreter.ts` reads from the effect log and does NOT call this module.
 
 import { writeFileSync, readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';

@@ -2,16 +2,38 @@
 // Self-contained except for the source file, which is referenced by path+hash.
 
 import { createHash } from 'node:crypto';
-import type { NodeId } from './ast.js';
-import type { State } from './interpreter.js';
+import type { Value } from './ast.js';
+
+export type Frame = {
+  bindings: Record<string, Value>;
+  returnIP?: number;
+  parentIdx?: number;
+};
+
+export type VMState = {
+  ip: number;
+  valueStack: Value[];
+  frames: Frame[];
+  effects: EffectEntry[];
+  timeOverride?: number | null;
+  noReplay?: boolean;
+};
+
+export type EffectEntry = {
+  ip: number;
+  invocationCount: number;
+  effect: 'print' | 'net_fetch' | 'now' | 'random_int' | 'read_file' | 'write_file' | 'wait_until' | 'wait_for';
+  recordedValue: Value | null;
+  status: 'pending' | 'committed';
+};
 
 export type Snapshot = {
-  version: 2;
+  version: 3;
   programPath: string;
   programHash: string;        // "sha256:<hex>"
-  pausedAt: NodeId;
+  pausedAtIP: number;
   pausedAtMs: number;
-  state: State;
+  state: VMState;
 };
 
 export function sha256(input: string): string {
@@ -42,8 +64,10 @@ export function deserialize(
     return { error: 'snapshot is corrupted (invalid JSON)' };
   }
 
-  if ((snap.version as number) !== 2) {
-    return { error: `unknown snapshot version: ${snap.version}. Phase 2 uses version 2 (Phase 1 snapshots are not migratable; re-run from source).` };
+  if ((snap.version as number) !== 3) {
+    return {
+      error: `unknown snapshot version: ${snap.version}. Phase 3 uses version 3 (v1/v2 snapshots are not migratable; re-run from source).`,
+    };
   }
 
   let source: string;
