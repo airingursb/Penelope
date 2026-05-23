@@ -1,6 +1,6 @@
 // Penelope CLI. Phase 3 — bytecode VM.
 
-import { readFileSync, writeFileSync, copyFileSync, existsSync, unlinkSync } from 'node:fs';
+import { readFileSync, writeFileSync, copyFileSync, existsSync, mkdirSync, rmSync } from 'node:fs';
 import { resolve, dirname, basename, join } from 'node:path';
 import { tokenize, tokenizeWithComments } from './lexer.js';
 import { parse } from './parser.js';
@@ -337,68 +337,137 @@ function cmdGraph(args: ParsedArgs): number {
 }
 
 function cmdSelfTest(_args: ParsedArgs): number {
-  // Runs the same source through both the TS compiler and the Penelope-implemented
-  // compiler (std/parser.pen + std/compiler.pen) and verifies the bytecode matches.
-  // This is the bootstrap-correctness check: pen-compiled === ts-compiled.
-  const samples = [
-    'let x = 42;',
-    'let f = fn(n) { n + 1 }; print(to_str(f(41)));',
-    'let r = if (1 < 2) { "yes" } else { "no" };',
-    'let r = match 1 { 1 => "one", _ => "other" };',
-    'print("hello, self-hosted Penelope");',
-  ];
+  // Three-stage self-hosting verification:
+  //
+  //   Stage 1 — Round-trip: ts_compile(source) ≡ pen_compile(source) on a
+  //             battery of samples plus every std/*.pen file. Proves the pen
+  //             frontend emits the same bytecode as the TS frontend.
+  //
+  //   Stage 2 — Self-bootstrap: the pen frontend (parser.pen + compiler.pen),
+  //             when compiled by ts AND when compiled by pen, produces byte-
+  //             identical bytecode. (Implied by stage 1 on std/*.pen.)
+  //
+  //   Stage 3 — Acid test (fixpoint): compile the pen frontend with the pen
+  //             frontend; run THAT bytecode; have it compile a source; verify
+  //             the output matches what TS produces directly. Proves pen-built
+  //             bytecode is not just byte-identical but actually runnable.
   const parserPath = resolve('std/parser.pen');
   const compilerPath = resolve('std/compiler.pen');
   if (!existsSync(parserPath) || !existsSync(compilerPath)) {
     process.stderr.write(`self-test: std/parser.pen or std/compiler.pen not found (cwd=${process.cwd()})\n`);
     return 2;
   }
+
   const normOp = (op: any[]): any[] => {
     if (op[0] === 'LOAD_VAR') return [op[0], op[1], op[2] ?? null];
     if (op[0] === 'EFFECT') return [op[0], op[1], op[2], op[3] ?? null];
     return op;
   };
-  let passed = 0;
-  let failed = 0;
-  const tmpDriver = join(process.cwd(), `.pen-self-test-driver.pen`);
+  const sameBytecode = (a: any, b: any): boolean =>
+    JSON.stringify({ c: a.constants, k: a.code.map(normOp) }) ===
+    JSON.stringify({ c: b.constants, k: b.code.map(normOp) });
+
+  const samples = [
+    'let x = 42;',
+    'let f = fn(n) { n + 1 }; print(to_str(f(41)));',
+    'let r = if (1 < 2) { "yes" } else { "no" };',
+    'let r = match 1 { 1 | 2 => "small", n if n > 100 => "big", _ => "mid" };',
+    'let n = 7; print("sum 1..${n} = ${n * (n + 1) / 2}");',
+  ];
+  const stdFiles = ['std/iter.pen', 'std/lexer.pen', 'std/parser.pen', 'std/compiler.pen'];
+
+  const tmpDir = join(process.cwd(), `.pen-self-test-${process.pid}`);
+  mkdirSync(tmpDir, { recursive: true });
+  const runDriver = (driverSrc: string): string => {
+    const driverPath = join(tmpDir, 'driver.pen');
+    writeFileSync(driverPath, driverSrc);
+    const expanded = loadSource(driverPath);
+    const lines: string[] = [];
+    const origLog = console.log;
+    console.log = (...args: any[]) => { lines.push(args.join(' ')); };
+    try {
+      run(compile(parse(tokenize(expanded))));
+    } finally {
+      console.log = origLog;
+    }
+    return lines[lines.length - 1] ?? '';
+  };
+  const penCompile = (source: string): any => {
+    const inputPath = join(tmpDir, 'input.pen.txt');
+    writeFileSync(inputPath, source);
+    const driver =
+      `import "${parserPath}";\nimport "${compilerPath}";\n` +
+      `let src = read_file(${JSON.stringify(inputPath)});\n` +
+      `print(to_str(pen_compile(pen_parse(pen_tokenize(src)))));\n`;
+    return JSON.parse(runDriver(driver) || '{}');
+  };
+
+  let pass = 0, fail = 0;
+  const fail1 = (label: string): void => { fail++; process.stderr.write(`  ✗ ${label}\n`); };
+  const ok1 = (label: string): void => { pass++; process.stdout.write(`  ✓ ${label}\n`); };
+
   try {
-    for (const source of samples) {
-      const ts = compile(parse(tokenize(source)));
-      const driverSrc =
-        `import "${parserPath}";\nimport "${compilerPath}";\n` +
-        `let toks = pen_tokenize(${JSON.stringify(source)});\n` +
-        `let ast = pen_parse(toks);\n` +
-        `let prog = pen_compile(ast);\n` +
-        `print(to_str(prog));\n`;
-      writeFileSync(tmpDriver, driverSrc);
-      const lines: string[] = [];
-      const origLog = console.log;
-      console.log = (...args: any[]) => { lines.push(args.join(' ')); };
+    process.stdout.write(`\nStage 1: round-trip on inline samples\n`);
+    for (const s of samples) {
+      const ts = compile(parse(tokenize(s)));
       try {
-        const expanded = loadSource(tmpDriver);
-        run(compile(parse(tokenize(expanded))));
-      } finally {
-        console.log = origLog;
-      }
-      let ok = false;
+        const pen = penCompile(s);
+        sameBytecode(ts, pen) ? ok1(JSON.stringify(s)) : fail1(JSON.stringify(s));
+      } catch (e) { fail1(`${JSON.stringify(s)} — ${(e as Error).message}`); }
+    }
+
+    process.stdout.write(`\nStage 2: round-trip on std/*.pen (self-bootstrap)\n`);
+    for (const f of stdFiles) {
       try {
-        const pen = JSON.parse(lines[0] ?? '{}');
-        ok = JSON.stringify({ c: ts.constants, k: ts.code.map(normOp) }) ===
-             JSON.stringify({ c: pen.constants, k: pen.code.map(normOp) });
-      } catch { ok = false; }
-      if (ok) {
-        passed++;
-        process.stdout.write(`  ✓ ${JSON.stringify(source)}\n`);
-      } else {
-        failed++;
-        process.stderr.write(`  ✗ ${JSON.stringify(source)}\n`);
-      }
+        const source = loadSource(resolve(f));
+        const ts = compile(parse(tokenize(source)));
+        const pen = penCompile(source);
+        sameBytecode(ts, pen) ? ok1(f) : fail1(f);
+      } catch (e) { fail1(`${f} — ${(e as Error).message}`); }
+    }
+
+    process.stdout.write(`\nStage 3: acid test — pen-built pen-frontend compiles a program\n`);
+    for (const s of samples.slice(0, 3)) {
+      try {
+        // Build the driver, expand its imports, write expanded form.
+        const inputPath = join(tmpDir, 'acid-input.pen.txt');
+        writeFileSync(inputPath, s);
+        const driver =
+          `import "${parserPath}";\nimport "${compilerPath}";\n` +
+          `let src = read_file(${JSON.stringify(inputPath)});\n` +
+          `print(to_str(pen_compile(pen_parse(pen_tokenize(src)))));\n`;
+        const driverPath = join(tmpDir, 'acid-driver.pen');
+        writeFileSync(driverPath, driver);
+        const expanded = loadSource(driverPath);
+        const expandedPath = join(tmpDir, 'acid-driver.expanded.pen');
+        writeFileSync(expandedPath, expanded);
+        // Phase A: TS compiles the pen frontend, runs it on the driver → pen-built driver bytecode.
+        const metaDriver =
+          `import "${parserPath}";\nimport "${compilerPath}";\n` +
+          `let drv = read_file(${JSON.stringify(expandedPath)});\n` +
+          `print(to_str(pen_compile(pen_parse(pen_tokenize(drv)))));\n`;
+        const penBuiltDriverProg = JSON.parse(runDriver(metaDriver) || '{}');
+        // Phase B: run the pen-built driver bytecode.
+        const lines: string[] = [];
+        const origLog = console.log;
+        console.log = (...args: any[]) => { lines.push(args.join(' ')); };
+        try { run(penBuiltDriverProg); } finally { console.log = origLog; }
+        const penResult = JSON.parse(lines[lines.length - 1] || '{}');
+        const tsResult = compile(parse(tokenize(s)));
+        sameBytecode(tsResult, penResult) ? ok1(JSON.stringify(s)) : fail1(JSON.stringify(s));
+      } catch (e) { fail1(`${JSON.stringify(s)} — ${(e as Error).message}`); }
     }
   } finally {
-    try { unlinkSync(tmpDriver); } catch {}
+    try { rmSync(tmpDir, { recursive: true, force: true }); } catch {}
   }
-  process.stdout.write(`\n${passed}/${samples.length} bootstrap samples agree (pen-compiled ≡ ts-compiled)\n`);
-  return failed === 0 ? 0 : 1;
+
+  process.stdout.write(`\n${pass}/${pass + fail} checks passed — `);
+  if (fail === 0) {
+    process.stdout.write(`Penelope self-hosts ✓\n`);
+    return 0;
+  }
+  process.stdout.write(`self-host BROKEN\n`);
+  return 1;
 }
 
 function cmdEdit(args: ParsedArgs): number {

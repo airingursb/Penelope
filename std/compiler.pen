@@ -11,7 +11,6 @@
 ///
 /// NOT supported:
 ///   - or-patterns, guards, list/dict patterns (parser.pen doesn't emit them)
-///   - tail-call optimization (always emits CALL, never TAILCALL)
 ///   - source map (positions discarded)
 ///   - inline caches (EFFECT/LOAD_VAR get null ic slot)
 
@@ -119,15 +118,16 @@ let is_pure_builtin = fn(name) {
   }
 };
 
-/// Dispatch on AST node kind. Returns updated state.
-let compile_node = fn(node, ast, st) {
+/// Dispatch on AST node kind. `tail` = true if this node sits in tail position
+/// of an enclosing fn body — used to convert CALL into TAILCALL (frame reuse).
+let compile_node = fn(node, ast, st, tail) {
   let kind = dict_get(node, "kind");
   match kind {
     "Program" => {
       let stmts = dict_get(node, "stmtIds");
       let go = fn(i, s) {
         if (i >= list_len(stmts)) { s }
-        else { go(i + 1, compile_node(get_node(ast, list_get(stmts, i)), ast, s)) }
+        else { go(i + 1, compile_node(get_node(ast, list_get(stmts, i)), ast, s, false)) }
       };
       go(0, st)
     },
@@ -147,16 +147,16 @@ let compile_node = fn(node, ast, st) {
     "Var" => c_emit(st, list_new("LOAD_VAR", dict_get(node, "name"))),
     "Pause" => c_emit(st, list_new("PAUSE")),
     "ExprStmt" => {
-      let s1 = compile_node(get_node(ast, dict_get(node, "exprId")), ast, st);
+      let s1 = compile_node(get_node(ast, dict_get(node, "exprId")), ast, st, false);
       c_emit(s1, list_new("POP"))
     },
     "Let" => {
-      let s1 = compile_node(get_node(ast, dict_get(node, "valueId")), ast, st);
+      let s1 = compile_node(get_node(ast, dict_get(node, "valueId")), ast, st, false);
       c_emit(s1, list_new("STORE_VAR", dict_get(node, "name")))
     },
     "BinOp" => {
-      let s1 = compile_node(get_node(ast, dict_get(node, "leftId")), ast, st);
-      let s2 = compile_node(get_node(ast, dict_get(node, "rightId")), ast, s1);
+      let s1 = compile_node(get_node(ast, dict_get(node, "leftId")), ast, st, false);
+      let s2 = compile_node(get_node(ast, dict_get(node, "rightId")), ast, s1, false);
       c_emit(s2, list_new("BIN_OP", dict_get(node, "op")))
     },
     "Block" => {
@@ -164,28 +164,28 @@ let compile_node = fn(node, ast, st) {
       let stmts = dict_get(node, "stmtIds");
       let go_stmts = fn(i, s) {
         if (i >= list_len(stmts)) { s }
-        else { go_stmts(i + 1, compile_node(get_node(ast, list_get(stmts, i)), ast, s)) }
+        else { go_stmts(i + 1, compile_node(get_node(ast, list_get(stmts, i)), ast, s, false)) }
       };
       let s2 = go_stmts(0, s1);
       let trailing = dict_get(node, "trailingExprId");
       let s3 = if (trailing == "") {
         c_emit(s2, list_new("PUSH_UNIT"))
       } else {
-        compile_node(get_node(ast, trailing), ast, s2)
+        // The trailing expression of a tail-block inherits tail position.
+        compile_node(get_node(ast, trailing), ast, s2, tail)
       };
       c_emit(s3, list_new("EXIT_BLOCK"))
     },
     "If" => {
-      let s1 = compile_node(get_node(ast, dict_get(node, "condId")), ast, st);
+      let s1 = compile_node(get_node(ast, dict_get(node, "condId")), ast, st, false);
       let jif_ip = c_code_len(s1);
       let s2 = c_emit(s1, list_new("JUMP_IF_FALSE", 0 - 1));
-      let s3 = compile_node(get_node(ast, dict_get(node, "thenBlockId")), ast, s2);
+      // Both branches inherit `tail` from the enclosing context.
+      let s3 = compile_node(get_node(ast, dict_get(node, "thenBlockId")), ast, s2, tail);
       let jmp_ip = c_code_len(s3);
       let s4 = c_emit(s3, list_new("JUMP", 0 - 1));
-      // Back-patch JIF to point to start of else
       let s5 = c_set_op(s4, jif_ip, list_new("JUMP_IF_FALSE", c_code_len(s4)));
-      let s6 = compile_node(get_node(ast, dict_get(node, "elseBlockId")), ast, s5);
-      // Back-patch JUMP to point past else
+      let s6 = compile_node(get_node(ast, dict_get(node, "elseBlockId")), ast, s5, tail);
       c_set_op(s6, jmp_ip, list_new("JUMP", c_code_len(s6)))
     },
     "Fn" => {
@@ -194,53 +194,57 @@ let compile_node = fn(node, ast, st) {
       let jmp_ip = c_code_len(s1);
       let s2 = c_emit(s1, list_new("JUMP", 0 - 1));
       let body_start = c_code_len(s2);
-      let s3 = compile_node(get_node(ast, dict_get(node, "bodyBlockId")), ast, s2);
+      // The fn body starts a new tail-position scope.
+      let s3 = compile_node(get_node(ast, dict_get(node, "bodyBlockId")), ast, s2, true);
       let s4 = c_emit(s3, list_new("RETURN"));
       let body_end = c_code_len(s4);
-      // Back-patch MAKE_CLOSURE with body_ip and body_len
       let s5 = c_set_op(s4, mk_ip, list_new("MAKE_CLOSURE", dict_get(node, "params"), body_start, body_end - body_start));
-      // Back-patch JUMP to past body
       c_set_op(s5, jmp_ip, list_new("JUMP", c_code_len(s5)))
     },
     "Call" => {
       let callee = get_node(ast, dict_get(node, "calleeId"));
       let arg_ids = dict_get(node, "argIds");
       let argc = list_len(arg_ids);
-      // Special-case effect / pure-builtin calls.
+      // Special-case effect / pure-builtin calls (never tail-eligible).
       if (dict_get(callee, "kind") == "Var") {
         let name = dict_get(callee, "name");
         if (is_effect_name(name)) {
-          let s = list_reduce(arg_ids, st, fn(acc, id) { compile_node(get_node(ast, id), ast, acc) });
+          let s = list_reduce(arg_ids, st, fn(acc, id) { compile_node(get_node(ast, id), ast, acc, false) });
           c_emit(s, list_new("EFFECT", name, argc))
         } else {
           if (is_pure_builtin(name)) {
-            let s = list_reduce(arg_ids, st, fn(acc, id) { compile_node(get_node(ast, id), ast, acc) });
+            let s = list_reduce(arg_ids, st, fn(acc, id) { compile_node(get_node(ast, id), ast, acc, false) });
             c_emit(s, list_new("CALL_BUILTIN", name, argc))
           } else {
-            // closure call
-            let s1 = compile_node(callee, ast, st);
-            let s2 = list_reduce(arg_ids, s1, fn(acc, id) { compile_node(get_node(ast, id), ast, acc) });
-            c_emit(s2, list_new("CALL", argc))
+            let s1 = compile_node(callee, ast, st, false);
+            let s2 = list_reduce(arg_ids, s1, fn(acc, id) { compile_node(get_node(ast, id), ast, acc, false) });
+            // Closure call: TAILCALL when in tail position, else CALL.
+            let op = if (tail) { "TAILCALL" } else { "CALL" };
+            c_emit(s2, list_new(op, argc))
           }
         }
       } else {
-        let s1 = compile_node(callee, ast, st);
-        let s2 = list_reduce(arg_ids, s1, fn(acc, id) { compile_node(get_node(ast, id), ast, acc) });
-        c_emit(s2, list_new("CALL", argc))
+        let s1 = compile_node(callee, ast, st, false);
+        let s2 = list_reduce(arg_ids, s1, fn(acc, id) { compile_node(get_node(ast, id), ast, acc, false) });
+        let op = if (tail) { "TAILCALL" } else { "CALL" };
+        c_emit(s2, list_new(op, argc))
       }
     },
-    "Match" => compile_match(node, ast, st),
+    "Match" => compile_match(node, ast, st, tail),
     _ => panic("compiler: unhandled node kind '" + kind + "'"),
   }
 };
 
-/// Compile a match expression.
-let compile_match = fn(node, ast, st) {
+/// Compile a match expression. Each arm's body inherits the enclosing tail flag.
+/// Each arm may carry a guard (extra JIF inserted between pattern check and body).
+let compile_match = fn(node, ast, st, tail) {
   let s1 = c_emit(st, list_new("ENTER_BLOCK"));
-  let s2 = compile_node(get_node(ast, dict_get(node, "scrutineeId")), ast, s1);
+  let s2 = compile_node(get_node(ast, dict_get(node, "scrutineeId")), ast, s1, false);
   let s3 = c_emit(s2, list_new("STORE_VAR", "__match_tmp"));
   let arms = dict_get(node, "arms");
-  // Process arms: collect end-jump IPs to back-patch later.
+  // The scrutinee loader: LOAD_VAR("__match_tmp"). Pattern checks call this
+  // whenever they need to push the scrutinee on the stack.
+  let load_scrut = fn(s) { c_emit(s, list_new("LOAD_VAR", "__match_tmp")) };
   let go_arms = fn(i, s, end_jumps) {
     if (i >= list_len(arms)) {
       dict_set(dict_set(dict_new(), "state", s), "end_jumps", end_jumps)
@@ -248,16 +252,32 @@ let compile_match = fn(node, ast, st) {
       let arm = list_get(arms, i);
       let is_last = i + 1 >= list_len(arms);
       let s_arm = c_emit(s, list_new("ENTER_BLOCK"));
-      let check = emit_pattern_check(dict_get(arm, "pattern"), s_arm);
+      let check = emit_pattern_check(dict_get(arm, "pattern"), load_scrut, s_arm);
       let fail_ip = c_code_len(check);
       let s_jif = c_emit(check, list_new("JUMP_IF_FALSE", 0 - 1));
-      let body = compile_node(get_node(ast, dict_get(arm, "bodyId")), ast, s_jif);
+      // Guard (optional): compile the guard expression; if false, also bail out.
+      let guard_id = if (dict_has(arm, "guardId")) { dict_get(arm, "guardId") } else { "" };
+      let after_guard = if (guard_id == "") {
+        dict_set(dict_set(dict_new(), "state", s_jif), "guard_jif", 0 - 1)
+      } else {
+        let g = compile_node(get_node(ast, guard_id), ast, s_jif, false);
+        let g_jif_ip = c_code_len(g);
+        let s_g_jif = c_emit(g, list_new("JUMP_IF_FALSE", 0 - 1));
+        dict_set(dict_set(dict_new(), "state", s_g_jif), "guard_jif", g_jif_ip)
+      };
+      let s_pre_body = dict_get(after_guard, "state");
+      let body = compile_node(get_node(ast, dict_get(arm, "bodyId")), ast, s_pre_body, tail);
       let s_exit_ok = c_emit(body, list_new("EXIT_BLOCK"));
       let succ_ip = c_code_len(s_exit_ok);
       let s_jmp = c_emit(s_exit_ok, list_new("JUMP", 0 - 1));
-      // Back-patch JIF to land just before EXIT_BLOCK of the failure path
-      let s_patched_jif = c_set_op(s_jmp, fail_ip, list_new("JUMP_IF_FALSE", c_code_len(s_jmp)));
-      let s_exit_fail = c_emit(s_patched_jif, list_new("EXIT_BLOCK"));
+      // Failure landing pad — patch pattern-fail and guard-fail JIFs here.
+      let fail_target = c_code_len(s_jmp);
+      let s_patched_jif = c_set_op(s_jmp, fail_ip, list_new("JUMP_IF_FALSE", fail_target));
+      let guard_jif = dict_get(after_guard, "guard_jif");
+      let s_patched_guard = if (guard_jif >= 0) {
+        c_set_op(s_patched_jif, guard_jif, list_new("JUMP_IF_FALSE", fail_target))
+      } else { s_patched_jif };
+      let s_exit_fail = c_emit(s_patched_guard, list_new("EXIT_BLOCK"));
       let s_after = if (is_last) {
         c_emit(s_exit_fail, list_new("PUSH_UNIT"))
       } else {
@@ -267,15 +287,31 @@ let compile_match = fn(node, ast, st) {
     }
   };
   let after_arms = go_arms(0, s3, list_new());
-  // Back-patch end jumps to here
   let s_final = list_reduce(dict_get(after_arms, "end_jumps"), dict_get(after_arms, "state"), fn(acc, jip) {
     c_set_op(acc, jip, list_new("JUMP", c_code_len(acc)))
   });
   c_emit(s_final, list_new("EXIT_BLOCK"))
 };
 
+/// Helper: emit a primitive-equality pattern check (int/bool/str/unit).
+/// load_scrut emits code to push the scrutinee; pattern then loads the literal
+/// and compares with BIN_OP ==.
+let emit_lit_check = fn(load_scrut, tag, value, st) {
+  let s1 = load_scrut(st);
+  let lit = if (tag == "unit") {
+    dict_set(dict_new(), "tag", "unit")
+  } else {
+    dict_set(dict_set(dict_new(), "tag", tag), "v", value)
+  };
+  let r = c_intern_const(s1, lit);
+  let s2 = c_emit(dict_get(r, "state"), list_new("LOAD_CONST", dict_get(r, "idx")));
+  c_emit(s2, list_new("BIN_OP", "=="))
+};
+
 /// Emit a pattern check that pushes a bool and registers bindings on match.
-let emit_pattern_check = fn(pat, st) {
+/// `load_scrut` is a state→state closure that emits the scrutinee load — list
+/// and dict patterns invoke it repeatedly to extract sub-values.
+let emit_pattern_check = fn(pat, load_scrut, st) {
   let kind = dict_get(pat, "kind");
   match kind {
     "wildcard" => {
@@ -283,37 +319,173 @@ let emit_pattern_check = fn(pat, st) {
       c_emit(dict_get(r, "state"), list_new("LOAD_CONST", dict_get(r, "idx")))
     },
     "var" => {
-      let s1 = c_emit(st, list_new("LOAD_VAR", "__match_tmp"));
+      let s1 = load_scrut(st);
       let s2 = c_emit(s1, list_new("STORE_VAR", dict_get(pat, "name")));
       let r = c_intern_const(s2, dict_set(dict_set(dict_new(), "tag", "bool"), "v", true));
       c_emit(dict_get(r, "state"), list_new("LOAD_CONST", dict_get(r, "idx")))
     },
-    "int" => {
-      let s1 = c_emit(st, list_new("LOAD_VAR", "__match_tmp"));
-      let r = c_intern_const(s1, dict_set(dict_set(dict_new(), "tag", "int"), "v", dict_get(pat, "value")));
-      let s2 = c_emit(dict_get(r, "state"), list_new("LOAD_CONST", dict_get(r, "idx")));
-      c_emit(s2, list_new("BIN_OP", "=="))
+    "int" => emit_lit_check(load_scrut, "int", dict_get(pat, "value"), st),
+    "bool" => emit_lit_check(load_scrut, "bool", dict_get(pat, "value"), st),
+    "str" => emit_lit_check(load_scrut, "str", dict_get(pat, "value"), st),
+    "unit" => emit_lit_check(load_scrut, "unit", 0, st),
+    "or" => {
+      // Chain of alternatives: check first; while top-of-stack is false, try the next.
+      // TS emits per alternative i>0:
+      //   JIF skipIfTrueIp -> [PUSH true, JUMP end] / skipIfTrueIp: <check_i> / end:
+      let patterns = dict_get(pat, "patterns");
+      let s0 = emit_pattern_check(list_get(patterns, 0), load_scrut, st);
+      let go = fn(i, s) {
+        if (i >= list_len(patterns)) { s }
+        else {
+          let skip_ip = c_code_len(s);
+          let s_skip = c_emit(s, list_new("JUMP_IF_FALSE", 0 - 1));
+          let r_true = c_intern_const(s_skip, dict_set(dict_set(dict_new(), "tag", "bool"), "v", true));
+          let s_true = c_emit(dict_get(r_true, "state"), list_new("LOAD_CONST", dict_get(r_true, "idx")));
+          let end_ip = c_code_len(s_true);
+          let s_jmp = c_emit(s_true, list_new("JUMP", 0 - 1));
+          // skipIfTrueIp lands here (i.e. when initial bool was false, we re-check)
+          let s_patched = c_set_op(s_jmp, skip_ip, list_new("JUMP_IF_FALSE", c_code_len(s_jmp)));
+          let s_next = emit_pattern_check(list_get(patterns, i), load_scrut, s_patched);
+          let s_end_patched = c_set_op(s_next, end_ip, list_new("JUMP", c_code_len(s_next)));
+          go(i + 1, s_end_patched)
+        }
+      };
+      go(1, s0)
     },
-    "bool" => {
-      let s1 = c_emit(st, list_new("LOAD_VAR", "__match_tmp"));
-      let r = c_intern_const(s1, dict_set(dict_set(dict_new(), "tag", "bool"), "v", dict_get(pat, "value")));
-      let s2 = c_emit(dict_get(r, "state"), list_new("LOAD_CONST", dict_get(r, "idx")));
-      c_emit(s2, list_new("BIN_OP", "=="))
-    },
-    "str" => {
-      let s1 = c_emit(st, list_new("LOAD_VAR", "__match_tmp"));
-      let r = c_intern_const(s1, dict_set(dict_set(dict_new(), "tag", "str"), "v", dict_get(pat, "value")));
-      let s2 = c_emit(dict_get(r, "state"), list_new("LOAD_CONST", dict_get(r, "idx")));
-      c_emit(s2, list_new("BIN_OP", "=="))
-    },
+    "list" => emit_list_pattern_check(pat, load_scrut, st),
+    "dict" => emit_dict_pattern_check(pat, load_scrut, st),
     _ => panic("compiler: unsupported pattern kind '" + kind + "'"),
   }
+};
+
+/// List pattern: type_of==list, length check, per-item check, optional ...rest bind.
+/// Failure paths jump to a shared "push false" pad; success path pushes true and
+/// jumps past the failure pad.
+let emit_list_pattern_check = fn(pat, load_scrut, st) {
+  let items = dict_get(pat, "items");
+  let has_rest = dict_has(pat, "rest");
+  // is_list check
+  let s1 = load_scrut(st);
+  let s2 = c_emit(s1, list_new("CALL_BUILTIN", "type_of", 1));
+  let r_list = c_intern_const(s2, dict_set(dict_set(dict_new(), "tag", "str"), "v", "list"));
+  let s3 = c_emit(dict_get(r_list, "state"), list_new("LOAD_CONST", dict_get(r_list, "idx")));
+  let s4 = c_emit(s3, list_new("BIN_OP", "=="));
+  let not_list_ip = c_code_len(s4);
+  let s5 = c_emit(s4, list_new("JUMP_IF_FALSE", 0 - 1));
+  // length check
+  let s6 = load_scrut(s5);
+  let s7 = c_emit(s6, list_new("CALL_BUILTIN", "list_len", 1));
+  let r_len = c_intern_const(s7, dict_set(dict_set(dict_new(), "tag", "int"), "v", list_len(items)));
+  let s8 = c_emit(dict_get(r_len, "state"), list_new("LOAD_CONST", dict_get(r_len, "idx")));
+  let len_op = if (has_rest) { ">=" } else { "==" };
+  let s9 = c_emit(s8, list_new("BIN_OP", len_op));
+  let wrong_len_ip = c_code_len(s9);
+  let s10 = c_emit(s9, list_new("JUMP_IF_FALSE", 0 - 1));
+  // each item check
+  let check_items = fn(i, s, fail_ips) {
+    if (i >= list_len(items)) {
+      dict_set(dict_set(dict_new(), "state", s), "fail_ips", fail_ips)
+    } else {
+      let load_item = fn(ss) {
+        let ss1 = load_scrut(ss);
+        let r_i = c_intern_const(ss1, dict_set(dict_set(dict_new(), "tag", "int"), "v", i));
+        let ss2 = c_emit(dict_get(r_i, "state"), list_new("LOAD_CONST", dict_get(r_i, "idx")));
+        c_emit(ss2, list_new("CALL_BUILTIN", "list_get", 2))
+      };
+      let s_check = emit_pattern_check(list_get(items, i), load_item, s);
+      let f_ip = c_code_len(s_check);
+      let s_jif = c_emit(s_check, list_new("JUMP_IF_FALSE", 0 - 1));
+      check_items(i + 1, s_jif, list_push(fail_ips, f_ip))
+    }
+  };
+  let items_r = check_items(0, s10, list_new(not_list_ip, wrong_len_ip));
+  let s_after_items = dict_get(items_r, "state");
+  let fail_ips = dict_get(items_r, "fail_ips");
+  // bind rest if present: scrut.slice(items.length, scrut.length)
+  let s_after_rest = if (has_rest) {
+    let sa = load_scrut(s_after_items);
+    let r_start = c_intern_const(sa, dict_set(dict_set(dict_new(), "tag", "int"), "v", list_len(items)));
+    let sb = c_emit(dict_get(r_start, "state"), list_new("LOAD_CONST", dict_get(r_start, "idx")));
+    let sc = load_scrut(sb);
+    let sd = c_emit(sc, list_new("CALL_BUILTIN", "list_len", 1));
+    let se = c_emit(sd, list_new("CALL_BUILTIN", "list_slice", 3));
+    c_emit(se, list_new("STORE_VAR", dict_get(pat, "rest")))
+  } else { s_after_items };
+  // push true, jump past failure pad
+  let r_true = c_intern_const(s_after_rest, dict_set(dict_set(dict_new(), "tag", "bool"), "v", true));
+  let s_true = c_emit(dict_get(r_true, "state"), list_new("LOAD_CONST", dict_get(r_true, "idx")));
+  let ok_jump_ip = c_code_len(s_true);
+  let s_jmp = c_emit(s_true, list_new("JUMP", 0 - 1));
+  // failure pad — patch all fail_ips to land here, then push false
+  let fail_target = c_code_len(s_jmp);
+  let s_patched = list_reduce(fail_ips, s_jmp, fn(acc, fip) {
+    c_set_op(acc, fip, list_new("JUMP_IF_FALSE", fail_target))
+  });
+  let r_false = c_intern_const(s_patched, dict_set(dict_set(dict_new(), "tag", "bool"), "v", false));
+  let s_false = c_emit(dict_get(r_false, "state"), list_new("LOAD_CONST", dict_get(r_false, "idx")));
+  // back-patch ok_jump_ip to past the false push
+  c_set_op(s_false, ok_jump_ip, list_new("JUMP", c_code_len(s_false)))
+};
+
+/// Dict pattern: type_of==dict, then for each entry: dict_has + recursive check.
+let emit_dict_pattern_check = fn(pat, load_scrut, st) {
+  let entries = dict_get(pat, "entries");
+  // is_dict check
+  let s1 = load_scrut(st);
+  let s2 = c_emit(s1, list_new("CALL_BUILTIN", "type_of", 1));
+  let r_dict = c_intern_const(s2, dict_set(dict_set(dict_new(), "tag", "str"), "v", "dict"));
+  let s3 = c_emit(dict_get(r_dict, "state"), list_new("LOAD_CONST", dict_get(r_dict, "idx")));
+  let s4 = c_emit(s3, list_new("BIN_OP", "=="));
+  let not_dict_ip = c_code_len(s4);
+  let s5 = c_emit(s4, list_new("JUMP_IF_FALSE", 0 - 1));
+  // per-entry: dict_has(scrut, key) then recursive check on dict_get(scrut, key)
+  let check_entries = fn(i, s, fail_ips) {
+    if (i >= list_len(entries)) {
+      dict_set(dict_set(dict_new(), "state", s), "fail_ips", fail_ips)
+    } else {
+      let entry = list_get(entries, i);
+      let key = dict_get(entry, "key");
+      // dict_has(scrut, key)
+      let sa = load_scrut(s);
+      let r_key = c_intern_const(sa, dict_set(dict_set(dict_new(), "tag", "str"), "v", key));
+      let sb = c_emit(dict_get(r_key, "state"), list_new("LOAD_CONST", dict_get(r_key, "idx")));
+      let sc = c_emit(sb, list_new("CALL_BUILTIN", "dict_has", 2));
+      let has_fail_ip = c_code_len(sc);
+      let sd = c_emit(sc, list_new("JUMP_IF_FALSE", 0 - 1));
+      // recursive check on dict_get(scrut, key)
+      let load_value = fn(ss) {
+        let ss1 = load_scrut(ss);
+        let r_k2 = c_intern_const(ss1, dict_set(dict_set(dict_new(), "tag", "str"), "v", key));
+        let ss2 = c_emit(dict_get(r_k2, "state"), list_new("LOAD_CONST", dict_get(r_k2, "idx")));
+        c_emit(ss2, list_new("CALL_BUILTIN", "dict_get", 2))
+      };
+      let s_check = emit_pattern_check(dict_get(entry, "pattern"), load_value, sd);
+      let pat_fail_ip = c_code_len(s_check);
+      let s_jif = c_emit(s_check, list_new("JUMP_IF_FALSE", 0 - 1));
+      check_entries(i + 1, s_jif, list_push(list_push(fail_ips, has_fail_ip), pat_fail_ip))
+    }
+  };
+  let entries_r = check_entries(0, s5, list_new(not_dict_ip));
+  let s_after = dict_get(entries_r, "state");
+  let fail_ips = dict_get(entries_r, "fail_ips");
+  // push true, jump past failure pad
+  let r_true = c_intern_const(s_after, dict_set(dict_set(dict_new(), "tag", "bool"), "v", true));
+  let s_true = c_emit(dict_get(r_true, "state"), list_new("LOAD_CONST", dict_get(r_true, "idx")));
+  let ok_jump_ip = c_code_len(s_true);
+  let s_jmp = c_emit(s_true, list_new("JUMP", 0 - 1));
+  let fail_target = c_code_len(s_jmp);
+  let s_patched = list_reduce(fail_ips, s_jmp, fn(acc, fip) {
+    c_set_op(acc, fip, list_new("JUMP_IF_FALSE", fail_target))
+  });
+  let r_false = c_intern_const(s_patched, dict_set(dict_set(dict_new(), "tag", "bool"), "v", false));
+  let s_false = c_emit(dict_get(r_false, "state"), list_new("LOAD_CONST", dict_get(r_false, "idx")));
+  c_set_op(s_false, ok_jump_ip, list_new("JUMP", c_code_len(s_false)))
 };
 
 /// Top-level entry: compile a parsed AST bundle into a Program dict.
 let pen_compile = fn(ast) {
   let root = get_node(ast, dict_get(ast, "rootId"));
-  let st = compile_node(root, ast, mk_cstate());
+  let st = compile_node(root, ast, mk_cstate(), false);
   let final = c_emit(st, list_new("HALT"));
   dict_set(dict_set(dict_set(dict_new(),
     "version", 1),
