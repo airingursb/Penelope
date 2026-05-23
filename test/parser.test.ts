@@ -173,3 +173,32 @@ test('parses if/else expression', () => {
   expect(ast.nodes[ifExpr.thenBlockId].kind).toBe('Block');
   expect(ast.nodes[ifExpr.elseBlockId].kind).toBe('Block');
 });
+
+test('parsing the same source twice produces identical NodeId assignments', () => {
+  const src = `
+    let x = 10;
+    let f = fn(a, b) {
+      if (a < b) { a + 1 } else { b * 2 }
+    };
+    print(f(x, 20));
+  `;
+  const ast1 = parse(tokenize(src));
+  const ast2 = parse(tokenize(src));
+
+  // Same root id
+  expect(ast1.rootId).toBe(ast2.rootId);
+
+  // Same set of node ids
+  expect(Object.keys(ast1.nodes).sort()).toEqual(Object.keys(ast2.nodes).sort());
+
+  // Same content per id
+  for (const id of Object.keys(ast1.nodes)) {
+    expect(ast1.nodes[id]).toEqual(ast2.nodes[id]);
+  }
+});
+
+test('parsing different source produces different node id sets', () => {
+  const a = parse(tokenize('let x = 1;'));
+  const b = parse(tokenize('let x = 1; let y = 2;'));
+  expect(Object.keys(a.nodes).length).toBeLessThan(Object.keys(b.nodes).length);
+});
