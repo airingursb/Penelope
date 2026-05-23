@@ -1,0 +1,33 @@
+// Multi-attempt agent: try a network call up to N times.
+// Each attempt is its own effect, so retries survive pause/resume.
+//
+// In Phase 3, net_fetch throws on failure. We use wait_for("retry") to model
+// "human says try again" — the audit trail is in the effect log.
+
+let try_fetch = fn(attempt) {
+  print("attempt " + to_str(attempt));
+  // In real usage: net_fetch("https://api.example.com/x").
+  // For this demo, the human injects the result via wait_for.
+  let body = wait_for("response");
+  body
+};
+
+let with_retry = fn(max_attempts) {
+  let attempt = fn(n) {
+    if (n > max_attempts) {
+      "all attempts exhausted"
+    } else {
+      let body = try_fetch(n);
+      if (body == "ok") {
+        "success on attempt " + to_str(n)
+      } else {
+        print("attempt " + to_str(n) + " failed: " + body);
+        attempt(n + 1)
+      }
+    }
+  };
+  attempt(1)
+};
+
+let result = with_retry(3);
+print(result);

@@ -28,6 +28,12 @@
         "path": "./syntaxes/penelope.tmLanguage.json"
       }
     ],
+    "snippets": [
+      {
+        "language": "penelope",
+        "path": "./snippets/penelope.json"
+      }
+    ],
     "configuration": {
       "title": "Penelope",
       "properties": {

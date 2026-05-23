@@ -1,0 +1,77 @@
+// Tiny breadth-first search demo using list + dict.
+// Graph: a -> b, c   b -> d   c -> d   d -> e
+// We trace shortest path from "a" to "e".
+
+let mk_graph = fn() {
+  let g = dict_new();
+  let g = dict_set(g, "a", list_new("b", "c"));
+  let g = dict_set(g, "b", list_new("d"));
+  let g = dict_set(g, "c", list_new("d"));
+  let g = dict_set(g, "d", list_new("e"));
+  let g = dict_set(g, "e", list_new());
+  g
+};
+
+let contains = fn(xs, v) {
+  let go = fn(i) {
+    if (i >= list_len(xs)) {
+      false
+    } else {
+      if (list_get(xs, i) == v) { true } else { go(i + 1) }
+    }
+  };
+  go(0)
+};
+
+let append_all = fn(target, src) {
+  let go = fn(t, i) {
+    if (i >= list_len(src)) {
+      t
+    } else {
+      go(list_push(t, list_get(src, i)), i + 1)
+    }
+  };
+  go(target, 0)
+};
+
+let bfs = fn(g, start, goal) {
+  let go = fn(frontier, seen) {
+    if (list_len(frontier) == 0) {
+      "no path"
+    } else {
+      let head = list_get(frontier, 0);
+      if (head == goal) {
+        "reached " + head
+      } else {
+        let rest_len = list_len(frontier) - 1;
+        let drop_head = fn(xs, i, acc) {
+          if (i >= list_len(xs)) {
+            acc
+          } else {
+            drop_head(xs, i + 1, list_push(acc, list_get(xs, i)))
+          }
+        };
+        let rest = drop_head(frontier, 1, list_new());
+        let nbrs = dict_get(g, head);
+        let unseen = fn(xs, i, acc) {
+          if (i >= list_len(xs)) {
+            acc
+          } else {
+            let nb = list_get(xs, i);
+            if (contains(seen, nb)) {
+              unseen(xs, i + 1, acc)
+            } else {
+              unseen(xs, i + 1, list_push(acc, nb))
+            }
+          }
+        };
+        let to_add = unseen(nbrs, 0, list_new());
+        go(append_all(rest, to_add), append_all(seen, to_add))
+      }
+    }
+  };
+  go(list_new(start), list_new(start))
+};
+
+let g = mk_graph();
+print(bfs(g, "a", "e"));

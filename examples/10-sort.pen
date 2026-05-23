@@ -1,0 +1,33 @@
+// Bubble sort over a list — demonstrates list builtins + recursion.
+
+let swap = fn(xs, i, j) {
+  let a = list_get(xs, i);
+  let b = list_get(xs, j);
+  list_set(list_set(xs, i, b), j, a)
+};
+
+let pass = fn(xs, i) {
+  if (i + 1 >= list_len(xs)) {
+    xs
+  } else {
+    let a = list_get(xs, i);
+    let b = list_get(xs, i + 1);
+    if (a > b) {
+      pass(swap(xs, i, i + 1), i + 1)
+    } else {
+      pass(xs, i + 1)
+    }
+  }
+};
+
+let sort = fn(xs, rounds) {
+  if (rounds == 0) {
+    xs
+  } else {
+    sort(pass(xs, 0), rounds - 1)
+  }
+};
+
+let xs = list_new(3, 1, 4, 1, 5, 9, 2, 6, 5);
+let sorted = sort(xs, list_len(xs));
+print(to_str(sorted));
