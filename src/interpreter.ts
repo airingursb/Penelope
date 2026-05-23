@@ -344,6 +344,7 @@ export function formatValue(v: Value): string {
     case 'int':     return String(v.v);
     case 'bool':    return v.v ? 'true' : 'false';
     case 'unit':    return '()';
+    case 'str':     return v.v;
     case 'closure': return '<fn>';
   }
 }
