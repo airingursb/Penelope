@@ -51,6 +51,18 @@ function runUntilStop(prog: Program, state: VMState): RunResult {
       }
       case 'LOAD_VAR': {
         const name = op[1] as string;
+        const ic = op[2] as { framesUp: number } | null | undefined;
+        if (ic) {
+          const directIdx = state.frames.length - 1 - ic.framesUp;
+          if (directIdx >= 0) {
+            const f = state.frames[directIdx];
+            if (Object.prototype.hasOwnProperty.call(f.bindings, name)) {
+              push(state, f.bindings[name]);
+              state.ip++;
+              break;
+            }
+          }
+        }
         let idx = state.frames.length - 1;
         let found = false;
         while (idx >= 0) {
