@@ -100,3 +100,27 @@ test('A7: str_slice edge cases (empty, full, OOB clipped)', () => {
   expect(evalSlice('str_slice("hello", 2, 100);')).toBe('llo');
   expect(evalSlice('str_slice("hello", 0 - 2, 3);')).toBe('hel');
 });
+
+test('A11: to_str on each Value tag', () => {
+  const ast = parse(tokenize('print(to_str(42)); print(to_str(true)); print(to_str(false));'));
+  const logged: string[] = [];
+  const origLog = console.log;
+  console.log = (msg: string) => logged.push(msg);
+  try {
+    const result = runToCompletion(ast);
+    expect(result.kind).toBe('done');
+    expect(logged).toEqual(['42', 'true', 'false']);
+  } finally { console.log = origLog; }
+});
+
+test('A12: to_str + concat in real use', () => {
+  const ast = parse(tokenize('print("amount: " + to_str(5000));'));
+  const logged: string[] = [];
+  const origLog = console.log;
+  console.log = (msg: string) => logged.push(msg);
+  try {
+    const result = runToCompletion(ast);
+    expect(result.kind).toBe('done');
+    expect(logged).toEqual(['amount: 5000']);
+  } finally { console.log = origLog; }
+});

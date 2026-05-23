@@ -327,7 +327,13 @@ function applyPureBuiltin(state: State, rest: ControlInstr[], name: string, argC
       valueStack: [...newStack, { tag: 'str', v: s.v.slice(loClamped, hiClamped) }] });
   }
 
-  // to_str fills in via Task 9.
+  if (name === 'to_str') {
+    if (argCount !== 1) return { kind: 'error', message: `to_str expects 1 arg, got ${argCount}` };
+    const v = args[0];
+    return cont({ ...state, control: rest,
+      valueStack: [...newStack, { tag: 'str', v: formatValue(v) }] });
+  }
+
   return { kind: 'error', message: `unimplemented pure builtin: ${name}` };
 }
 
