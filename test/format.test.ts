@@ -65,9 +65,9 @@ test.each(samples)('format is idempotent on: %s', (src) => {
   expect(b).toBe(a);
 });
 
-// ── Comments are dropped (documented limitation) ─────────────────────────────
+// ── Comments are dropped when not passed in (default behavior) ───────────────
 
-test('comments are dropped (AST does not preserve them)', () => {
+test('comments dropped without explicit comments arg', () => {
   const src = '// a comment\nlet x = 1;';
   const out = fmt(src).trim();
   expect(out).toBe('let x = 1;');

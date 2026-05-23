@@ -2,7 +2,7 @@
 
 import { readFileSync, writeFileSync, copyFileSync, existsSync } from 'node:fs';
 import { resolve, dirname, basename, join } from 'node:path';
-import { tokenize } from './lexer.js';
+import { tokenize, tokenizeWithComments } from './lexer.js';
 import { parse } from './parser.js';
 import { compile } from './compiler.js';
 import { run, freshState, makeProfile } from './vm.js';
@@ -10,6 +10,7 @@ import { writePencFile, readPencFile } from './encoder.js';
 import { runOptimizer, type OLevel } from './optimizer.js';
 import { check as typeCheck } from './typecheck.js';
 import { format as fmtSource } from './format.js';
+import { extractDocs, renderMarkdown } from './doc-gen.js';
 import { extractExpectations, checkExpectations } from './test-runner.js';
 import { spawnSync } from 'node:child_process';
 import { formatDiagnostic, diagnosticFromMessage } from './diagnostic.js';
@@ -315,6 +316,25 @@ function testOnce(srcPath: string): number {
   return 1;
 }
 
+function cmdDoc(args: ParsedArgs): number {
+  const srcPath = args.positional[1];
+  if (!srcPath) { process.stderr.write('usage: pen doc <file.pen>\n'); return 2; }
+  let source: string;
+  try { source = readFileSync(resolve(srcPath), 'utf8'); }
+  catch { process.stderr.write(`cli error: cannot read source: ${srcPath}\n`); return 3; }
+  try {
+    const { tokens, comments } = tokenizeWithComments(source);
+    const ast = parse(tokens);
+    const entries = extractDocs(ast, comments);
+    process.stdout.write(renderMarkdown(srcPath, entries));
+    return 0;
+  } catch (e) {
+    const diag = diagnosticFromMessage((e as Error).message, source, srcPath);
+    process.stderr.write(formatDiagnostic(diag) + '\n');
+    return 1;
+  }
+}
+
 function cmdTest(args: ParsedArgs): number {
   const srcPath = args.positional[1];
   if (!srcPath) { process.stderr.write('usage: pen test [--watch] <file.pen>\n'); return 2; }
@@ -331,8 +351,9 @@ function cmdFmt(args: ParsedArgs): number {
   try { source = readFileSync(resolve(srcPath), 'utf8'); }
   catch { process.stderr.write(`cli error: cannot read source: ${srcPath}\n`); return 3; }
   try {
-    const ast = parse(tokenize(source));
-    const formatted = fmtSource(ast);
+    const { tokens, comments } = tokenizeWithComments(source);
+    const ast = parse(tokens);
+    const formatted = fmtSource(ast, { comments });
     if (args.flags['write'] === true) {
       writeFileSync(resolve(srcPath), formatted);
       process.stdout.write(`formatted ${srcPath}\n`);
@@ -545,7 +566,8 @@ export async function main(argv: string[]): Promise<number> {
   if (sub === 'profile') return cmdProfile(args);
   if (sub === 'fmt')     return cmdFmt(args);
   if (sub === 'test')    return cmdTest(args);
-  process.stderr.write(`usage: penelope <build|exec|run|resume|fork|disasm|bench|inspect|repl|check|profile|fmt|test> [-O0|-O1|-O2] [args]\n`);
+  if (sub === 'doc')     return cmdDoc(args);
+  process.stderr.write(`usage: penelope <build|exec|run|resume|fork|disasm|bench|inspect|repl|check|profile|fmt|test|doc> [-O0|-O1|-O2] [args]\n`);
   return 2;
 }
 

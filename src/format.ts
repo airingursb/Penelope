@@ -3,14 +3,19 @@
 // Comments are dropped (AST doesn't preserve them).
 
 import type { ASTNode, ASTBundle, NodeId } from './ast.js';
+import type { Comment } from './lexer.js';
 
 export type FormatOpts = {
   indent?: string;          // default '  '
+  comments?: Comment[];     // preserve from tokenizeWithComments()
 };
 
 export function format(ast: ASTBundle, opts: FormatOpts = {}): string {
   const indent = opts.indent ?? '  ';
-  const ctx: FormatCtx = { ast, indent, depth: 0 };
+  const ctx: FormatCtx = {
+    ast, indent, depth: 0,
+    comments: (opts.comments ?? []).slice(),
+  };
   return formatNode(ast.nodes[ast.rootId], ctx);
 }
 
@@ -18,16 +23,39 @@ type FormatCtx = {
   ast: ASTBundle;
   indent: string;
   depth: number;
+  comments: Comment[];   // remaining (drained as we emit)
 };
 
 function pad(ctx: FormatCtx): string {
   return ctx.indent.repeat(ctx.depth);
 }
 
+// Drain comments whose source line is < `untilLine` (i.e., appear before this node).
+function flushComments(ctx: FormatCtx, untilLine: number): string {
+  const out: string[] = [];
+  while (ctx.comments.length > 0 && ctx.comments[0].line < untilLine) {
+    const c = ctx.comments.shift()!;
+    const prefix = c.doc ? '///' : '//';
+    out.push(pad(ctx) + prefix + (c.text ? ' ' + c.text : ''));
+  }
+  return out.length ? out.join('\n') + '\n' : '';
+}
+
 function formatNode(node: ASTNode, ctx: FormatCtx): string {
   switch (node.kind) {
-    case 'Program':
-      return node.stmtIds.map(id => pad(ctx) + formatNode(ctx.ast.nodes[id], ctx)).join('\n') + (node.stmtIds.length ? '\n' : '');
+    case 'Program': {
+      const parts: string[] = [];
+      for (const id of node.stmtIds) {
+        const stmt = ctx.ast.nodes[id];
+        const stmtLine = stmt.pos?.line ?? Infinity;
+        const leading = flushComments(ctx, stmtLine);
+        parts.push(leading + pad(ctx) + formatNode(stmt, ctx));
+      }
+      // Trailing comments (after the last statement)
+      const trailing = flushComments(ctx, Infinity);
+      const result = parts.join('\n');
+      return result + (parts.length ? '\n' : '') + trailing;
+    }
     case 'IntLit':    return String(node.value);
     case 'BoolLit':   return node.value ? 'true' : 'false';
     case 'StringLit': return JSON.stringify(node.value);
