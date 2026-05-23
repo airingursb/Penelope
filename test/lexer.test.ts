@@ -40,3 +40,23 @@ test('keywords are not identifiers', () => {
   expect(tokens[0].kind).toBe('LET');
   expect(tokens[1]).toMatchObject({ kind: 'IDENT', text: 'x' });
 });
+
+test('tokenizes single-char operators and punctuation', () => {
+  const src = '+ - * / < > = ( ) { } , ;';
+  const kinds = tokenize(src).map(t => t.kind);
+  expect(kinds).toEqual([
+    'PLUS','MINUS','STAR','SLASH','LT','GT','EQ',
+    'LPAREN','RPAREN','LBRACE','RBRACE','COMMA','SEMI','EOF',
+  ]);
+});
+
+test('tokenizes two-char operators', () => {
+  const src = '<= >= == !=';
+  const kinds = tokenize(src).map(t => t.kind);
+  expect(kinds).toEqual(['LE','GE','EQ_EQ','BANG_EQ','EOF']);
+});
+
+test('disambiguates < from <=', () => {
+  const kinds = tokenize('< <=').map(t => t.kind);
+  expect(kinds).toEqual(['LT','LE','EOF']);
+});

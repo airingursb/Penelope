@@ -77,6 +77,32 @@ export function tokenize(source: string): Token[] {
       continue;
     }
 
+    // two-char operators (peek ahead)
+    if (i + 1 < source.length) {
+      const two = source[i] + source[i + 1];
+      const twoChar: Record<string, TokenKind> = {
+        '<=': 'LE', '>=': 'GE', '==': 'EQ_EQ', '!=': 'BANG_EQ',
+      };
+      if (twoChar[two]) {
+        advance(); advance();
+        tokens.push({ kind: twoChar[two], line: startLine, col: startCol });
+        continue;
+      }
+    }
+
+    // single-char operators and punctuation
+    const oneChar: Record<string, TokenKind> = {
+      '+': 'PLUS', '-': 'MINUS', '*': 'STAR', '/': 'SLASH',
+      '<': 'LT', '>': 'GT', '=': 'EQ',
+      '(': 'LPAREN', ')': 'RPAREN', '{': 'LBRACE', '}': 'RBRACE',
+      ',': 'COMMA', ';': 'SEMI',
+    };
+    if (oneChar[c]) {
+      advance();
+      tokens.push({ kind: oneChar[c], line: startLine, col: startCol });
+      continue;
+    }
+
     throw new Error(`lexer: unexpected character '${c}' at line ${line} col ${col}`);
   }
 
