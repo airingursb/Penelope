@@ -371,6 +371,8 @@ function parsePrimary(c: Cursor, b: Builder): ASTNode {
       return parseFn(c, b);
     case 'MATCH':
       return parseMatch(c, b);
+    case 'LBRACE':
+      return parseBlock(c, b);
     case 'LPAREN': {
       c.eat('LPAREN');
       // Empty parens () = unit literal
