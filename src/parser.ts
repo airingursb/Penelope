@@ -27,16 +27,17 @@ const INFIX_PRECEDENCE: Partial<Record<TokenKind, { prec: number; op: BinOp }>> 
 type Builder = {
   nodes: Record<NodeId, ASTNode>;
   counter: number;
-  addNode<T extends ASTNode>(make: (id: NodeId) => T): T;
+  addNode<T extends ASTNode>(make: (id: NodeId) => T, pos?: { line: number; col: number }): T;
 };
 
 function makeBuilder(): Builder {
   const b: Builder = {
     nodes: {},
     counter: 0,
-    addNode<T extends ASTNode>(make: (id: NodeId) => T): T {
+    addNode<T extends ASTNode>(make: (id: NodeId) => T, pos?: { line: number; col: number }): T {
       const id = `n${b.counter++}`;
       const node = make(id);
+      if (pos) (node as ASTNode).pos = pos;
       b.nodes[id] = node;
       return node;
     },
@@ -95,18 +96,22 @@ function parseStatement(c: Cursor, b: Builder): ASTNode {
 }
 
 function parseExprStmt(c: Cursor, b: Builder): ASTNode {
+  const startTok = c.peek();
+  const pos = { line: startTok.line, col: startTok.col };
   const expr = parseExpression(c, b);
   c.eat('SEMI');
-  return b.addNode(id => ({ id, kind: 'ExprStmt', exprId: expr.id }));
+  return b.addNode(id => ({ id, kind: 'ExprStmt', exprId: expr.id }), pos);
 }
 
 function parseLetStmt(c: Cursor, b: Builder): ASTNode {
+  const startTok = c.peek();
+  const pos = { line: startTok.line, col: startTok.col };
   c.eat('LET');
   const nameTok = c.eat('IDENT');
   c.eat('EQ');
   const value = parseExpression(c, b);
   c.eat('SEMI');
-  return b.addNode(id => ({ id, kind: 'Let', name: nameTok.text!, valueId: value.id }));
+  return b.addNode(id => ({ id, kind: 'Let', name: nameTok.text!, valueId: value.id }), pos);
 }
 
 function parseExpression(c: Cursor, b: Builder, minPrec = 0): ASTNode {
@@ -114,11 +119,13 @@ function parseExpression(c: Cursor, b: Builder, minPrec = 0): ASTNode {
   while (true) {
     const info = INFIX_PRECEDENCE[c.peekKind()];
     if (!info || info.prec < minPrec) break;
+    const opTok = c.peek();
+    const pos = { line: opTok.line, col: opTok.col };
     c.eat(c.peekKind());                              // consume the operator
     const right = parseExpression(c, b, info.prec + 1);  // left-assoc
     const node = b.addNode(id => ({
       id, kind: 'BinOp', op: info.op, leftId: left.id, rightId: right.id,
-    }));
+    }), pos);
     left = node;
   }
   return left;
@@ -127,6 +134,8 @@ function parseExpression(c: Cursor, b: Builder, minPrec = 0): ASTNode {
 function parsePostfix(c: Cursor, b: Builder): ASTNode {
   let expr = parsePrimary(c, b);
   while (c.peekKind() === 'LPAREN') {
+    const parenTok = c.peek();
+    const pos = { line: parenTok.line, col: parenTok.col };
     c.eat('LPAREN');
     const argIds: NodeId[] = [];
     if (c.peekKind() !== 'RPAREN') {
@@ -134,29 +143,30 @@ function parsePostfix(c: Cursor, b: Builder): ASTNode {
       while (c.match('COMMA')) argIds.push(parseExpression(c, b).id);
     }
     c.eat('RPAREN');
-    const call = b.addNode(id => ({ id, kind: 'Call', calleeId: expr.id, argIds }));
+    const call = b.addNode(id => ({ id, kind: 'Call', calleeId: expr.id, argIds }), pos);
     expr = call;
   }
   return expr;
 }
 
 function parseBlock(c: Cursor, b: Builder): ASTNode {
+  const startTok = c.peek();
+  const pos = { line: startTok.line, col: startTok.col };
   c.eat('LBRACE');
   const stmtIds: NodeId[] = [];
   let trailingExprId: NodeId | null = null;
 
   while (c.peekKind() !== 'RBRACE') {
-    // Decide whether the next thing is a statement or the trailing expression.
-    // Strategy: let/print are clearly statements; for other things, parse an
-    // expression and check what follows.
     if (c.peekKind() === 'LET') {
       stmtIds.push(parseLetStmt(c, b).id);
       continue;
     }
+    const exprStartTok = c.peek();
+    const exprPos = { line: exprStartTok.line, col: exprStartTok.col };
     const expr = parseExpression(c, b);
     if (c.peekKind() === 'SEMI') {
       c.eat('SEMI');
-      const stmt = b.addNode(id => ({ id, kind: 'ExprStmt', exprId: expr.id }));
+      const stmt = b.addNode(id => ({ id, kind: 'ExprStmt', exprId: expr.id }), exprPos);
       stmtIds.push(stmt.id);
     } else if (c.peekKind() === 'RBRACE') {
       trailingExprId = expr.id;
@@ -168,10 +178,12 @@ function parseBlock(c: Cursor, b: Builder): ASTNode {
   }
 
   c.eat('RBRACE');
-  return b.addNode(id => ({ id, kind: 'Block', stmtIds, trailingExprId }));
+  return b.addNode(id => ({ id, kind: 'Block', stmtIds, trailingExprId }), pos);
 }
 
 function parseIf(c: Cursor, b: Builder): ASTNode {
+  const startTok = c.peek();
+  const pos = { line: startTok.line, col: startTok.col };
   c.eat('IF');
   c.eat('LPAREN');
   const cond = parseExpression(c, b);
@@ -184,10 +196,12 @@ function parseIf(c: Cursor, b: Builder): ASTNode {
     condId: cond.id,
     thenBlockId: thenBlock.id,
     elseBlockId: elseBlock.id,
-  }));
+  }), pos);
 }
 
 function parseFn(c: Cursor, b: Builder): ASTNode {
+  const startTok = c.peek();
+  const pos = { line: startTok.line, col: startTok.col };
   c.eat('FN');
   c.eat('LPAREN');
   const params: string[] = [];
@@ -197,33 +211,34 @@ function parseFn(c: Cursor, b: Builder): ASTNode {
   }
   c.eat('RPAREN');
   const body = parseBlock(c, b);
-  return b.addNode(id => ({ id, kind: 'Fn', params, bodyBlockId: body.id }));
+  return b.addNode(id => ({ id, kind: 'Fn', params, bodyBlockId: body.id }), pos);
 }
 
 function parsePrimary(c: Cursor, b: Builder): ASTNode {
   const t = c.peek();
+  const pos = { line: t.line, col: t.col };
   switch (t.kind) {
     case 'INT': {
       c.eat('INT');
-      return b.addNode(id => ({ id, kind: 'IntLit', value: t.value! }));
+      return b.addNode(id => ({ id, kind: 'IntLit', value: t.value! }), pos);
     }
     case 'STRING': {
       c.eat('STRING');
-      return b.addNode(id => ({ id, kind: 'StringLit', value: t.text! }));
+      return b.addNode(id => ({ id, kind: 'StringLit', value: t.text! }), pos);
     }
     case 'TRUE':
       c.eat('TRUE');
-      return b.addNode(id => ({ id, kind: 'BoolLit', value: true }));
+      return b.addNode(id => ({ id, kind: 'BoolLit', value: true }), pos);
     case 'FALSE':
       c.eat('FALSE');
-      return b.addNode(id => ({ id, kind: 'BoolLit', value: false }));
+      return b.addNode(id => ({ id, kind: 'BoolLit', value: false }), pos);
     case 'IDENT': {
       c.eat('IDENT');
-      return b.addNode(id => ({ id, kind: 'Var', name: t.text! }));
+      return b.addNode(id => ({ id, kind: 'Var', name: t.text! }), pos);
     }
     case 'PAUSE':
       c.eat('PAUSE');
-      return b.addNode(id => ({ id, kind: 'Pause' }));
+      return b.addNode(id => ({ id, kind: 'Pause' }), pos);
     case 'IF':
       return parseIf(c, b);
     case 'FN':

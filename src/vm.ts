@@ -5,7 +5,7 @@ import type { Program } from './bytecode.js';
 import type { VMState, Frame } from './snapshot.js';
 import type { EffectEntry } from './snapshot.js';
 import type { Value } from './ast.js';
-import { constantToValue } from './bytecode.js';
+import { constantToValue, formatPos } from './bytecode.js';
 import { performNetFetch, performNow, performRandomInt, performReadFile, performWriteFile, categoryOf } from './effects.js';
 import type { EffectName } from './effects.js';
 
@@ -75,7 +75,7 @@ function runUntilStop(prog: Program, state: VMState): RunResult {
           if (f.parentIdx !== undefined) idx = f.parentIdx;
           else idx--;
         }
-        if (!found) throw new Error(`VM: undefined variable '${name}' at ip ${state.ip}`);
+        if (!found) throw new Error(`undefined variable '${name}' at ${formatPos(prog, state.ip)}`);
         state.ip++;
         break;
       }
@@ -93,7 +93,7 @@ function runUntilStop(prog: Program, state: VMState): RunResult {
       }
       case 'JUMP_IF_FALSE': {
         const c = pop(state);
-        if (c.tag !== 'bool') throw new Error(`JUMP_IF_FALSE: expected bool, got ${c.tag}`);
+        if (c.tag !== 'bool') throw new Error(`if condition expected bool, got ${c.tag} at ${formatPos(prog, state.ip)}`);
         state.ip = !c.v ? (op[1] as number) : state.ip + 1;
         break;
       }
@@ -110,9 +110,9 @@ function runUntilStop(prog: Program, state: VMState): RunResult {
         const args: Value[] = [];
         for (let i = 0; i < argc; i++) args.unshift(pop(state));
         const callee = pop(state);
-        if (callee.tag !== 'closure') throw new Error(`CALL: callee is ${callee.tag}, not closure`);
+        if (callee.tag !== 'closure') throw new Error(`call: callee is ${callee.tag}, not a function (at ${formatPos(prog, state.ip)})`);
         if (args.length !== callee.params.length) {
-          throw new Error(`CALL: arity mismatch (expected ${callee.params.length}, got ${args.length})`);
+          throw new Error(`call: arity mismatch — expected ${callee.params.length} args, got ${args.length} (at ${formatPos(prog, state.ip)})`);
         }
         const bindings: Record<string, Value> = {};
         for (let i = 0; i < args.length; i++) bindings[callee.params[i]] = args[i];
@@ -143,7 +143,11 @@ function runUntilStop(prog: Program, state: VMState): RunResult {
         const args: Value[] = [];
         for (let i = 0; i < argc; i++) args.unshift(pop(state));
         const step = executeEffect(state, name, args, replayIdx);
-        if (step.kind === 'pause') return { status: 'paused', state };
+        if (step.kind === 'pause') {
+          // Restore args so a future resume can re-pop them.
+          for (const a of args) push(state, a);
+          return { status: 'paused', state };
+        }
         push(state, step.v);
         state.ip++;
         break;
@@ -234,7 +238,7 @@ type EffectStep = { kind: 'value'; v: Value } | { kind: 'pause' };
 
 function executeEffect(state: VMState, name: EffectName, args: Value[], replayIdx: Map<number, number>): EffectStep {
   const ip = state.ip;
-  if (categoryOf(name) === 'wait') return executeWaitEffect(state, name, ip);
+  if (categoryOf(name) === 'wait') return executeWaitEffect(state, name, args, ip);
   // Find how many committed entries at this ip we've already replayed in this run.
   const usedCount = replayIdx.get(ip) ?? 0;
   // Find the nth committed entry at this ip.
@@ -284,18 +288,47 @@ function executeEffect(state: VMState, name: EffectName, args: Value[], replayId
   return { kind: 'value', v };
 }
 
-function executeWaitEffect(state: VMState, name: EffectName, ip: number): EffectStep {
+function executeWaitEffect(state: VMState, name: EffectName, args: Value[], ip: number): EffectStep {
+  // Look for an existing committed entry to replay (when resuming a long-running program).
+  const committed = state.effects.find(e => e.ip === ip && e.effect === name && e.status === 'committed');
+  if (committed && !state.noReplay) {
+    return { kind: 'value', v: committed.recordedValue ?? { tag: 'unit' } };
+  }
+
+  // Look for pending entry promoted by an external resume (CLI --event for wait_for; time advance for wait_until).
   const pending = state.effects.find(e => e.ip === ip && e.effect === name && e.status === 'pending');
   if (pending) {
-    pending.status = 'committed';
-    pending.recordedValue = { tag: 'unit' };
-    return { kind: 'value', v: { tag: 'unit' } };
+    if (name === 'wait_until') {
+      const target = pending.waitUntilMs ?? 0;
+      const now = state.timeOverride ?? Date.now();
+      if (now < target) return { kind: 'pause' };
+      pending.status = 'committed';
+      pending.recordedValue = { tag: 'unit' };
+      return { kind: 'value', v: { tag: 'unit' } };
+    }
+    if (name === 'wait_for') {
+      if (pending.recordedValue === null) {
+        // No external event arrived yet — re-pause.
+        return { kind: 'pause' };
+      }
+      pending.status = 'committed';
+      return { kind: 'value', v: pending.recordedValue };
+    }
   }
+
+  // First encounter at this ip: write a pending entry and pause.
   const invocationCount = state.effects.filter(e => e.ip === ip).length;
-  state.effects.push({
+  const entry: EffectEntry = {
     ip, invocationCount, effect: name as EffectEntry['effect'],
     recordedValue: null, status: 'pending',
-  });
+  };
+  if (name === 'wait_for' && args[0]?.tag === 'str') {
+    entry.eventName = args[0].v;
+  }
+  if (name === 'wait_until' && args[0]?.tag === 'int') {
+    entry.waitUntilMs = args[0].v;
+  }
+  state.effects.push(entry);
   return { kind: 'pause' };
 }
 

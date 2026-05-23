@@ -150,16 +150,19 @@ function cmdResume(args: ParsedArgs): number {
     return 1;
   }
 
-  // Inject any --event values into the wait_for pending entries.
+  // Inject any --event values into matching wait_for pending entries.
   const state: VMState = sr.snap.state;
   for (const [name, valText] of Object.entries(args.events)) {
     const v = parseResumeValue(valText);
     if ('error' in v) { process.stderr.write(`cli error: ${v.error}\n`); return 1; }
-    // Match by name in committed/pending wait_for entries — find pending and commit with value.
-    const entry = state.effects.find(e => e.effect === 'wait_for' && e.status === 'pending');
-    if (entry) { entry.status = 'committed'; entry.recordedValue = v; }
-    // For arg-less resumes, name is currently informational only.
-    void name;
+    const entry = state.effects.find(e =>
+      e.effect === 'wait_for' && e.status === 'pending' && e.eventName === name);
+    if (entry) {
+      // Leave status as pending; the VM will promote it to committed when it next executes this ip.
+      entry.recordedValue = v;
+    } else {
+      process.stderr.write(`cli warning: no pending wait_for("${name}") in snapshot\n`);
+    }
   }
 
   const timeFlag = args.flags['time'];
@@ -232,6 +235,51 @@ function cmdBench(args: ParsedArgs): number {
   return 0;
 }
 
+async function cmdRepl(_args: ParsedArgs): Promise<number> {
+  const readline = await import('node:readline');
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout, prompt: 'pen> ' });
+  const state = freshState();
+  process.stdout.write('Penelope REPL. Type expressions, statements, or .exit to leave.\n');
+  process.stdout.write('Bindings persist across lines. Expressions get auto-printed.\n\n');
+  rl.prompt();
+  for await (const raw of rl) {
+    const line = raw.trim();
+    if (line === '' ) { rl.prompt(); continue; }
+    if (line === '.exit' || line === '.quit') break;
+    try {
+      const source = wrapForRepl(line);
+      const ast = parse(tokenize(source));
+      const prog = compile(ast);
+      state.ip = 0;
+      state.valueStack = [];
+      // Keep frames so let-bindings accumulate; reset effects so the log doesn't grow forever.
+      state.effects = [];
+      const r = run(prog, state);
+      if (r.status === 'paused') {
+        process.stdout.write('(paused — REPL ignores pause; line dropped)\n');
+        state.ip = 0;
+      }
+    } catch (e) {
+      process.stderr.write(`error: ${(e as Error).message}\n`);
+    }
+    rl.prompt();
+  }
+  rl.close();
+  process.stdout.write('\n');
+  return 0;
+}
+
+function wrapForRepl(line: string): string {
+  // If the line ends in `;` or `}`, treat verbatim. Otherwise wrap as `print(to_str(<line>));`
+  // so the user sees the value of a bare expression.
+  const trimmed = line.replace(/\s+$/, '');
+  if (trimmed.endsWith(';') || trimmed.endsWith('}')) return trimmed;
+  // Detect "let ..." or other statement keywords — leave alone, append `;`.
+  if (/^\s*(let|fn|if)\b/.test(trimmed)) return trimmed + ';';
+  // Otherwise, treat as expression → auto-print.
+  return `print(to_str(${trimmed}));`;
+}
+
 function cmdInspect(args: ParsedArgs): number {
   const snapPath = args.positional[1];
   if (!snapPath) { process.stderr.write('usage: pen inspect <file.penz>\n'); return 2; }
@@ -296,7 +344,7 @@ function parseResumeValue(text: string): Value | { error: string } {
 void (parseResumeValue as unknown);
 void (join as unknown);
 
-export function main(argv: string[]): number {
+export async function main(argv: string[]): Promise<number> {
   const args = parseArgs(argv);
   const sub = args.positional[0];
   if (sub === 'build')   return cmdBuild(args);
@@ -307,8 +355,9 @@ export function main(argv: string[]): number {
   if (sub === 'disasm')  return cmdDisasm(args);
   if (sub === 'bench')   return cmdBench(args);
   if (sub === 'inspect') return cmdInspect(args);
-  process.stderr.write(`usage: penelope <build|exec|run|resume|fork|disasm|bench|inspect> [-O0|-O1|-O2] [args]\n`);
+  if (sub === 'repl')    return await cmdRepl(args);
+  process.stderr.write(`usage: penelope <build|exec|run|resume|fork|disasm|bench|inspect|repl> [-O0|-O1|-O2] [args]\n`);
   return 2;
 }
 
-process.exit(main(process.argv.slice(2)));
+main(process.argv.slice(2)).then(code => process.exit(code));
