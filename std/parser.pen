@@ -1,0 +1,376 @@
+/// Penelope parser — written in Penelope.
+///
+/// Scope: parses the same Penelope subset that std/lexer.pen handles, plus
+/// match expressions with literal/var/wildcard patterns. Output: an AST
+/// bundle dict shaped like {rootId, nodes} where each node is a dict.
+///
+/// NOT supported in this MVP self-hosted parser:
+///   - template strings (lexer doesn't emit them)
+///   - list/dict/or/guard patterns (only literal/var/wildcard)
+///   - import statements (skipped silently)
+///   - block comments + doc comments (lexer doesn't emit them as tokens)
+///   - leading - on int patterns inside match
+
+import "./iter.pen";
+import "./lexer.pen";
+
+/// State: {tokens, pos, nodes, counter}
+let mk_pstate = fn(tokens) {
+  dict_set(dict_set(dict_set(dict_set(dict_new(),
+    "tokens", tokens),
+    "pos", 0),
+    "nodes", dict_new()),
+    "counter", 0)
+};
+
+let p_peek = fn(st) {
+  list_get(dict_get(st, "tokens"), dict_get(st, "pos"))
+};
+let p_peek_kind = fn(st) { dict_get(p_peek(st), "kind") };
+let p_advance = fn(st) { dict_set(st, "pos", dict_get(st, "pos") + 1) };
+let p_eat = fn(st, kind) {
+  let t = p_peek(st);
+  if (dict_get(t, "kind") != kind) {
+    panic("parser: expected " + kind + " got " + dict_get(t, "kind"))
+  } else {
+    p_advance(st)
+  }
+};
+let p_match = fn(st, kind) {
+  if (p_peek_kind(st) == kind) { p_advance(st) } else { st }
+};
+
+/// Add a node. Returns {state, id}.
+let add_node = fn(st, node) {
+  let n = dict_get(st, "counter");
+  let id = "n" + to_str(n);
+  let nodes2 = dict_set(dict_get(st, "nodes"), id, dict_set(node, "id", id));
+  let st2 = dict_set(dict_set(st, "nodes", nodes2), "counter", n + 1);
+  dict_set(dict_set(dict_new(), "state", st2), "id", id)
+};
+
+/// Infix operator precedence. Returns dict {prec, op} or {} if not infix.
+let infix_info = fn(kind) {
+  match kind {
+    "EQ_EQ" => dict_set(dict_set(dict_new(), "prec", 1), "op", "=="),
+    "BANG_EQ" => dict_set(dict_set(dict_new(), "prec", 1), "op", "!="),
+    "LT" => dict_set(dict_set(dict_new(), "prec", 2), "op", "<"),
+    "GT" => dict_set(dict_set(dict_new(), "prec", 2), "op", ">"),
+    "LE" => dict_set(dict_set(dict_new(), "prec", 2), "op", "<="),
+    "GE" => dict_set(dict_set(dict_new(), "prec", 2), "op", ">="),
+    "PLUS" => dict_set(dict_set(dict_new(), "prec", 3), "op", "+"),
+    "MINUS" => dict_set(dict_set(dict_new(), "prec", 3), "op", "-"),
+    "STAR" => dict_set(dict_set(dict_new(), "prec", 4), "op", "*"),
+    "SLASH" => dict_set(dict_set(dict_new(), "prec", 4), "op", "/"),
+    _ => dict_new(),
+  }
+};
+
+let is_infix = fn(kind) {
+  dict_has(infix_info(kind), "prec")
+};
+
+/// Forward declarations are not possible — we mutually recurse via lookups
+/// stored in a dict. Trick: define a "vtable" populated below.
+/// In practice, we structure things so parse_expression calls parse_postfix
+/// which calls parse_primary, which can call parse_block / parse_fn / parse_if /
+/// parse_match / parse_expression (back). Since pen `fn` is recursive-by-name
+/// inside its body, mutual recursion works as long as each fn is defined.
+
+/// Parse a primary expression. Returns {state, id}.
+let parse_primary = fn(st) {
+  let t = p_peek(st);
+  let kind = dict_get(t, "kind");
+  match kind {
+    "INT" => add_node(p_advance(st), dict_set(dict_set(dict_new(), "kind", "IntLit"), "value", dict_get(t, "value"))),
+    "TRUE" => add_node(p_advance(st), dict_set(dict_set(dict_new(), "kind", "BoolLit"), "value", true)),
+    "FALSE" => add_node(p_advance(st), dict_set(dict_set(dict_new(), "kind", "BoolLit"), "value", false)),
+    "STRING" => add_node(p_advance(st), dict_set(dict_set(dict_new(), "kind", "StringLit"), "value", dict_get(t, "text"))),
+    "IDENT" => add_node(p_advance(st), dict_set(dict_set(dict_new(), "kind", "Var"), "name", dict_get(t, "text"))),
+    "PAUSE" => add_node(p_advance(st), dict_set(dict_new(), "kind", "Pause")),
+    "MINUS" => {
+      // Unary minus on int literal -> negate; else 0 - x.
+      let s1 = p_advance(st);
+      let next = p_peek(s1);
+      if (dict_get(next, "kind") == "INT") {
+        add_node(p_advance(s1), dict_set(dict_set(dict_new(), "kind", "IntLit"), "value", 0 - dict_get(next, "value")))
+      } else {
+        let zero_r = add_node(s1, dict_set(dict_set(dict_new(), "kind", "IntLit"), "value", 0));
+        let inner_r = parse_primary(dict_get(zero_r, "state"));
+        add_node(dict_get(inner_r, "state"), dict_set(dict_set(dict_set(dict_set(dict_new(),
+          "kind", "BinOp"), "op", "-"),
+          "leftId", dict_get(zero_r, "id")),
+          "rightId", dict_get(inner_r, "id")))
+      }
+    },
+    "LPAREN" => {
+      let s1 = p_advance(st);
+      if (p_peek_kind(s1) == "RPAREN") {
+        add_node(p_advance(s1), dict_set(dict_new(), "kind", "UnitLit"))
+      } else {
+        let inner = parse_expression(s1);
+        let s2 = p_eat(dict_get(inner, "state"), "RPAREN");
+        dict_set(dict_set(dict_new(), "state", s2), "id", dict_get(inner, "id"))
+      }
+    },
+    "IF" => parse_if(st),
+    "FN" => parse_fn(st),
+    "MATCH" => parse_match(st),
+    "LBRACE" => parse_block(st),
+    _ => panic("parser: unexpected token " + kind),
+  }
+};
+
+/// Parse postfix calls: `f(a, b)(c)`.
+let parse_postfix = fn(st) {
+  let prim = parse_primary(st);
+  let loop = fn(r) {
+    let s = dict_get(r, "state");
+    if (p_peek_kind(s) != "LPAREN") {
+      r
+    } else {
+      let s1 = p_advance(s);
+      let collect_args = fn(s2, acc) {
+        if (p_peek_kind(s2) == "RPAREN") {
+          dict_set(dict_set(dict_new(), "state", s2), "ids", acc)
+        } else {
+          let arg = parse_expression(s2);
+          let new_acc = list_push(acc, dict_get(arg, "id"));
+          let after = dict_get(arg, "state");
+          if (p_peek_kind(after) == "COMMA") {
+            collect_args(p_advance(after), new_acc)
+          } else {
+            dict_set(dict_set(dict_new(), "state", after), "ids", new_acc)
+          }
+        }
+      };
+      let args = collect_args(s1, list_new());
+      let s2 = p_eat(dict_get(args, "state"), "RPAREN");
+      let call_r = add_node(s2, dict_set(dict_set(dict_set(dict_new(),
+        "kind", "Call"),
+        "calleeId", dict_get(r, "id")),
+        "argIds", dict_get(args, "ids")));
+      loop(call_r)
+    }
+  };
+  loop(prim)
+};
+
+/// Parse an expression with infix operators (Pratt-style).
+let parse_expression = fn(st) {
+  parse_expr_prec(st, 0)
+};
+
+let parse_expr_prec = fn(st, min_prec) {
+  let left = parse_postfix(st);
+  let loop = fn(l) {
+    let s = dict_get(l, "state");
+    let kind = p_peek_kind(s);
+    let info = infix_info(kind);
+    if (dict_has(info, "prec") == false) {
+      l
+    } else {
+      let prec = dict_get(info, "prec");
+      if (prec < min_prec) {
+        l
+      } else {
+        let op = dict_get(info, "op");
+        let s1 = p_advance(s);
+        let right = parse_expr_prec(s1, prec + 1);
+        let combined = add_node(dict_get(right, "state"), dict_set(dict_set(dict_set(dict_set(dict_new(),
+          "kind", "BinOp"),
+          "op", op),
+          "leftId", dict_get(l, "id")),
+          "rightId", dict_get(right, "id")));
+        loop(combined)
+      }
+    }
+  };
+  loop(left)
+};
+
+/// Parse a block { ... } expression.
+let parse_block = fn(st) {
+  let s = p_eat(st, "LBRACE");
+  let go = fn(s2, stmts, trailing) {
+    if (p_peek_kind(s2) == "RBRACE") {
+      let s3 = p_advance(s2);
+      add_node(s3, dict_set(dict_set(dict_set(dict_new(),
+        "kind", "Block"),
+        "stmtIds", stmts),
+        "trailingExprId", trailing))
+    } else {
+      if (p_peek_kind(s2) == "LET") {
+        let let_r = parse_let(s2);
+        go(dict_get(let_r, "state"), list_push(stmts, dict_get(let_r, "id")), trailing)
+      } else {
+        let expr_r = parse_expression(s2);
+        let after = dict_get(expr_r, "state");
+        if (p_peek_kind(after) == "SEMI") {
+          let s3 = p_advance(after);
+          let stmt = add_node(s3, dict_set(dict_set(dict_new(),
+            "kind", "ExprStmt"),
+            "exprId", dict_get(expr_r, "id")));
+          go(dict_get(stmt, "state"), list_push(stmts, dict_get(stmt, "id")), trailing)
+        } else {
+          // trailing expression — must be followed by RBRACE
+          go(after, stmts, dict_get(expr_r, "id"))
+        }
+      }
+    }
+  };
+  go(s, list_new(), "")
+};
+
+/// Parse an if expression.
+let parse_if = fn(st) {
+  let s1 = p_eat(st, "IF");
+  let s2 = p_eat(s1, "LPAREN");
+  let cond = parse_expression(s2);
+  let s3 = p_eat(dict_get(cond, "state"), "RPAREN");
+  let then_block = parse_block(s3);
+  let s4 = p_eat(dict_get(then_block, "state"), "ELSE");
+  let else_block = parse_block(s4);
+  add_node(dict_get(else_block, "state"), dict_set(dict_set(dict_set(dict_set(dict_new(),
+    "kind", "If"),
+    "condId", dict_get(cond, "id")),
+    "thenBlockId", dict_get(then_block, "id")),
+    "elseBlockId", dict_get(else_block, "id")))
+};
+
+/// Parse a fn(params) { body } expression.
+let parse_fn = fn(st) {
+  let s1 = p_eat(st, "FN");
+  let s2 = p_eat(s1, "LPAREN");
+  let collect_params = fn(s, acc) {
+    if (p_peek_kind(s) == "RPAREN") {
+      dict_set(dict_set(dict_new(), "state", s), "params", acc)
+    } else {
+      let t = p_peek(s);
+      let s2 = p_eat(s, "IDENT");
+      let new_acc = list_push(acc, dict_get(t, "text"));
+      if (p_peek_kind(s2) == "COMMA") {
+        collect_params(p_advance(s2), new_acc)
+      } else {
+        dict_set(dict_set(dict_new(), "state", s2), "params", new_acc)
+      }
+    }
+  };
+  let p = collect_params(s2, list_new());
+  let s3 = p_eat(dict_get(p, "state"), "RPAREN");
+  let body = parse_block(s3);
+  add_node(dict_get(body, "state"), dict_set(dict_set(dict_set(dict_new(),
+    "kind", "Fn"),
+    "params", dict_get(p, "params")),
+    "bodyBlockId", dict_get(body, "id")))
+};
+
+/// Parse a single match pattern. Returns dict shape: {kind, value?, name?}.
+let parse_pattern = fn(st) {
+  let t = p_peek(st);
+  let kind = dict_get(t, "kind");
+  match kind {
+    "INT" => dict_set(dict_set(dict_new(), "state", p_advance(st)), "pattern",
+      dict_set(dict_set(dict_new(), "kind", "int"), "value", dict_get(t, "value"))),
+    "TRUE" => dict_set(dict_set(dict_new(), "state", p_advance(st)), "pattern",
+      dict_set(dict_set(dict_new(), "kind", "bool"), "value", true)),
+    "FALSE" => dict_set(dict_set(dict_new(), "state", p_advance(st)), "pattern",
+      dict_set(dict_set(dict_new(), "kind", "bool"), "value", false)),
+    "STRING" => dict_set(dict_set(dict_new(), "state", p_advance(st)), "pattern",
+      dict_set(dict_set(dict_new(), "kind", "str"), "value", dict_get(t, "text"))),
+    "IDENT" => {
+      let name = dict_get(t, "text");
+      if (name == "_") {
+        dict_set(dict_set(dict_new(), "state", p_advance(st)), "pattern",
+          dict_set(dict_new(), "kind", "wildcard"))
+      } else {
+        dict_set(dict_set(dict_new(), "state", p_advance(st)), "pattern",
+          dict_set(dict_set(dict_new(), "kind", "var"), "name", name))
+      }
+    },
+    _ => panic("parser: unexpected pattern token " + kind),
+  }
+};
+
+/// Parse a match expression: match scrutinee { pat => body, ... }
+let parse_match = fn(st) {
+  let s1 = p_eat(st, "MATCH");
+  let scrut = parse_expression(s1);
+  let s2 = p_eat(dict_get(scrut, "state"), "LBRACE");
+  let collect_arms = fn(s, acc) {
+    if (p_peek_kind(s) == "RBRACE") {
+      dict_set(dict_set(dict_new(), "state", s), "arms", acc)
+    } else {
+      let pat_r = parse_pattern(s);
+      let s2 = p_eat(dict_get(pat_r, "state"), "FAT_ARROW");
+      let body = parse_expression(s2);
+      let arm = dict_set(dict_set(dict_new(),
+        "pattern", dict_get(pat_r, "pattern")),
+        "bodyId", dict_get(body, "id"));
+      let after = dict_get(body, "state");
+      let after2 = if (p_peek_kind(after) == "COMMA") { p_advance(after) } else { after };
+      collect_arms(after2, list_push(acc, arm))
+    }
+  };
+  let arms_r = collect_arms(s2, list_new());
+  let s3 = p_eat(dict_get(arms_r, "state"), "RBRACE");
+  add_node(s3, dict_set(dict_set(dict_set(dict_new(),
+    "kind", "Match"),
+    "scrutineeId", dict_get(scrut, "id")),
+    "arms", dict_get(arms_r, "arms")))
+};
+
+/// Parse a let statement: let name = value;
+let parse_let = fn(st) {
+  let s1 = p_eat(st, "LET");
+  let name_tok = p_peek(s1);
+  let s2 = p_eat(s1, "IDENT");
+  let s3 = p_eat(s2, "EQ");
+  let val = parse_expression(s3);
+  let s4 = p_eat(dict_get(val, "state"), "SEMI");
+  add_node(s4, dict_set(dict_set(dict_set(dict_new(),
+    "kind", "Let"),
+    "name", dict_get(name_tok, "text")),
+    "valueId", dict_get(val, "id")))
+};
+
+/// Parse a top-level expression statement: expr;
+let parse_expr_stmt = fn(st) {
+  let expr = parse_expression(st);
+  let s1 = p_eat(dict_get(expr, "state"), "SEMI");
+  add_node(s1, dict_set(dict_set(dict_new(),
+    "kind", "ExprStmt"),
+    "exprId", dict_get(expr, "id")))
+};
+
+/// Top-level: parse a list of statements. Imports are silently skipped.
+let pen_parse = fn(tokens) {
+  let st = mk_pstate(tokens);
+  let go = fn(s, stmts) {
+    let kind = p_peek_kind(s);
+    if (kind == "EOF") {
+      let prog = add_node(s, dict_set(dict_set(dict_new(),
+        "kind", "Program"),
+        "stmtIds", stmts));
+      dict_set(dict_set(dict_new(),
+        "rootId", dict_get(prog, "id")),
+        "nodes", dict_get(dict_get(prog, "state"), "nodes"))
+    } else {
+      if (kind == "IMPORT") {
+        let s1 = p_advance(s);
+        let s2 = p_eat(s1, "STRING");
+        let s3 = p_eat(s2, "SEMI");
+        go(s3, stmts)
+      } else {
+        if (kind == "LET") {
+          let r = parse_let(s);
+          go(dict_get(r, "state"), list_push(stmts, dict_get(r, "id")))
+        } else {
+          let r = parse_expr_stmt(s);
+          go(dict_get(r, "state"), list_push(stmts, dict_get(r, "id")))
+        }
+      }
+    }
+  };
+  go(st, list_new())
+};
