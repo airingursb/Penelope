@@ -223,8 +223,12 @@ function stepEval(state: State, rest: ControlInstr[], node: ASTNode, _ast: ASTBu
         ...[...node.argIds].reverse().map(id => ({ op: 'eval' as const, nodeId: id })),
         { op: 'eval', nodeId: node.calleeId },
       ]});
+    case 'Pause':
+      return { kind: 'paused',
+               state: { ...state, control: rest },
+               pausedAt: node.id };
     default:
-      return { kind: 'error', message: `unimplemented eval kind: ${(node as ASTNode).kind}`, atNode: node.id };
+      return { kind: 'error', message: `unimplemented eval kind: ${(node as ASTNode).kind}`, atNode: (node as ASTNode).id };
   }
 }
 

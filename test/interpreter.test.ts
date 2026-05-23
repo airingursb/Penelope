@@ -1,7 +1,7 @@
 import { test, expect } from 'vitest';
 import { tokenize } from '../src/lexer.js';
 import { parse } from '../src/parser.js';
-import { runToCompletion } from '../src/interpreter.js';
+import { runToCompletion, step } from '../src/interpreter.js';
 
 test('runs an integer literal to completion with the literal on the value stack', () => {
   const ast = parse(tokenize('42;'));
@@ -193,4 +193,42 @@ test('calling a non-function is a runtime error', () => {
   const result = runToCompletion(ast);
   expect(result.kind).toBe('error');
   if (result.kind === 'error') expect(result.message).toMatch(/not callable/);
+});
+
+test('pause halts the loop with a snapshot', () => {
+  const ast = parse(tokenize('let x = pause; x + 1;'));
+  const result = runToCompletion(ast);
+  expect(result.kind).toBe('paused');
+  if (result.kind === 'paused') {
+    expect(typeof result.pausedAt).toBe('string');
+    // After pause, the bindLet for x is still pending on control.
+    expect(result.state.control.length).toBeGreaterThan(0);
+  }
+});
+
+test('resume by pushing a value to valueStack and continuing', () => {
+  const ast = parse(tokenize('let x = pause; print(x + 1);'));
+  const paused = runToCompletion(ast);
+  if (paused.kind !== 'paused') throw new Error(`expected paused`);
+
+  const resumedState = {
+    ...paused.state,
+    valueStack: [...paused.state.valueStack, { tag: 'int' as const, v: 41 }],
+  };
+
+  const logged: string[] = [];
+  const origLog = console.log;
+  console.log = (msg: string) => logged.push(msg);
+  try {
+    let s = resumedState;
+    while (true) {
+      const r = step(s, ast);
+      if (r.kind === 'continue') { s = r.state; continue; }
+      expect(r.kind).toBe('done');
+      break;
+    }
+    expect(logged).toEqual(['42']);
+  } finally {
+    console.log = origLog;
+  }
 });
