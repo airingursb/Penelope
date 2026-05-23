@@ -268,6 +268,49 @@ The current name was chosen for its mythological grounding in the language's cor
 
 ---
 
+## Phase 1 Status
+
+**Status:** ✅ Complete (2026-05-23)
+
+Phase 1 ships a working tiny Penelope: a hand-written lexer + recursive-descent parser + tree-walking step-machine interpreter in TypeScript, with `pause` as the only special primitive. Every execution state is plain JSON data; `JSON.stringify(state)` IS the snapshot format.
+
+**62/62 tests passing** — 59 unit (lexer/parser/interpreter/snapshot) + 3 cross-process integration (the three acceptance demos).
+
+### Try it
+
+```bash
+git clone https://github.com/airingursb/Penelope.git
+cd Penelope
+npm install
+npm run build
+
+# Demo 1: top-level pause
+./bin/penelope run examples/01-toplevel-pause.pen
+./bin/penelope resume examples/01-toplevel-pause.penz 5
+# → prints 15
+
+# Demo 2: nested-function pause (closures survive across processes)
+./bin/penelope run examples/02-nested-pause.pen
+./bin/penelope resume examples/02-nested-pause.penz 41
+# → prints 42
+
+# Demo 3: fork (two independent futures from one snapshot)
+./bin/penelope run examples/03-fork.pen
+./bin/penelope fork examples/03-fork.penz 5 10
+# → prints [fork-0] 105 and [fork-1] 110
+
+# Bonus: inspect a paused snapshot (the brand action)
+./bin/penelope run examples/01-toplevel-pause.pen
+./bin/penelope inspect examples/01-toplevel-pause.penz
+# → pretty-printed snapshot showing pause location, scopes, control stack, value stack
+```
+
+### What's next
+
+Phase 2 (effect system — correctness for impure pause/resume) and Phase 3 (bytecode VM + live editing + time-travel debugger) are not yet started. See `docs/superpowers/specs/2026-05-22-penelope-phase-1-design.md` §17 for Phase 2 forward-compatibility notes built into Phase 1.
+
+---
+
 ## License
 
 TBD.

@@ -19,3 +19,6 @@ build/
 
 # Claude-private project spec
 CLAUDE.md
+
+*.penz
+package-lock.json
