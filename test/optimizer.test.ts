@@ -87,15 +87,18 @@ test('full -O2 pipeline: complex program produces same effect log as -O0', () =>
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { loadSource } from '../src/loader.js';
 
 // Skip examples that hit external network — flaky in CI.
+// Skip the helper module of 15-modules (it's imported, not a top-level program).
 const exampleFiles = fs.readdirSync('examples')
   .filter(f => f.endsWith('.pen'))
-  .filter(f => !f.includes('net-fetch') && !f.includes('24h-agent'))
+  .filter(f => !f.includes('net-fetch') && !f.includes('24h-agent') && f !== '15-modules-math.pen')
   .sort();
 
 test.each(exampleFiles)('example %s: -O0 and -O2 produce identical effect kinds in order', (file) => {
-  const source = fs.readFileSync(path.join('examples', file), 'utf8');
+  // Use loadSource so import statements get expanded (needed for 15-modules-main).
+  const source = loadSource(path.join('examples', file));
   const prog = compile(parse(tokenize(source)));
   const s0 = freshState(); s0.timeOverride = 1700000000;
   const s2 = freshState(); s2.timeOverride = 1700000000;

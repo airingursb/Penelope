@@ -1,0 +1,12 @@
+// Helper module. Imported by 15-modules-main.pen.
+
+let square = fn(n) { n * n };
+
+let cube = fn(n) { n * n * n };
+
+let sum_to = fn(n) {
+  let go = fn(i, acc) {
+    if (i > n) { acc } else { go(i + 1, acc + i) }
+  };
+  go(1, 0)
+};

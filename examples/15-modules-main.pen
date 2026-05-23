@@ -1,0 +1,9 @@
+// Module system showcase.
+// import is expanded at load time — by the time we tokenize, all imported
+// bindings live in the top-level scope.
+
+import "./15-modules-math.pen";
+
+print("square(7)  = ${square(7)}");
+print("cube(3)    = ${cube(3)}");
+print("sum_to(10) = ${sum_to(10)}");

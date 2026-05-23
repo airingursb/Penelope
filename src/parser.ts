@@ -4,6 +4,7 @@
 // (essential for snapshot resume).
 
 import type { Token, TokenKind } from './lexer.js';
+import { tokenize } from './lexer.js';
 import type { ASTNode, NodeId, ASTBundle, BinOp } from './ast.js';
 
 // Precedence table. Higher number binds tighter.
@@ -82,6 +83,13 @@ export function parse(tokens: Token[]): ASTBundle {
 
   const stmtIds: NodeId[] = [];
   while (c.peekKind() !== 'EOF') {
+    // Tolerate bare `import "..."` statements (already expanded by the loader)
+    if (c.peekKind() === 'IMPORT') {
+      c.eat('IMPORT');
+      c.eat('STRING');
+      c.eat('SEMI');
+      continue;
+    }
     stmtIds.push(parseStatement(c, b).id);
   }
 
@@ -199,6 +207,46 @@ function parseIf(c: Cursor, b: Builder): ASTNode {
   }), pos);
 }
 
+function parseMatch(c: Cursor, b: Builder): ASTNode {
+  const startTok = c.peek();
+  const pos = { line: startTok.line, col: startTok.col };
+  c.eat('MATCH');
+  const scrutinee = parseExpression(c, b);
+  c.eat('LBRACE');
+  const arms: import('./ast.js').MatchArm[] = [];
+  while (c.peekKind() !== 'RBRACE') {
+    const pattern = parsePattern(c);
+    c.eat('FAT_ARROW');
+    const body = parseExpression(c, b);
+    arms.push({ pattern, bodyId: body.id });
+    if (c.peekKind() === 'COMMA') c.eat('COMMA');
+  }
+  c.eat('RBRACE');
+  if (arms.length === 0) {
+    throw new Error(`parser: match must have at least one arm at line ${pos.line} col ${pos.col}`);
+  }
+  return b.addNode(id => ({
+    id, kind: 'Match', scrutineeId: scrutinee.id, arms,
+  }), pos);
+}
+
+function parsePattern(c: Cursor): import('./ast.js').Pattern {
+  const t = c.peek();
+  if (t.kind === 'INT') {
+    c.eat('INT');
+    return { kind: 'int', value: t.value! };
+  }
+  if (t.kind === 'TRUE')  { c.eat('TRUE');  return { kind: 'bool', value: true  }; }
+  if (t.kind === 'FALSE') { c.eat('FALSE'); return { kind: 'bool', value: false }; }
+  if (t.kind === 'STRING') { c.eat('STRING'); return { kind: 'str', value: t.text! }; }
+  if (t.kind === 'IDENT') {
+    c.eat('IDENT');
+    if (t.text === '_') return { kind: 'wildcard' };
+    return { kind: 'var', name: t.text! };
+  }
+  throw new Error(`parser: unexpected pattern token ${t.kind} at line ${t.line} col ${t.col}`);
+}
+
 function parseFn(c: Cursor, b: Builder): ASTNode {
   const startTok = c.peek();
   const pos = { line: startTok.line, col: startTok.col };
@@ -226,6 +274,10 @@ function parsePrimary(c: Cursor, b: Builder): ASTNode {
       c.eat('STRING');
       return b.addNode(id => ({ id, kind: 'StringLit', value: t.text! }), pos);
     }
+    case 'TEMPLATE_STRING': {
+      c.eat('TEMPLATE_STRING');
+      return buildTemplateString(t.parts!, b, pos);
+    }
     case 'TRUE':
       c.eat('TRUE');
       return b.addNode(id => ({ id, kind: 'BoolLit', value: true }), pos);
@@ -243,6 +295,8 @@ function parsePrimary(c: Cursor, b: Builder): ASTNode {
       return parseIf(c, b);
     case 'FN':
       return parseFn(c, b);
+    case 'MATCH':
+      return parseMatch(c, b);
     case 'LPAREN': {
       c.eat('LPAREN');
       const inner = parseExpression(c, b);
@@ -251,5 +305,87 @@ function parsePrimary(c: Cursor, b: Builder): ASTNode {
     }
     default:
       throw new Error(`parser: unexpected token ${t.kind} at line ${t.line} col ${t.col}`);
+  }
+}
+
+// Desugar a template string into a `+` chain of StringLits and to_str(expr) calls.
+// "a${x}b" → "a" + to_str(x) + "b"
+function buildTemplateString(
+  parts: import('./lexer.js').TemplatePart[],
+  b: Builder,
+  pos: { line: number; col: number },
+): ASTNode {
+  if (parts.length === 0) {
+    return b.addNode(id => ({ id, kind: 'StringLit', value: '' }), pos);
+  }
+  const nodes: ASTNode[] = parts.map(part => {
+    if (part.kind === 'text') {
+      return b.addNode(id => ({ id, kind: 'StringLit', value: part.value }), pos);
+    }
+    // Tokenize + parse the expression source as a standalone fragment.
+    const exprTokens = tokenize(part.source + ';');
+    const exprBundle = parse(exprTokens);
+    // exprBundle is a Program with one ExprStmt — extract the inner expression
+    // and re-import its nodes into this builder.
+    const inner = importExpression(exprBundle, b);
+    // Wrap in to_str(...)
+    const calleeName = b.addNode(id => ({ id, kind: 'Var', name: 'to_str' }), pos);
+    return b.addNode(id => ({
+      id, kind: 'Call', calleeId: calleeName.id, argIds: [inner.id],
+    }), pos);
+  });
+  // Fold with `+`
+  return nodes.reduce((acc, n) => b.addNode(id => ({
+    id, kind: 'BinOp', op: '+', leftId: acc.id, rightId: n.id,
+  }), pos));
+}
+
+// Copy the (single) expression out of a freshly-parsed Program into the host builder.
+function importExpression(bundle: import('./ast.js').ASTBundle, b: Builder): ASTNode {
+  const program = bundle.nodes[bundle.rootId];
+  if (program.kind !== 'Program' || program.stmtIds.length !== 1) {
+    throw new Error(`template: expected a single expression`);
+  }
+  const stmt = bundle.nodes[program.stmtIds[0]];
+  if (stmt.kind !== 'ExprStmt') throw new Error(`template: expected expression`);
+  return importNode(bundle, b, stmt.exprId);
+}
+
+function importNode(bundle: import('./ast.js').ASTBundle, b: Builder, id: import('./ast.js').NodeId): ASTNode {
+  const src = bundle.nodes[id];
+  // Deep-copy the node, remapping child ids via recursive import.
+  switch (src.kind) {
+    case 'IntLit':    return b.addNode(nid => ({ id: nid, kind: 'IntLit', value: src.value }), src.pos);
+    case 'BoolLit':   return b.addNode(nid => ({ id: nid, kind: 'BoolLit', value: src.value }), src.pos);
+    case 'StringLit': return b.addNode(nid => ({ id: nid, kind: 'StringLit', value: src.value }), src.pos);
+    case 'Pause':     return b.addNode(nid => ({ id: nid, kind: 'Pause' }), src.pos);
+    case 'Var':       return b.addNode(nid => ({ id: nid, kind: 'Var', name: src.name }), src.pos);
+    case 'BinOp': {
+      const l = importNode(bundle, b, src.leftId);
+      const r = importNode(bundle, b, src.rightId);
+      return b.addNode(nid => ({ id: nid, kind: 'BinOp', op: src.op, leftId: l.id, rightId: r.id }), src.pos);
+    }
+    case 'Call': {
+      const callee = importNode(bundle, b, src.calleeId);
+      const args = src.argIds.map(a => importNode(bundle, b, a).id);
+      return b.addNode(nid => ({ id: nid, kind: 'Call', calleeId: callee.id, argIds: args }), src.pos);
+    }
+    case 'If': {
+      const cond = importNode(bundle, b, src.condId);
+      const t = importNode(bundle, b, src.thenBlockId);
+      const e = importNode(bundle, b, src.elseBlockId);
+      return b.addNode(nid => ({ id: nid, kind: 'If', condId: cond.id, thenBlockId: t.id, elseBlockId: e.id }), src.pos);
+    }
+    case 'Block': {
+      const stmts = src.stmtIds.map(s => importNode(bundle, b, s).id);
+      const trailing = src.trailingExprId !== null ? importNode(bundle, b, src.trailingExprId).id : null;
+      return b.addNode(nid => ({ id: nid, kind: 'Block', stmtIds: stmts, trailingExprId: trailing }), src.pos);
+    }
+    case 'Fn': {
+      const body = importNode(bundle, b, src.bodyBlockId);
+      return b.addNode(nid => ({ id: nid, kind: 'Fn', params: src.params, bodyBlockId: body.id }), src.pos);
+    }
+    default:
+      throw new Error(`template: unsupported expression kind ${src.kind}`);
   }
 }

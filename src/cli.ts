@@ -11,6 +11,7 @@ import { runOptimizer, type OLevel } from './optimizer.js';
 import { check as typeCheck } from './typecheck.js';
 import { format as fmtSource } from './format.js';
 import { extractDocs, renderMarkdown } from './doc-gen.js';
+import { loadSource } from './loader.js';
 import { extractExpectations, checkExpectations } from './test-runner.js';
 import { spawnSync } from 'node:child_process';
 import { formatDiagnostic, diagnosticFromMessage } from './diagnostic.js';
@@ -78,7 +79,7 @@ function cmdBuild(args: ParsedArgs): number {
   if (!srcPath) { process.stderr.write('usage: pen build [-O0|-O1|-O2] <file.pen>\n'); return 2; }
   const absSrc = resolve(srcPath);
   let source: string;
-  try { source = readFileSync(absSrc, 'utf8'); }
+  try { source = loadSource(absSrc); }
   catch { process.stderr.write(`cli error: cannot read source: ${srcPath}\n`); return 3; }
 
   try {
@@ -112,7 +113,7 @@ function cmdExec(args: ParsedArgs): number {
 
 function runOnce(absPath: string, filePath: string, args: ParsedArgs): number {
   let source: string;
-  try { source = readFileSync(absPath, 'utf8'); }
+  try { source = loadSource(absPath); }
   catch { process.stderr.write(`cli error: cannot read source: ${filePath}\n`); return 3; }
 
   const timeFlag = args.flags['time'];
@@ -266,7 +267,7 @@ function cmdBench(args: ParsedArgs): number {
   const srcPath = args.positional[1];
   if (!srcPath) { process.stderr.write('usage: pen bench <file.pen>\n'); return 2; }
   let source: string;
-  try { source = readFileSync(resolve(srcPath), 'utf8'); }
+  try { source = loadSource(resolve(srcPath)); }
   catch { process.stderr.write(`cli error: cannot read source: ${srcPath}\n`); return 3; }
   const ast = parse(tokenize(source));
   const prog = compile(ast);
@@ -291,7 +292,7 @@ function cmdBench(args: ParsedArgs): number {
 
 function testOnce(srcPath: string): number {
   let source: string;
-  try { source = readFileSync(resolve(srcPath), 'utf8'); }
+  try { source = loadSource(resolve(srcPath)); }
   catch { process.stderr.write(`cli error: cannot read source: ${srcPath}\n`); return 3; }
   const expects = extractExpectations(source);
   if (expects.length === 0) {
@@ -320,7 +321,7 @@ function cmdDoc(args: ParsedArgs): number {
   const srcPath = args.positional[1];
   if (!srcPath) { process.stderr.write('usage: pen doc <file.pen>\n'); return 2; }
   let source: string;
-  try { source = readFileSync(resolve(srcPath), 'utf8'); }
+  try { source = loadSource(resolve(srcPath)); }
   catch { process.stderr.write(`cli error: cannot read source: ${srcPath}\n`); return 3; }
   try {
     const { tokens, comments } = tokenizeWithComments(source);
@@ -348,7 +349,7 @@ function cmdFmt(args: ParsedArgs): number {
   const srcPath = args.positional[1];
   if (!srcPath) { process.stderr.write('usage: pen fmt [--write] <file.pen>\n'); return 2; }
   let source: string;
-  try { source = readFileSync(resolve(srcPath), 'utf8'); }
+  try { source = loadSource(resolve(srcPath)); }
   catch { process.stderr.write(`cli error: cannot read source: ${srcPath}\n`); return 3; }
   try {
     const { tokens, comments } = tokenizeWithComments(source);
@@ -372,7 +373,7 @@ function cmdProfile(args: ParsedArgs): number {
   const srcPath = args.positional[1];
   if (!srcPath) { process.stderr.write('usage: pen profile [-O0|-O1|-O2] <file.pen>\n'); return 2; }
   let source: string;
-  try { source = readFileSync(resolve(srcPath), 'utf8'); }
+  try { source = loadSource(resolve(srcPath)); }
   catch { process.stderr.write(`cli error: cannot read source: ${srcPath}\n`); return 3; }
   const ast = parse(tokenize(source));
   const prog = runOptimizer(compile(ast), args.oLevel);
@@ -405,7 +406,7 @@ function cmdProfile(args: ParsedArgs): number {
 
 function checkOnce(srcPath: string): number {
   let source: string;
-  try { source = readFileSync(resolve(srcPath), 'utf8'); }
+  try { source = loadSource(resolve(srcPath)); }
   catch { process.stderr.write(`cli error: cannot read source: ${srcPath}\n`); return 3; }
   let errs;
   try {

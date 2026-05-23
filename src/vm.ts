@@ -68,6 +68,17 @@ function runUntilStop(
   profile?: ProfileData,
   breakpoints?: Set<number>,
 ): DebugStop {
+  // Snapshot the pool of pre-existing committed entries per ip. Only these are
+  // eligible for replay. New entries added during this run are NOT replayed —
+  // otherwise a same-ip effect inside recursion would erroneously replay itself.
+  const replayPool = new Map<number, EffectEntry[]>();
+  for (const e of state.effects) {
+    if (e.status === 'committed') {
+      const arr = replayPool.get(e.ip) ?? [];
+      arr.push(e);
+      replayPool.set(e.ip, arr);
+    }
+  }
   const replayIdx = new Map<number, number>();
   let firstIter = true;
   while (true) {
@@ -235,7 +246,7 @@ function runUntilStop(
         const argc = op[2] as number;
         const args: Value[] = [];
         for (let i = 0; i < argc; i++) args.unshift(pop(state));
-        const step = executeEffect(state, name, args, replayIdx);
+        const step = executeEffect(state, name, args, replayIdx, replayPool);
         if (step.kind === 'pause') {
           // Restore args so a future resume can re-pop them.
           for (const a of args) push(state, a);
@@ -395,14 +406,20 @@ function applyBuiltin(name: string, args: Value[]): Value {
 
 type EffectStep = { kind: 'value'; v: Value } | { kind: 'pause' };
 
-function executeEffect(state: VMState, name: EffectName, args: Value[], replayIdx: Map<number, number>): EffectStep {
+function executeEffect(
+  state: VMState,
+  name: EffectName,
+  args: Value[],
+  replayIdx: Map<number, number>,
+  replayPool: Map<number, EffectEntry[]>,
+): EffectStep {
   const ip = state.ip;
   if (categoryOf(name) === 'wait') return executeWaitEffect(state, name, args, ip);
-  // Find how many committed entries at this ip we've already replayed in this run.
+  // Only consume from the pool of entries that existed BEFORE this run started.
+  // Same-ip effects added during recursion are NOT replayed.
   const usedCount = replayIdx.get(ip) ?? 0;
-  // Find the nth committed entry at this ip.
-  const committedAtIp = state.effects.filter(e => e.ip === ip && e.status === 'committed');
-  const existing = committedAtIp[usedCount];
+  const eligible = replayPool.get(ip) ?? [];
+  const existing = eligible[usedCount];
   if (existing && !state.noReplay) {
     replayIdx.set(ip, usedCount + 1);
     return { kind: 'value', v: existing.recordedValue ?? { tag: 'unit' } };

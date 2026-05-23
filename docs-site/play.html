@@ -84,6 +84,8 @@
     <option value="fib">recursion (fib)</option>
     <option value="list">list builtins</option>
     <option value="dict">dict builtins</option>
+    <option value="interp">string interpolation</option>
+    <option value="match">pattern matching</option>
   </select>
   <select id="olevel">
     <option value="0">-O0</option>
@@ -118,6 +120,8 @@ const EXAMPLES = {
   fib: 'let fib = fn(n) {\n  if (n < 2) { n } else { fib(n - 1) + fib(n - 2) }\n};\nprint(to_str(fib(15)));',
   list: 'let xs = list_new(3, 1, 4, 1, 5);\nprint(to_str(xs));\nprint(to_str(list_len(xs)));',
   dict: 'let d = dict_set(dict_new(), "name", "Penelope");\nprint(dict_get(d, "name"));',
+  interp: 'let name = "world";\nlet age = 42;\nprint("hello ${name}, version ${age + 1}");',
+  match: 'let describe = fn(n) {\n  match n {\n    0 => "zero",\n    1 => "one",\n    x => "many: ${x}",\n  }\n};\nprint(describe(0));\nprint(describe(42));',
 };
 
 const $ = (id) => document.getElementById(id);

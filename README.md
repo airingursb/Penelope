@@ -124,9 +124,10 @@ The CLI also supports `exec`, `resume`, `fork`, `disasm`, `profile`, `doc`, plus
 | Polish R3 | Rust-style errors · LSP hover · snippets · web playground | ✅ |
 | Polish R4 | `pen fmt` · `pen test` · LSP completions + go-to-def · `--watch` · color | ✅ |
 | Polish R5 | comment-preserving fmt · `pen doc` · TCO · `--watch` on test/check · VSCode debugger | ✅ |
+| Lang ext | string interpolation · pattern matching · module system (`import`) | ✅ |
 | Phase 4 | Self-hosting · live editing · time-travel debugger | future |
 
-**Final test count: 385 passing across 35 test files.** Zero production dependencies. Hand-written lexer, recursive-descent parser, stack-based VM, 17 opcodes, optimizer levels `-O0` / `-O1` / `-O2`, snapshot format v3.
+**Final test count: 417 passing across 38 test files.** Zero production dependencies. Hand-written lexer, recursive-descent parser, stack-based VM with TCO, 18 opcodes, optimizer levels `-O0` / `-O1` / `-O2`, snapshot format v3.
 
 ---
 

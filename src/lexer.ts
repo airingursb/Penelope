@@ -2,13 +2,15 @@
 // `tokenize(source: string)` returns an array of tokens terminated by EOF.
 
 export type TokenKind =
-  | 'INT' | 'IDENT' | 'STRING'
-  | 'LET' | 'FN' | 'IF' | 'ELSE' | 'TRUE' | 'FALSE' | 'PAUSE' | 'PRINT'
+  | 'INT' | 'IDENT' | 'STRING' | 'TEMPLATE_STRING'
+  | 'LET' | 'FN' | 'IF' | 'ELSE' | 'TRUE' | 'FALSE' | 'PAUSE' | 'PRINT' | 'MATCH' | 'IMPORT'
   | 'PLUS' | 'MINUS' | 'STAR' | 'SLASH'
   | 'LT' | 'GT' | 'LE' | 'GE' | 'EQ_EQ' | 'BANG_EQ'
-  | 'EQ'
+  | 'EQ' | 'FAT_ARROW'
   | 'LPAREN' | 'RPAREN' | 'LBRACE' | 'RBRACE' | 'COMMA' | 'SEMI'
   | 'EOF';
+
+export type TemplatePart = { kind: 'text'; value: string } | { kind: 'expr'; source: string };
 
 export type Token = {
   kind: TokenKind;
@@ -16,6 +18,7 @@ export type Token = {
   col: number;
   text?: string;
   value?: number;
+  parts?: TemplatePart[];   // For TEMPLATE_STRING — interleaved literal / expression
 };
 
 const KEYWORDS: Record<string, TokenKind> = {
@@ -26,6 +29,8 @@ const KEYWORDS: Record<string, TokenKind> = {
   true:   'TRUE',
   false:  'FALSE',
   pause:  'PAUSE',
+  match:  'MATCH',
+  import: 'IMPORT',
 };
 
 function isDigit(c: string): boolean { return c >= '0' && c <= '9'; }
@@ -78,31 +83,56 @@ export function tokenizeWithComments(source: string): { tokens: Token[]; comment
       continue;
     }
 
-    // string literal
+    // string literal — may contain ${...} interpolation
     if (c === '"') {
       advance();  // consume opening quote
-      let text = '';
+      const parts: TemplatePart[] = [];
+      let current = '';
+      let hasInterp = false;
       while (i < source.length && source[i] !== '"') {
         if (source[i] === '\\') {
-          advance();  // consume backslash
-          if (i >= source.length) {
-            throw new Error(`lexer: unterminated string at line ${startLine} col ${startCol}`);
-          }
+          advance();
+          if (i >= source.length) throw new Error(`lexer: unterminated string at line ${startLine} col ${startCol}`);
           const esc = source[i];
-          if (esc === 'n')       text += '\n';
-          else if (esc === '\\') text += '\\';
-          else if (esc === '"')  text += '"';
+          if (esc === 'n')       current += '\n';
+          else if (esc === '\\') current += '\\';
+          else if (esc === '"')  current += '"';
+          else if (esc === '$')  current += '$';
           else throw new Error(`lexer: unknown escape '\\${esc}' at line ${line} col ${col}`);
           advance();
-        } else {
-          text += advance();
+          continue;
         }
+        if (source[i] === '$' && source[i + 1] === '{') {
+          hasInterp = true;
+          parts.push({ kind: 'text', value: current });
+          current = '';
+          advance(); advance();   // consume ${
+          // Capture until matching } (track brace depth)
+          let depth = 1;
+          let exprSrc = '';
+          while (i < source.length && depth > 0) {
+            const ch = source[i];
+            if (ch === '{') depth++;
+            else if (ch === '}') { depth--; if (depth === 0) break; }
+            exprSrc += advance();
+          }
+          if (i >= source.length) throw new Error(`lexer: unterminated \${...} in string at line ${startLine} col ${startCol}`);
+          advance();   // consume closing }
+          parts.push({ kind: 'expr', source: exprSrc });
+          continue;
+        }
+        current += advance();
       }
       if (i >= source.length) {
         throw new Error(`lexer: unterminated string at line ${startLine} col ${startCol}`);
       }
       advance();  // consume closing quote
-      tokens.push({ kind: 'STRING', line: startLine, col: startCol, text });
+      if (hasInterp) {
+        parts.push({ kind: 'text', value: current });
+        tokens.push({ kind: 'TEMPLATE_STRING', line: startLine, col: startCol, parts });
+      } else {
+        tokens.push({ kind: 'STRING', line: startLine, col: startCol, text: current });
+      }
       continue;
     }
 
@@ -131,7 +161,7 @@ export function tokenizeWithComments(source: string): { tokens: Token[]; comment
     if (i + 1 < source.length) {
       const two = source[i] + source[i + 1];
       const twoChar: Record<string, TokenKind> = {
-        '<=': 'LE', '>=': 'GE', '==': 'EQ_EQ', '!=': 'BANG_EQ',
+        '<=': 'LE', '>=': 'GE', '==': 'EQ_EQ', '!=': 'BANG_EQ', '=>': 'FAT_ARROW',
       };
       if (twoChar[two]) {
         advance(); advance();
