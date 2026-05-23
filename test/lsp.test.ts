@@ -127,6 +127,64 @@ test('hover on whitespace returns null', () => {
   expect(reply.result).toBeNull();
 });
 
+test('completion includes keywords + builtins + local vars', () => {
+  handleMessage({
+    jsonrpc: '2.0',
+    method: 'textDocument/didOpen',
+    params: { textDocument: { uri: 'file:///c.pen', text: 'let alpha = 1; let beta = 2;' } },
+  });
+  writes = [];
+  handleMessage({
+    jsonrpc: '2.0',
+    id: 10,
+    method: 'textDocument/completion',
+    params: { textDocument: { uri: 'file:///c.pen' }, position: { line: 0, character: 30 } },
+  });
+  const reply = lastJsonReply();
+  const labels = reply.result.map((it: { label: string }) => it.label);
+  expect(labels).toContain('let');
+  expect(labels).toContain('print');
+  expect(labels).toContain('list_new');
+  expect(labels).toContain('alpha');
+  expect(labels).toContain('beta');
+});
+
+test('definition jumps from Var to its Let binding', () => {
+  handleMessage({
+    jsonrpc: '2.0',
+    method: 'textDocument/didOpen',
+    params: { textDocument: { uri: 'file:///d.pen', text: 'let x = 1;\nprint(to_str(x));' } },
+  });
+  writes = [];
+  // Cursor on the `x` inside print(to_str(x)) — line 1 (0-indexed), char 13
+  handleMessage({
+    jsonrpc: '2.0',
+    id: 11,
+    method: 'textDocument/definition',
+    params: { textDocument: { uri: 'file:///d.pen' }, position: { line: 1, character: 13 } },
+  });
+  const reply = lastJsonReply();
+  expect(reply.result.uri).toBe('file:///d.pen');
+  expect(reply.result.range.start).toEqual({ line: 0, character: 4 });
+  expect(reply.result.range.end).toEqual({ line: 0, character: 5 });
+});
+
+test('definition on non-var returns null', () => {
+  handleMessage({
+    jsonrpc: '2.0',
+    method: 'textDocument/didOpen',
+    params: { textDocument: { uri: 'file:///d2.pen', text: 'let x = 1;' } },
+  });
+  writes = [];
+  handleMessage({
+    jsonrpc: '2.0',
+    id: 12,
+    method: 'textDocument/definition',
+    params: { textDocument: { uri: 'file:///d2.pen' }, position: { line: 0, character: 0 } },
+  });
+  expect(lastJsonReply().result).toBeNull();
+});
+
 test('unknown method returns method-not-found error', () => {
   handleMessage({ jsonrpc: '2.0', id: 99, method: 'workspace/wat' });
   const reply = lastJsonReply();

@@ -9,6 +9,9 @@ import { run, freshState, makeProfile } from './vm.js';
 import { writePencFile, readPencFile } from './encoder.js';
 import { runOptimizer, type OLevel } from './optimizer.js';
 import { check as typeCheck } from './typecheck.js';
+import { format as fmtSource } from './format.js';
+import { extractExpectations, checkExpectations } from './test-runner.js';
+import { spawnSync } from 'node:child_process';
 import { formatDiagnostic, diagnosticFromMessage } from './diagnostic.js';
 import { serialize, sha256, deserialize } from './snapshot.js';
 import type { Snapshot, VMState } from './snapshot.js';
@@ -106,10 +109,7 @@ function cmdExec(args: ParsedArgs): number {
   return 0;
 }
 
-function cmdRun(args: ParsedArgs): number {
-  const filePath = args.positional[1];
-  if (!filePath) { process.stderr.write('usage: pen run [-O0|-O1|-O2] <file.pen> [--time N] [--no-replay]\n'); return 2; }
-  const absPath = resolve(filePath);
+function runOnce(absPath: string, filePath: string, args: ParsedArgs): number {
   let source: string;
   try { source = readFileSync(absPath, 'utf8'); }
   catch { process.stderr.write(`cli error: cannot read source: ${filePath}\n`); return 3; }
@@ -121,13 +121,10 @@ function cmdRun(args: ParsedArgs): number {
   try {
     const ast = parse(tokenize(source));
     const prog = runOptimizer(compile(ast), args.oLevel);
-
     const state = freshState();
     state.timeOverride = timeOverride;
     state.noReplay = noReplay;
-
     const r = run(prog, state);
-
     if (r.status === 'paused') {
       const pencPath = absPath.replace(/\.pen$/, '.penc');
       prog.sourceHash = 'sha256:' + sha256(source);
@@ -141,6 +138,46 @@ function cmdRun(args: ParsedArgs): number {
     process.stderr.write(formatDiagnostic(diag) + '\n');
     return 1;
   }
+}
+
+function cmdRun(args: ParsedArgs): number {
+  const filePath = args.positional[1];
+  if (!filePath) { process.stderr.write('usage: pen run [-O0|-O1|-O2] [--watch] <file.pen> [--time N] [--no-replay]\n'); return 2; }
+  const absPath = resolve(filePath);
+  if (args.flags['watch'] === true) {
+    return cmdRunWatch(absPath, filePath, args);
+  }
+  return runOnce(absPath, filePath, args);
+}
+
+function cmdRunWatch(absPath: string, filePath: string, args: ParsedArgs): number {
+  const { watch } = require('node:fs');
+  const useColor = process.stderr && (process.stderr as { isTTY?: boolean }).isTTY;
+  let running = false;
+  let pending = false;
+  let timer: NodeJS.Timeout | null = null;
+
+  const dim = (s: string) => useColor ? `\x1b[2m${s}\x1b[0m` : s;
+
+  function go() {
+    if (running) { pending = true; return; }
+    running = true;
+    process.stdout.write('\x1b[2J\x1b[H');
+    process.stdout.write(dim(`watching ${filePath} (Ctrl-C to exit)\n\n`));
+    runOnce(absPath, filePath, args);
+    process.stdout.write(dim(`\n[${new Date().toLocaleTimeString()}] waiting for changes\n`));
+    running = false;
+    if (pending) { pending = false; setTimeout(go, 50); }
+  }
+
+  go();
+  watch(absPath, () => {
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(go, 100);
+  });
+  // Hold the event loop open
+  setInterval(() => {}, 1 << 30);
+  return 0;
 }
 
 function cmdResume(args: ParsedArgs): number {
@@ -247,6 +284,59 @@ function cmdBench(args: ParsedArgs): number {
   time('VM (-O1)',  () => { run(runOptimizer(prog, 1)); });
   time('VM (-O2)',  () => { run(runOptimizer(prog, 2)); });
   return 0;
+}
+
+function cmdTest(args: ParsedArgs): number {
+  const srcPath = args.positional[1];
+  if (!srcPath) { process.stderr.write('usage: pen test <file.pen>\n'); return 2; }
+  let source: string;
+  try { source = readFileSync(resolve(srcPath), 'utf8'); }
+  catch { process.stderr.write(`cli error: cannot read source: ${srcPath}\n`); return 3; }
+  const expects = extractExpectations(source);
+  if (expects.length === 0) {
+    process.stderr.write(`${srcPath}: no // EXPECT: lines found\n`);
+    return 4;
+  }
+  // Spawn `pen run` to capture stdout exactly as it would appear to a user.
+  const penBin = process.argv[1].replace(/[/\\]dist[/\\]cli\.js$/, '/bin/penelope');
+  const r = spawnSync(penBin, ['run', srcPath], { encoding: 'utf8' });
+  if (r.status !== 0) {
+    process.stderr.write(`${srcPath}: program exited ${r.status}\n${r.stderr}`);
+    return 1;
+  }
+  const res = checkExpectations(expects, r.stdout);
+  if (res.pass) {
+    process.stdout.write(`✓ ${srcPath}  (${res.total} expectation${res.total === 1 ? '' : 's'})\n`);
+    return 0;
+  }
+  process.stderr.write(`✗ ${srcPath}  (${res.failed.length}/${res.total} failed)\n`);
+  for (const f of res.failed) {
+    process.stderr.write(`  line ${f.exp.line}: expected ${f.exp.kind === 'eq' ? '"' + f.exp.text + '"' : 'starts with "' + f.exp.text + '"'}, got ${f.got === undefined ? '<no output>' : '"' + f.got + '"'}\n`);
+  }
+  return 1;
+}
+
+function cmdFmt(args: ParsedArgs): number {
+  const srcPath = args.positional[1];
+  if (!srcPath) { process.stderr.write('usage: pen fmt [--write] <file.pen>\n'); return 2; }
+  let source: string;
+  try { source = readFileSync(resolve(srcPath), 'utf8'); }
+  catch { process.stderr.write(`cli error: cannot read source: ${srcPath}\n`); return 3; }
+  try {
+    const ast = parse(tokenize(source));
+    const formatted = fmtSource(ast);
+    if (args.flags['write'] === true) {
+      writeFileSync(resolve(srcPath), formatted);
+      process.stdout.write(`formatted ${srcPath}\n`);
+    } else {
+      process.stdout.write(formatted);
+    }
+    return 0;
+  } catch (e) {
+    const diag = diagnosticFromMessage((e as Error).message, source, srcPath);
+    process.stderr.write(formatDiagnostic(diag) + '\n');
+    return 1;
+  }
 }
 
 function cmdProfile(args: ParsedArgs): number {
@@ -438,7 +528,9 @@ export async function main(argv: string[]): Promise<number> {
   if (sub === 'repl')    return await cmdRepl(args);
   if (sub === 'check')   return cmdCheck(args);
   if (sub === 'profile') return cmdProfile(args);
-  process.stderr.write(`usage: penelope <build|exec|run|resume|fork|disasm|bench|inspect|repl|check|profile> [-O0|-O1|-O2] [args]\n`);
+  if (sub === 'fmt')     return cmdFmt(args);
+  if (sub === 'test')    return cmdTest(args);
+  process.stderr.write(`usage: penelope <build|exec|run|resume|fork|disasm|bench|inspect|repl|check|profile|fmt|test> [-O0|-O1|-O2] [args]\n`);
   return 2;
 }
 

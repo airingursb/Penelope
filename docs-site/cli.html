@@ -35,7 +35,10 @@ $ pen inspect foo.penz                   <span class="cm"># render v3 snapshot</
 $ pen check foo.pen                      <span class="cm"># static type check</span>
 $ pen profile [-O0|-O1|-O2] foo.pen      <span class="cm"># opcode counts + hot ips</span>
 $ pen bench foo.pen                      <span class="cm"># compare -O0/-O1/-O2 timings</span>
-$ pen repl                               <span class="cm"># interactive REPL</span></code></pre>
+$ pen repl                               <span class="cm"># interactive REPL</span>
+$ pen fmt [--write] foo.pen              <span class="cm"># AST-based code formatter</span>
+$ pen test foo.pen                       <span class="cm"># doctest runner (// EXPECT: lines)</span>
+$ pen run --watch foo.pen                <span class="cm"># re-run on file change</span></code></pre>
 
 <h2>Flags</h2>
 <table>
@@ -44,7 +47,45 @@ $ pen repl                               <span class="cm"># interactive REPL</sp
 <tr><td><code>--time N</code></td><td>run, resume</td><td>Override <code>now()</code> to N (ms since epoch)</td></tr>
 <tr><td><code>--no-replay</code></td><td>run, resume</td><td>Skip effect log; re-execute everything</td></tr>
 <tr><td><code>--event NAME=VAL</code></td><td>resume</td><td>Inject value for <code>wait_for("NAME")</code></td></tr>
+<tr><td><code>--watch</code></td><td>run</td><td>Re-run on file change; clears screen between runs</td></tr>
+<tr><td><code>--write</code></td><td>fmt</td><td>Rewrite the file in place (without it: prints to stdout)</td></tr>
+<tr><td><code>NO_COLOR=1</code> env</td><td>any</td><td>Disable ANSI colors in error output</td></tr>
 </table>
+
+<h2>pen fmt</h2>
+
+<p>Idempotent formatter — <code>fmt(fmt(x)) === fmt(x)</code>. Round-trips through the AST, so comments are dropped (they don't survive parsing).</p>
+
+<pre><code>$ pen fmt examples/10-sort.pen           <span class="cm"># prints to stdout</span>
+$ pen fmt --write examples/10-sort.pen   <span class="cm"># rewrites in place</span></code></pre>
+
+<h2>pen test (doctest)</h2>
+
+<p>Annotate expected stdout lines with <code>// EXPECT: &lt;text&gt;</code> or <code>// EXPECTS: &lt;prefix&gt;</code>. <code>pen test</code> runs the program and asserts each emitted line matches in order.</p>
+
+<pre><code><span class="cm">// add.pen</span>
+print(to_str(1 + 2));
+// EXPECT: 3
+print("ok");
+// EXPECT: ok</code></pre>
+
+<pre><code>$ pen test add.pen
+✓ add.pen  (2 expectations)</code></pre>
+
+<h2>pen run --watch</h2>
+
+<p>Re-runs on file save. Clears the terminal between runs. Useful for tight feedback loops.</p>
+
+<pre><code>$ pen run --watch examples/09-fib.pen
+watching examples/09-fib.pen (Ctrl-C to exit)
+
+6765
+
+[15:23:01] waiting for changes
+<span class="cm"># edit file...</span>
+6766
+
+[15:23:14] waiting for changes</code></pre>
 
 <h2>Error formatting</h2>
 
