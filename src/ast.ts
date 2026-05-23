@@ -24,6 +24,7 @@ export type ASTNode = (
   | { id: NodeId; kind: 'IntLit';    value: number }
   | { id: NodeId; kind: 'BoolLit';   value: boolean }
   | { id: NodeId; kind: 'StringLit'; value: string }
+  | { id: NodeId; kind: 'UnitLit' }
   | { id: NodeId; kind: 'Var';      name: string }
   | { id: NodeId; kind: 'BinOp';    op: BinOp; leftId: NodeId; rightId: NodeId }
   | { id: NodeId; kind: 'Let';      name: string; valueId: NodeId }

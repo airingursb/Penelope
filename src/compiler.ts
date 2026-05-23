@@ -48,6 +48,10 @@ function compileNode(node: ASTNode, ast: ASTBundle, prog: Program, tail: boolean
       emit(prog, ['LOAD_CONST', idx], node);
       return;
     }
+    case 'UnitLit': {
+      emit(prog, ['PUSH_UNIT'], node);
+      return;
+    }
     case 'Var': {
       emit(prog, ['LOAD_VAR', node.name, null], node);  // null = ic slot, filled by VM
       return;

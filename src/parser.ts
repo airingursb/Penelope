@@ -299,9 +299,32 @@ function parsePrimary(c: Cursor, b: Builder): ASTNode {
       return parseMatch(c, b);
     case 'LPAREN': {
       c.eat('LPAREN');
+      // Empty parens () = unit literal
+      if (c.peekKind() === 'RPAREN') {
+        c.eat('RPAREN');
+        // Desugar `()` as a Var lookup for a synthetic name that the compiler
+        // turns into PUSH_UNIT. Simpler: model as a Call to a builtin-ish.
+        // Cleanest: introduce an Unit AST literal via an IntLit hack — too gross.
+        // Just compile to PUSH_UNIT: re-use the existing Pause-shaped no-arg node.
+        // We add a 'UnitLit' kind in ast.ts.
+        return b.addNode(id => ({ id, kind: 'UnitLit' } as ASTNode), pos);
+      }
       const inner = parseExpression(c, b);
       c.eat('RPAREN');
       return inner;
+    }
+    case 'MINUS': {
+      // Unary minus.  -<int_literal>  folds to a negative IntLit.
+      // -<expr>  desugars to (0 - expr).
+      c.eat('MINUS');
+      const next = c.peek();
+      if (next.kind === 'INT') {
+        c.eat('INT');
+        return b.addNode(id => ({ id, kind: 'IntLit', value: -next.value! }), pos);
+      }
+      const zero = b.addNode(id => ({ id, kind: 'IntLit', value: 0 }), pos);
+      const operand = parsePrimary(c, b);
+      return b.addNode(id => ({ id, kind: 'BinOp', op: '-', leftId: zero.id, rightId: operand.id }), pos);
     }
     default:
       throw new Error(`parser: unexpected token ${t.kind} at line ${t.line} col ${t.col}`);

@@ -36,6 +36,7 @@ const KEYWORDS: Record<string, TokenKind> = {
 function isDigit(c: string): boolean { return c >= '0' && c <= '9'; }
 function isAlpha(c: string): boolean { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c === '_'; }
 function isAlphaNum(c: string): boolean { return isAlpha(c) || isDigit(c); }
+function isHexDigit(c: string): boolean { return isDigit(c) || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'); }
 
 // Comment captured during tokenization. `text` excludes the leading `//` (or `///`).
 // `doc` is true if the original prefix was `///`.
@@ -66,6 +67,21 @@ export function tokenizeWithComments(source: string): { tokens: Token[]; comment
     // whitespace
     if (c === ' ' || c === '\t' || c === '\n' || c === '\r') {
       advance();
+      continue;
+    }
+
+    // block comment /* ... */ (non-nested)
+    if (c === '/' && source[i + 1] === '*') {
+      advance(); advance();   // consume /*
+      let text = '';
+      while (i + 1 < source.length && !(source[i] === '*' && source[i + 1] === '/')) {
+        text += advance();
+      }
+      if (i + 1 >= source.length) {
+        throw new Error(`lexer: unterminated block comment at line ${startLine} col ${startCol}`);
+      }
+      advance(); advance();   // consume */
+      comments.push({ line: startLine, col: startCol, text, doc: false });
       continue;
     }
 
@@ -136,11 +152,25 @@ export function tokenizeWithComments(source: string): { tokens: Token[]; comment
       continue;
     }
 
-    // integer literal
+    // integer literal — decimal, hex (0xFF), binary (0b101); underscores allowed as separators
     if (isDigit(c)) {
       let text = '';
-      while (i < source.length && isDigit(source[i])) text += advance();
-      tokens.push({ kind: 'INT', line: startLine, col: startCol, value: Number(text) });
+      let value: number;
+      if (c === '0' && (source[i + 1] === 'x' || source[i + 1] === 'X')) {
+        advance(); advance();  // consume 0x
+        while (i < source.length && (isHexDigit(source[i]) || source[i] === '_')) text += advance();
+        if (text.replace(/_/g, '') === '') throw new Error(`lexer: empty hex literal at line ${startLine} col ${startCol}`);
+        value = parseInt(text.replace(/_/g, ''), 16);
+      } else if (c === '0' && (source[i + 1] === 'b' || source[i + 1] === 'B')) {
+        advance(); advance();  // consume 0b
+        while (i < source.length && (source[i] === '0' || source[i] === '1' || source[i] === '_')) text += advance();
+        if (text.replace(/_/g, '') === '') throw new Error(`lexer: empty binary literal at line ${startLine} col ${startCol}`);
+        value = parseInt(text.replace(/_/g, ''), 2);
+      } else {
+        while (i < source.length && (isDigit(source[i]) || source[i] === '_')) text += advance();
+        value = Number(text.replace(/_/g, ''));
+      }
+      tokens.push({ kind: 'INT', line: startLine, col: startCol, value });
       continue;
     }
 
