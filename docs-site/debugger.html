@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Penelope — Debugger</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <h1>Debugger (DAP)</h1>
+  <p class="tagline">Breakpoint debugging via the Debug Adapter Protocol.</p>
+  <nav>
+    <a href="index.html">Overview</a>
+    <a href="tour.html">Tour</a>
+    <a href="stdlib.html">Stdlib</a>
+    <a href="cli.html">CLI</a>
+    <a href="snapshot.html">Snapshot v3</a>
+    <a href="play.html">Playground</a>
+    <a href="debugger.html" class="active">Debugger</a>
+    <a href="https://github.com/airingursb/Penelope">GitHub →</a>
+  </nav>
+</header>
+
+<p><code>bin/penelope-dap</code> speaks the standard Debug Adapter Protocol over stdio. Any DAP-compatible editor (VSCode, Neovim's <code>nvim-dap</code>) can drive a Penelope debugging session.</p>
+
+<h2>What works (MVP)</h2>
+
+<ul>
+  <li><strong>Launch</strong> — open a <code>.pen</code> file and start execution</li>
+  <li><strong>Source-line breakpoints</strong> — mapped to opcode IPs via the compiler's <code>sourceMap</code></li>
+  <li><strong>Continue</strong> — runs until next breakpoint or program end</li>
+  <li><strong>Stack trace</strong> — single thread; shows the suspended IP's source line + parent call frames</li>
+  <li><strong>Scopes</strong> — Locals (visible bindings via parent chain) + Value Stack</li>
+  <li><strong>Variables</strong> — current frame's bindings, pretty-printed</li>
+  <li><strong>Terminate / disconnect</strong> — clean exit</li>
+</ul>
+
+<h2>What does not work yet</h2>
+
+<ul>
+  <li><code>stepIn</code> / <code>stepOver</code> / <code>stepOut</code> — needs proper single-step in the VM</li>
+  <li>Conditional / log breakpoints</li>
+  <li>Exception breakpoints</li>
+  <li><code>repl</code> evaluation at a breakpoint</li>
+</ul>
+
+<h2>VSCode</h2>
+
+<p>Install the extension in dev mode (see <a href="https://github.com/airingursb/Penelope/tree/main/vscode-extension">vscode-extension/README</a>). Open a <code>.pen</code> file → Run and Debug → "Launch Penelope file".</p>
+
+<pre><code>{
+  "type": "penelope",
+  "request": "launch",
+  "name": "Launch Penelope file",
+  "program": "${workspaceFolder}/${file}"
+}</code></pre>
+
+<h2>Neovim (nvim-dap)</h2>
+
+<pre><code>local dap = require('dap')
+dap.adapters.penelope = {
+  type = 'executable',
+  command = 'bin/penelope-dap',
+  args = {},
+}
+dap.configurations.penelope = {
+  {
+    type = 'penelope',
+    request = 'launch',
+    name = 'Launch Penelope file',
+    program = '${workspaceFolder}/${relativeFile}',
+  },
+}</code></pre>
+
+<h2>Protocol details</h2>
+
+<p>The adapter understands these DAP requests: <code>initialize</code>, <code>launch</code>, <code>setBreakpoints</code>, <code>configurationDone</code>, <code>continue</code>, <code>threads</code>, <code>stackTrace</code>, <code>scopes</code>, <code>variables</code>, <code>terminate</code>, <code>disconnect</code>. Emits events: <code>initialized</code>, <code>stopped</code>, <code>output</code>, <code>terminated</code>.</p>
+
+<p>The wire format is identical to LSP — Content-Length-framed JSON-RPC over stdio.</p>
+
+<footer>
+  © 2026 Airing · <a href="https://github.com/airingursb/Penelope">github.com/airingursb/Penelope</a>
+</footer>
+</body>
+</html>

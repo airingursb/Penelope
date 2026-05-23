@@ -1,0 +1,69 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 220" width="800" height="220" role="img" aria-label="Penelope: a language that knows how to wait">
+  <defs>
+    <linearGradient id="thread" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%"   stop-color="#5a4cb8"/>
+      <stop offset="50%"  stop-color="#c792ea"/>
+      <stop offset="100%" stop-color="#82aaff"/>
+    </linearGradient>
+  </defs>
+
+  <style>
+    .bg     { fill: #fafafa; }
+    .title  { font: 700 64px/1 -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", system-ui, sans-serif; fill: #1a1a1a; letter-spacing: -0.02em; }
+    .tag    { font: 400 18px/1 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, sans-serif; fill: #666; }
+    .icon   { font: 600 22px/1 ui-monospace, "SF Mono", Menlo, monospace; fill: #5a4cb8; }
+  </style>
+
+  <rect class="bg" width="800" height="220"/>
+
+  <!-- Title -->
+  <text class="title" x="80" y="80">Penelope</text>
+
+  <!-- Static rail -->
+  <line x1="160" y1="130" x2="640" y2="130" stroke="#e0e0e0" stroke-width="2"/>
+
+  <!-- Animated colored fill: dashoffset goes 480 → 0 → 0 (hold) → 480 → 480 (hold). -->
+  <line x1="160" y1="130" x2="640" y2="130"
+        stroke="url(#thread)" stroke-width="4" fill="none" stroke-linecap="round"
+        stroke-dasharray="480" stroke-dashoffset="480">
+    <animate attributeName="stroke-dashoffset"
+             values="480; 0; 0; 480; 480"
+             keyTimes="0; 0.35; 0.55; 0.90; 1"
+             dur="8s"
+             calcMode="spline"
+             keySplines="0.4 0 0.2 1; 0 0 1 1; 0.4 0 0.2 1; 0 0 1 1"
+             repeatCount="indefinite"/>
+  </line>
+
+  <!-- Shuttle dot: moves from 160 → 640 → hold → 160 → hold. -->
+  <circle cx="160" cy="130" r="7" fill="#1a1a1a">
+    <animate attributeName="cx"
+             values="160; 640; 640; 160; 160"
+             keyTimes="0; 0.35; 0.55; 0.90; 1"
+             dur="8s"
+             calcMode="spline"
+             keySplines="0.4 0 0.2 1; 0 0 1 1; 0.4 0 0.2 1; 0 0 1 1"
+             repeatCount="indefinite"/>
+  </circle>
+
+  <!-- Pause indicator at the right end (visible during right-side hold) -->
+  <text class="icon" x="640" y="118" text-anchor="middle" opacity="0">∥
+    <animate attributeName="opacity"
+             values="0; 0; 1; 1; 0; 0"
+             keyTimes="0; 0.36; 0.40; 0.54; 0.55; 1"
+             dur="8s"
+             repeatCount="indefinite"/>
+  </text>
+
+  <!-- Pause indicator at the left end (visible during left-side hold) -->
+  <text class="icon" x="160" y="118" text-anchor="middle" opacity="0">∥
+    <animate attributeName="opacity"
+             values="0; 0; 1; 1; 0"
+             keyTimes="0; 0.90; 0.93; 0.99; 1"
+             dur="8s"
+             repeatCount="indefinite"/>
+  </text>
+
+  <!-- Tagline -->
+  <text class="tag" x="80" y="180">a language that knows how to wait — pause as a first-class primitive</text>
+</svg>

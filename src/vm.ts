@@ -36,15 +36,45 @@ export function run(prog: Program, initialState?: VMState, profile?: ProfileData
   const state = initialState ?? freshState();
   const t0 = profile ? process.hrtime.bigint() : 0n;
   try {
-    return runUntilStop(prog, state, profile);
+    const r = runUntilStop(prog, state, profile);
+    if (r.status === 'breakpoint') {
+      // No breakpoints passed; can't happen at runtime but narrows the type.
+      throw new Error('unreachable: breakpoint without breakpoints set');
+    }
+    return r;
   } finally {
     if (profile) profile.totalNs += process.hrtime.bigint() - t0;
   }
 }
 
-function runUntilStop(prog: Program, state: VMState, profile?: ProfileData): RunResult {
+// Debug stop reason for DAP — adds breakpoint variant.
+export type DebugStop =
+  | { status: 'halted';     state: VMState }
+  | { status: 'paused';     state: VMState }
+  | { status: 'breakpoint'; state: VMState; ip: number };
+
+// Run until HALT, PAUSE, or the next ip is in `breakpoints`.
+// Breakpoints are checked BEFORE executing each opcode. Skips initial ip if it's
+// already in the set (so resume-from-breakpoint doesn't immediately re-trigger).
+export function runUntilBreakpoint(prog: Program, state: VMState, breakpoints: Set<number>): DebugStop {
+  const r = runUntilStop(prog, state, undefined, breakpoints);
+  if (r.status === 'breakpoint') return r;
+  return r as DebugStop;
+}
+
+function runUntilStop(
+  prog: Program,
+  state: VMState,
+  profile?: ProfileData,
+  breakpoints?: Set<number>,
+): DebugStop {
   const replayIdx = new Map<number, number>();
+  let firstIter = true;
   while (true) {
+    if (breakpoints && !firstIter && breakpoints.has(state.ip)) {
+      return { status: 'breakpoint', state, ip: state.ip };
+    }
+    firstIter = false;
     const op = prog.code[state.ip];
     if (!op) throw new Error(`VM: IP ${state.ip} out of bounds`);
     if (profile) {
@@ -136,6 +166,50 @@ function runUntilStop(prog: Program, state: VMState, profile?: ProfileData): Run
         const bindings: Record<string, Value> = {};
         for (let i = 0; i < args.length; i++) bindings[callee.params[i]] = args[i];
         state.frames.push({ bindings, returnIP: state.ip + 1, parentIdx: callee.capturedFrameIdx });
+        state.ip = callee.bodyIp;
+        break;
+      }
+      case 'TAILCALL': {
+        const argc = op[1] as number;
+        const args: Value[] = [];
+        for (let i = 0; i < argc; i++) args.unshift(pop(state));
+        const callee = pop(state);
+        if (callee.tag !== 'closure') throw new Error(`tailcall: callee is ${callee.tag}, not a function (at ${formatPos(prog, state.ip)})`);
+        if (args.length !== callee.params.length) {
+          throw new Error(`tailcall: arity mismatch — expected ${callee.params.length} args, got ${args.length} (at ${formatPos(prog, state.ip)})`);
+        }
+        // Find the enclosing call frame (the topmost frame with returnIP defined).
+        let callFrameIdx = state.frames.length - 1;
+        while (callFrameIdx >= 0 && state.frames[callFrameIdx].returnIP === undefined) callFrameIdx--;
+        if (callFrameIdx < 0) {
+          // No enclosing call frame (compiler bug: TAILCALL emitted at top level).
+          // Degrade to a regular CALL — push a new frame.
+          const bindings: Record<string, Value> = {};
+          for (let i = 0; i < args.length; i++) bindings[callee.params[i]] = args[i];
+          state.frames.push({ bindings, returnIP: state.ip + 1, parentIdx: callee.capturedFrameIdx });
+          state.ip = callee.bodyIp;
+          break;
+        }
+        // Safety check: if popping above the call frame would invalidate the closure's
+        // captured-frame index, fall back to a regular CALL (no frame reuse). This
+        // happens when a fn is defined inside its own enclosing fn's body block and
+        // tail-called — the captured block frame would be popped along with the others.
+        const wouldPopToIdx = callFrameIdx;
+        if (callee.capturedFrameIdx > wouldPopToIdx) {
+          const bindings: Record<string, Value> = {};
+          for (let i = 0; i < args.length; i++) bindings[callee.params[i]] = args[i];
+          state.frames.push({ bindings, returnIP: state.ip + 1, parentIdx: callee.capturedFrameIdx });
+          state.ip = callee.bodyIp;
+          break;
+        }
+        // Safe to TCO: pop block frames above the call frame, reuse it in place.
+        while (state.frames.length > callFrameIdx + 1) state.frames.pop();
+        const callFrame = state.frames[callFrameIdx];
+        const bindings: Record<string, Value> = {};
+        for (let i = 0; i < args.length; i++) bindings[callee.params[i]] = args[i];
+        callFrame.bindings = bindings;
+        callFrame.parentIdx = callee.capturedFrameIdx;
+        // returnIP unchanged — we still return to the original caller's site.
         state.ip = callee.bodyIp;
         break;
       }

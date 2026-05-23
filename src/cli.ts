@@ -2,7 +2,7 @@
 
 import { readFileSync, writeFileSync, copyFileSync, existsSync } from 'node:fs';
 import { resolve, dirname, basename, join } from 'node:path';
-import { tokenize } from './lexer.js';
+import { tokenize, tokenizeWithComments } from './lexer.js';
 import { parse } from './parser.js';
 import { compile } from './compiler.js';
 import { run, freshState, makeProfile } from './vm.js';
@@ -10,6 +10,7 @@ import { writePencFile, readPencFile } from './encoder.js';
 import { runOptimizer, type OLevel } from './optimizer.js';
 import { check as typeCheck } from './typecheck.js';
 import { format as fmtSource } from './format.js';
+import { extractDocs, renderMarkdown } from './doc-gen.js';
 import { extractExpectations, checkExpectations } from './test-runner.js';
 import { spawnSync } from 'node:child_process';
 import { formatDiagnostic, diagnosticFromMessage } from './diagnostic.js';
@@ -151,12 +152,15 @@ function cmdRun(args: ParsedArgs): number {
 }
 
 function cmdRunWatch(absPath: string, filePath: string, args: ParsedArgs): number {
+  return watchLoop(absPath, filePath, () => runOnce(absPath, filePath, args));
+}
+
+function watchLoop(absPath: string, filePath: string, action: () => number): number {
   const { watch } = require('node:fs');
   const useColor = process.stderr && (process.stderr as { isTTY?: boolean }).isTTY;
   let running = false;
   let pending = false;
   let timer: NodeJS.Timeout | null = null;
-
   const dim = (s: string) => useColor ? `\x1b[2m${s}\x1b[0m` : s;
 
   function go() {
@@ -164,7 +168,7 @@ function cmdRunWatch(absPath: string, filePath: string, args: ParsedArgs): numbe
     running = true;
     process.stdout.write('\x1b[2J\x1b[H');
     process.stdout.write(dim(`watching ${filePath} (Ctrl-C to exit)\n\n`));
-    runOnce(absPath, filePath, args);
+    action();
     process.stdout.write(dim(`\n[${new Date().toLocaleTimeString()}] waiting for changes\n`));
     running = false;
     if (pending) { pending = false; setTimeout(go, 50); }
@@ -175,7 +179,6 @@ function cmdRunWatch(absPath: string, filePath: string, args: ParsedArgs): numbe
     if (timer) clearTimeout(timer);
     timer = setTimeout(go, 100);
   });
-  // Hold the event loop open
   setInterval(() => {}, 1 << 30);
   return 0;
 }
@@ -286,9 +289,7 @@ function cmdBench(args: ParsedArgs): number {
   return 0;
 }
 
-function cmdTest(args: ParsedArgs): number {
-  const srcPath = args.positional[1];
-  if (!srcPath) { process.stderr.write('usage: pen test <file.pen>\n'); return 2; }
+function testOnce(srcPath: string): number {
   let source: string;
   try { source = readFileSync(resolve(srcPath), 'utf8'); }
   catch { process.stderr.write(`cli error: cannot read source: ${srcPath}\n`); return 3; }
@@ -297,7 +298,6 @@ function cmdTest(args: ParsedArgs): number {
     process.stderr.write(`${srcPath}: no // EXPECT: lines found\n`);
     return 4;
   }
-  // Spawn `pen run` to capture stdout exactly as it would appear to a user.
   const penBin = process.argv[1].replace(/[/\\]dist[/\\]cli\.js$/, '/bin/penelope');
   const r = spawnSync(penBin, ['run', srcPath], { encoding: 'utf8' });
   if (r.status !== 0) {
@@ -316,6 +316,34 @@ function cmdTest(args: ParsedArgs): number {
   return 1;
 }
 
+function cmdDoc(args: ParsedArgs): number {
+  const srcPath = args.positional[1];
+  if (!srcPath) { process.stderr.write('usage: pen doc <file.pen>\n'); return 2; }
+  let source: string;
+  try { source = readFileSync(resolve(srcPath), 'utf8'); }
+  catch { process.stderr.write(`cli error: cannot read source: ${srcPath}\n`); return 3; }
+  try {
+    const { tokens, comments } = tokenizeWithComments(source);
+    const ast = parse(tokens);
+    const entries = extractDocs(ast, comments);
+    process.stdout.write(renderMarkdown(srcPath, entries));
+    return 0;
+  } catch (e) {
+    const diag = diagnosticFromMessage((e as Error).message, source, srcPath);
+    process.stderr.write(formatDiagnostic(diag) + '\n');
+    return 1;
+  }
+}
+
+function cmdTest(args: ParsedArgs): number {
+  const srcPath = args.positional[1];
+  if (!srcPath) { process.stderr.write('usage: pen test [--watch] <file.pen>\n'); return 2; }
+  if (args.flags['watch'] === true) {
+    return watchLoop(resolve(srcPath), srcPath, () => testOnce(srcPath));
+  }
+  return testOnce(srcPath);
+}
+
 function cmdFmt(args: ParsedArgs): number {
   const srcPath = args.positional[1];
   if (!srcPath) { process.stderr.write('usage: pen fmt [--write] <file.pen>\n'); return 2; }
@@ -323,8 +351,9 @@ function cmdFmt(args: ParsedArgs): number {
   try { source = readFileSync(resolve(srcPath), 'utf8'); }
   catch { process.stderr.write(`cli error: cannot read source: ${srcPath}\n`); return 3; }
   try {
-    const ast = parse(tokenize(source));
-    const formatted = fmtSource(ast);
+    const { tokens, comments } = tokenizeWithComments(source);
+    const ast = parse(tokens);
+    const formatted = fmtSource(ast, { comments });
     if (args.flags['write'] === true) {
       writeFileSync(resolve(srcPath), formatted);
       process.stdout.write(`formatted ${srcPath}\n`);
@@ -374,9 +403,7 @@ function cmdProfile(args: ParsedArgs): number {
   return 0;
 }
 
-function cmdCheck(args: ParsedArgs): number {
-  const srcPath = args.positional[1];
-  if (!srcPath) { process.stderr.write('usage: pen check <file.pen>\n'); return 2; }
+function checkOnce(srcPath: string): number {
   let source: string;
   try { source = readFileSync(resolve(srcPath), 'utf8'); }
   catch { process.stderr.write(`cli error: cannot read source: ${srcPath}\n`); return 3; }
@@ -403,6 +430,15 @@ function cmdCheck(args: ParsedArgs): number {
   }
   process.stderr.write(`${errs.length} type error${errs.length === 1 ? '' : 's'}\n`);
   return 1;
+}
+
+function cmdCheck(args: ParsedArgs): number {
+  const srcPath = args.positional[1];
+  if (!srcPath) { process.stderr.write('usage: pen check [--watch] <file.pen>\n'); return 2; }
+  if (args.flags['watch'] === true) {
+    return watchLoop(resolve(srcPath), srcPath, () => checkOnce(srcPath));
+  }
+  return checkOnce(srcPath);
 }
 
 async function cmdRepl(_args: ParsedArgs): Promise<number> {
@@ -530,7 +566,8 @@ export async function main(argv: string[]): Promise<number> {
   if (sub === 'profile') return cmdProfile(args);
   if (sub === 'fmt')     return cmdFmt(args);
   if (sub === 'test')    return cmdTest(args);
-  process.stderr.write(`usage: penelope <build|exec|run|resume|fork|disasm|bench|inspect|repl|check|profile|fmt|test> [-O0|-O1|-O2] [args]\n`);
+  if (sub === 'doc')     return cmdDoc(args);
+  process.stderr.write(`usage: penelope <build|exec|run|resume|fork|disasm|bench|inspect|repl|check|profile|fmt|test|doc> [-O0|-O1|-O2] [args]\n`);
   return 2;
 }
 

@@ -32,8 +32,17 @@ function isDigit(c: string): boolean { return c >= '0' && c <= '9'; }
 function isAlpha(c: string): boolean { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c === '_'; }
 function isAlphaNum(c: string): boolean { return isAlpha(c) || isDigit(c); }
 
+// Comment captured during tokenization. `text` excludes the leading `//` (or `///`).
+// `doc` is true if the original prefix was `///`.
+export type Comment = { line: number; col: number; text: string; doc: boolean };
+
 export function tokenize(source: string): Token[] {
+  return tokenizeWithComments(source).tokens;
+}
+
+export function tokenizeWithComments(source: string): { tokens: Token[]; comments: Comment[] } {
   const tokens: Token[] = [];
+  const comments: Comment[] = [];
   let i = 0;
   let line = 1;
   let col = 1;
@@ -55,9 +64,17 @@ export function tokenize(source: string): Token[] {
       continue;
     }
 
-    // line comment
+    // line comment (incl. /// doc comments)
     if (c === '/' && source[i + 1] === '/') {
-      while (i < source.length && source[i] !== '\n') advance();
+      // Consume slashes
+      advance(); advance();
+      let doc = false;
+      if (source[i] === '/') { advance(); doc = true; }
+      // Skip a single leading space, conventional
+      if (source[i] === ' ') advance();
+      let text = '';
+      while (i < source.length && source[i] !== '\n') text += advance();
+      comments.push({ line: startLine, col: startCol, text, doc });
       continue;
     }
 
@@ -140,5 +157,5 @@ export function tokenize(source: string): Token[] {
   }
 
   tokens.push({ kind: 'EOF', line, col });
-  return tokens;
+  return { tokens, comments };
 }
