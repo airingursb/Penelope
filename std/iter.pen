@@ -1,0 +1,68 @@
+/// Higher-order list iteration helpers, written in Penelope itself.
+/// Import this module to get list_map, list_filter, list_reduce, list_for_each.
+
+/// list_map(l, f): apply f to each element, return new list of results.
+let list_map = fn(l, f) {
+  let go = fn(i, acc) {
+    if (i >= list_len(l)) { acc }
+    else { go(i + 1, list_push(acc, f(list_get(l, i)))) }
+  };
+  go(0, list_new())
+};
+
+/// list_filter(l, pred): return new list with only elements where pred is true.
+let list_filter = fn(l, pred) {
+  let go = fn(i, acc) {
+    if (i >= list_len(l)) {
+      acc
+    } else {
+      let x = list_get(l, i);
+      if (pred(x)) { go(i + 1, list_push(acc, x)) }
+      else { go(i + 1, acc) }
+    }
+  };
+  go(0, list_new())
+};
+
+/// list_reduce(l, init, f): left-fold. f(acc, x) → new_acc.
+let list_reduce = fn(l, init, f) {
+  let go = fn(i, acc) {
+    if (i >= list_len(l)) { acc }
+    else { go(i + 1, f(acc, list_get(l, i))) }
+  };
+  go(0, init)
+};
+
+/// list_for_each(l, f): call f for each element; discard the result.
+let list_for_each = fn(l, f) {
+  let go = fn(i) {
+    if (i >= list_len(l)) {
+      ()
+    } else {
+      let _ = f(list_get(l, i));
+      go(i + 1)
+    }
+  };
+  go(0)
+};
+
+/// list_range(start, end): list of ints from start (inclusive) to end (exclusive).
+let list_range = fn(start, end) {
+  let go = fn(i, acc) {
+    if (i >= end) { acc }
+    else { go(i + 1, list_push(acc, i)) }
+  };
+  go(start, list_new())
+};
+
+/// list_contains(l, target): true if any element equals target.
+let list_contains = fn(l, target) {
+  let go = fn(i) {
+    if (i >= list_len(l)) {
+      false
+    } else {
+      if (list_get(l, i) == target) { true } else { go(i + 1) }
+    }
+  };
+  go(0)
+};

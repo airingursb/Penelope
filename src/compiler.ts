@@ -9,8 +9,11 @@ import { EFFECT_NAMES } from './effects.js';
 
 const PURE_BUILTINS: ReadonlySet<string> = new Set([
   'str_length', 'str_slice', 'to_str', 'type_of',
-  'list_new', 'list_push', 'list_get', 'list_set', 'list_len', 'list_slice',
+  'str_chars', 'str_at', 'str_find', 'str_starts_with', 'str_ends_with', 'int_of_str',
+  'list_new', 'list_push', 'list_get', 'list_set', 'list_len', 'list_slice', 'list_concat', 'list_reverse',
   'dict_new', 'dict_set', 'dict_get', 'dict_has', 'dict_keys',
+  'char_is_digit', 'char_is_alpha', 'char_is_alphanum', 'char_is_whitespace',
+  'panic',
 ]);
 
 export function compile(ast: ASTBundle): Program {

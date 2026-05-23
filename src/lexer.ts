@@ -111,6 +111,8 @@ export function tokenizeWithComments(source: string): { tokens: Token[]; comment
           if (i >= source.length) throw new Error(`lexer: unterminated string at line ${startLine} col ${startCol}`);
           const esc = source[i];
           if (esc === 'n')       current += '\n';
+          else if (esc === 't')  current += '\t';
+          else if (esc === 'r')  current += '\r';
           else if (esc === '\\') current += '\\';
           else if (esc === '"')  current += '"';
           else if (esc === '$')  current += '$';
