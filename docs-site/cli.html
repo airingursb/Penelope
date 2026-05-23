@@ -16,6 +16,7 @@
     <a href="stdlib.html">Stdlib</a>
     <a href="cli.html" class="active">CLI</a>
     <a href="snapshot.html">Snapshot v3</a>
+    <a href="play.html">Playground</a>
     <a href="https://github.com/airingursb/Penelope">GitHub →</a>
   </nav>
 </header>
@@ -44,6 +45,17 @@ $ pen repl                               <span class="cm"># interactive REPL</sp
 <tr><td><code>--no-replay</code></td><td>run, resume</td><td>Skip effect log; re-execute everything</td></tr>
 <tr><td><code>--event NAME=VAL</code></td><td>resume</td><td>Inject value for <code>wait_for("NAME")</code></td></tr>
 </table>
+
+<h2>Error formatting</h2>
+
+<p>All compile-time and run-time errors come with a Rust-style source pointer:</p>
+
+<pre><code>$ pen run broken.pen
+error: undefined variable 'foo'
+  --&gt; broken.pen:3:9
+   |
+ 3 | let x = foo + 1;
+   |         ^</code></pre>
 
 <h2>Examples</h2>
 

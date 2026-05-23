@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Penelope — Playground</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="style.css">
+<style>
+  body { max-width: 1100px; }
+  .pg {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1rem;
+    margin-top: 1.5rem;
+  }
+  .pg textarea {
+    width: 100%;
+    height: 360px;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 0.92rem;
+    padding: 0.75rem;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    background: #fff;
+    line-height: 1.4;
+    resize: vertical;
+  }
+  .pg .out {
+    background: #1a1a1a;
+    color: #f5f5f5;
+    padding: 0.75rem 1rem;
+    border-radius: 4px;
+    height: 360px;
+    overflow: auto;
+    font-family: ui-monospace, monospace;
+    font-size: 0.9rem;
+    white-space: pre-wrap;
+  }
+  .controls {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+    margin-bottom: 0.5rem;
+  }
+  .controls button, .controls select {
+    font-family: inherit;
+    font-size: 0.92rem;
+    padding: 0.35rem 0.8rem;
+    border: 1px solid #ccc;
+    background: #fff;
+    border-radius: 4px;
+    cursor: pointer;
+  }
+  .controls button.primary { background: #1a1a1a; color: #f5f5f5; border-color: #1a1a1a; }
+  .controls .status { margin-left: auto; color: #666; font-size: 0.85rem; }
+  .err { color: #ff6b6b; }
+  .ok  { color: #82e8a3; }
+  .info { color: #8aa; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Penelope — Playground</h1>
+  <p class="tagline">Compile and run <code>.pen</code> in your browser. Zero server.</p>
+  <nav>
+    <a href="index.html">Overview</a>
+    <a href="tour.html">Tour</a>
+    <a href="stdlib.html">Stdlib</a>
+    <a href="cli.html">CLI</a>
+    <a href="snapshot.html">Snapshot v3</a>
+    <a href="play.html" class="active">Playground</a>
+    <a href="https://github.com/airingursb/Penelope">GitHub →</a>
+  </nav>
+</header>
+
+<div class="controls">
+  <button class="primary" id="run">▶ Run</button>
+  <button id="disasm">Show bytecode</button>
+  <select id="example">
+    <option value="hello">hello, world</option>
+    <option value="arith">arithmetic + let</option>
+    <option value="closure">closures</option>
+    <option value="fib">recursion (fib)</option>
+    <option value="list">list builtins</option>
+    <option value="dict">dict builtins</option>
+  </select>
+  <select id="olevel">
+    <option value="0">-O0</option>
+    <option value="1" selected>-O1</option>
+    <option value="2">-O2</option>
+  </select>
+  <span class="status" id="status"></span>
+</div>
+
+<div class="pg">
+  <textarea id="src" spellcheck="false"></textarea>
+  <div class="out" id="out"></div>
+</div>
+
+<p style="margin-top: 1rem; color: #888; font-size: 0.85rem;">
+  Note: <code>net_fetch</code>, <code>read_file</code>, <code>write_file</code> throw in the playground.
+  <code>wait_for</code> and <code>wait_until</code> pause but cannot be resumed here — use the CLI for that.
+</p>
+
+<script type="module">
+import { tokenize } from './dist/lexer.js';
+import { parse } from './dist/parser.js';
+import { compile } from './dist/compiler.js';
+import { runOptimizer } from './dist/optimizer.js';
+import { run, freshState } from './dist/vm.js';
+import { formatDiagnostic, diagnosticFromMessage } from './dist/diagnostic.js';
+
+const EXAMPLES = {
+  hello: 'print("hello, Penelope!");',
+  arith: 'let x = 1 + 2;\nlet y = x * 10;\nprint(to_str(y));',
+  closure: 'let mk = fn(start) { fn(n) { start + n } };\nlet add10 = mk(10);\nprint(to_str(add10(5)));',
+  fib: 'let fib = fn(n) {\n  if (n < 2) { n } else { fib(n - 1) + fib(n - 2) }\n};\nprint(to_str(fib(15)));',
+  list: 'let xs = list_new(3, 1, 4, 1, 5);\nprint(to_str(xs));\nprint(to_str(list_len(xs)));',
+  dict: 'let d = dict_set(dict_new(), "name", "Penelope");\nprint(dict_get(d, "name"));',
+};
+
+const $ = (id) => document.getElementById(id);
+const srcArea = $('src');
+const out = $('out');
+const status = $('status');
+
+function selectExample(name) {
+  srcArea.value = EXAMPLES[name] ?? '';
+}
+
+$('example').addEventListener('change', (e) => selectExample(e.target.value));
+selectExample('hello');
+
+function runProgram() {
+  out.innerHTML = '';
+  const source = srcArea.value;
+  const level = parseInt($('olevel').value, 10);
+  status.textContent = 'compiling…';
+  try {
+    const ast = parse(tokenize(source));
+    const prog = runOptimizer(compile(ast), level);
+    status.textContent = `code: ${prog.code.length} ops, constants: ${prog.constants.length}`;
+    // Patch console.log to capture print output
+    const orig = console.log;
+    const log = [];
+    console.log = (...args) => { log.push(args.join(' ')); orig.apply(console, args); };
+    let r;
+    try {
+      r = run(prog, freshState());
+    } finally {
+      console.log = orig;
+    }
+    for (const line of log) {
+      const div = document.createElement('div');
+      div.textContent = line;
+      out.appendChild(div);
+    }
+    const meta = document.createElement('div');
+    meta.className = r.status === 'paused' ? 'info' : 'ok';
+    meta.textContent = `\n[${r.status}]`;
+    out.appendChild(meta);
+  } catch (e) {
+    const diag = diagnosticFromMessage(e.message ?? String(e), source, 'playground');
+    const div = document.createElement('div');
+    div.className = 'err';
+    div.textContent = formatDiagnostic(diag);
+    out.appendChild(div);
+    status.textContent = 'failed';
+  }
+}
+
+function showBytecode() {
+  out.innerHTML = '';
+  const source = srcArea.value;
+  const level = parseInt($('olevel').value, 10);
+  try {
+    const ast = parse(tokenize(source));
+    const prog = runOptimizer(compile(ast), level);
+    const lines = [];
+    lines.push('constants:');
+    for (let i = 0; i < prog.constants.length; i++) {
+      lines.push(`  ${i}: ${JSON.stringify(prog.constants[i])}`);
+    }
+    lines.push('code:');
+    for (let i = 0; i < prog.code.length; i++) {
+      const op = prog.code[i];
+      const operands = op.slice(1).map(x => typeof x === 'object' ? JSON.stringify(x) : String(x)).join(' ');
+      lines.push(`  ${String(i).padStart(4, ' ')}: ${op[0]} ${operands}`);
+    }
+    out.textContent = lines.join('\n');
+    status.textContent = `${prog.code.length} ops`;
+  } catch (e) {
+    const diag = diagnosticFromMessage(e.message ?? String(e), source, 'playground');
+    out.textContent = formatDiagnostic(diag);
+    status.textContent = 'failed';
+  }
+}
+
+$('run').addEventListener('click', runProgram);
+$('disasm').addEventListener('click', showBytecode);
+
+// Ctrl/Cmd+Enter runs
+document.addEventListener('keydown', (e) => {
+  if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+    e.preventDefault();
+    runProgram();
+  }
+});
+</script>
+
+<footer>
+  © 2026 Airing · <a href="https://github.com/airingursb/Penelope">github.com/airingursb/Penelope</a>
+</footer>
+</body>
+</html>
