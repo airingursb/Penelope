@@ -61,16 +61,28 @@ export function formatDiagnostic(d: Diagnostic, color?: boolean): string {
 }
 
 // Convenience: build a Diagnostic from a thrown Error message that contains "line N col M".
+// If `lineMap` is supplied (from loadSourceWithMap), the line is translated back to its
+// original file:line. Source display still uses the concatenated source (which contains
+// the imported file's text at the right offset).
 export function diagnosticFromMessage(
   message: string,
   source?: string,
   filename?: string,
+  lineMap?: Array<{ file: string; line: number }>,
 ): Diagnostic {
   const m = message.match(/line (\d+) col (\d+)/);
   if (!m) return { message };
-  const line = parseInt(m[1], 10);
+  let line = parseInt(m[1], 10);
   const col = parseInt(m[2], 10);
+  let displayFile = filename;
+  if (lineMap && line >= 1 && line <= lineMap.length) {
+    const origin = lineMap[line - 1];
+    if (origin) {
+      displayFile = origin.file;
+      line = origin.line;
+    }
+  }
   // Strip the "at line N col M" suffix from the message itself since formatDiagnostic prints it.
   const cleanMsg = message.replace(/\s*at line \d+ col \d+(?:\s*\(ip \d+\))?\s*$/, '');
-  return { message: cleanMsg, pos: { line, col }, source, filename };
+  return { message: cleanMsg, pos: { line, col }, source, filename: displayFile };
 }

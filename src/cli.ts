@@ -11,7 +11,7 @@ import { runOptimizer, type OLevel } from './optimizer.js';
 import { check as typeCheck } from './typecheck.js';
 import { format as fmtSource } from './format.js';
 import { extractDocs, renderMarkdown } from './doc-gen.js';
-import { loadSource } from './loader.js';
+import { loadSource, loadSourceWithMap } from './loader.js';
 import { extractExpectations, checkExpectations } from './test-runner.js';
 import { spawnSync } from 'node:child_process';
 import { formatDiagnostic, diagnosticFromMessage } from './diagnostic.js';
@@ -79,8 +79,12 @@ function cmdBuild(args: ParsedArgs): number {
   if (!srcPath) { process.stderr.write('usage: pen build [-O0|-O1|-O2] <file.pen>\n'); return 2; }
   const absSrc = resolve(srcPath);
   let source: string;
-  try { source = loadSource(absSrc); }
-  catch { process.stderr.write(`cli error: cannot read source: ${srcPath}\n`); return 3; }
+  let lineMap: import('./loader.js').LineOrigin[] = [];
+  try {
+    const loaded = loadSourceWithMap(absSrc);
+    source = loaded.source;
+    lineMap = loaded.lineMap;
+  } catch { process.stderr.write(`cli error: cannot read source: ${srcPath}\n`); return 3; }
 
   try {
     const ast = parse(tokenize(source));
@@ -91,7 +95,7 @@ function cmdBuild(args: ParsedArgs): number {
     process.stdout.write(`wrote ${pencPath} (${prog.code.length} opcodes, ${prog.constants.length} constants, -O${args.oLevel})\n`);
     return 0;
   } catch (e) {
-    const diag = diagnosticFromMessage((e as Error).message, source, srcPath);
+    const diag = diagnosticFromMessage((e as Error).message, source, srcPath, lineMap);
     process.stderr.write(formatDiagnostic(diag) + '\n');
     return 1;
   }
@@ -113,8 +117,12 @@ function cmdExec(args: ParsedArgs): number {
 
 function runOnce(absPath: string, filePath: string, args: ParsedArgs): number {
   let source: string;
-  try { source = loadSource(absPath); }
-  catch { process.stderr.write(`cli error: cannot read source: ${filePath}\n`); return 3; }
+  let lineMap: import('./loader.js').LineOrigin[] = [];
+  try {
+    const loaded = loadSourceWithMap(absPath);
+    source = loaded.source;
+    lineMap = loaded.lineMap;
+  } catch { process.stderr.write(`cli error: cannot read source: ${filePath}\n`); return 3; }
 
   const timeFlag = args.flags['time'];
   const timeOverride = timeFlag && timeFlag !== true ? parseInt(String(timeFlag), 10) : null;
@@ -136,7 +144,7 @@ function runOnce(absPath: string, filePath: string, args: ParsedArgs): number {
     }
     return 0;
   } catch (e) {
-    const diag = diagnosticFromMessage((e as Error).message, source, filePath);
+    const diag = diagnosticFromMessage((e as Error).message, source, filePath, lineMap);
     process.stderr.write(formatDiagnostic(diag) + '\n');
     return 1;
   }
