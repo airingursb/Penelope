@@ -196,3 +196,22 @@ test('E2: random_int recorded then replayed', () => {
 
   cleanup(source); cleanup(snap);
 });
+
+test('F1: read_file recorded then replayed (file can be deleted after)', () => {
+  const source = resolve('/tmp/penelope-rf.pen');
+  const snap = resolve('/tmp/penelope-rf.penz');
+  const dataFile = '/tmp/penelope-rf-data.txt';
+  cleanup(source); cleanup(snap); cleanup(dataFile);
+
+  writeFileSync(dataFile, 'original content');
+  writeFileSync(source, 'let c = read_file("/tmp/penelope-rf-data.txt"); let _ = pause; print(c);');
+
+  spawnSync(PEN, ['run', source], { encoding: 'utf8' });
+  cleanup(dataFile);  // delete original file
+
+  const r2 = spawnSync(PEN, ['resume', snap, 'true'], { encoding: 'utf8' });
+  expect(r2.status).toBe(0);
+  expect(r2.stdout.trim()).toBe('original content');
+
+  cleanup(source); cleanup(snap);
+});

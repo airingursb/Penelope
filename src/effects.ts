@@ -3,7 +3,7 @@
 // `interpreter.ts` delegates here on first execution of an effect call.
 // On replay, `interpreter.ts` reads from the effect log and does NOT call this module.
 
-import { writeFileSync } from 'node:fs';
+import { writeFileSync, readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 
 export function performWriteFile(path: string, body: string): void {
@@ -16,6 +16,10 @@ export function performNow(timeOverride: number | null = null): number {
 
 export function performRandomInt(lo: number, hi: number): number {
   return Math.floor(Math.random() * (hi - lo + 1)) + lo;
+}
+
+export function performReadFile(path: string): string {
+  return readFileSync(path, 'utf8');
 }
 
 export function performNetFetch(url: string): string {

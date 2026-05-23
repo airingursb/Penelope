@@ -6,7 +6,7 @@
 // No closures, no Maps, no symbols, no class instances.
 
 import type { ASTBundle, ASTNode, BinOp, NodeId, ScopeId, Value } from './ast.js';
-import { EFFECT_NAMES as EFFECT_NAMES_SET, categoryOf, performWriteFile, performNetFetch, performNow, performRandomInt } from './effects.js';
+import { EFFECT_NAMES as EFFECT_NAMES_SET, categoryOf, performWriteFile, performNetFetch, performNow, performRandomInt, performReadFile } from './effects.js';
 import type { EffectName } from './effects.js';
 
 // ============================================================
@@ -480,6 +480,28 @@ function applyEffect(
     return cont({
       ...state, control: rest,
       valueStack: [...newStack, { tag: 'int' as const, v: r }],
+      effects: [...state.effects, entry],
+    });
+  }
+
+  if (name === 'read_file') {
+    if (argCount !== 1) return { kind: 'error', message: `read_file expects 1 arg, got ${argCount}` };
+    const path = args[0];
+    if (path.tag !== 'str') return { kind: 'error', message: `read_file path must be str, got ${path.tag}` };
+    let content: string;
+    try {
+      content = performReadFile(path.v);
+    } catch (e) {
+      return { kind: 'error', message: `read_file failed: ${(e as Error).message}`, atNode: nodeId };
+    }
+    const entry = {
+      nodeId, invocationCount, effect: 'read_file' as const,
+      recordedValue: { tag: 'str' as const, v: content },
+      status: 'committed' as const,
+    };
+    return cont({
+      ...state, control: rest,
+      valueStack: [...newStack, { tag: 'str' as const, v: content }],
       effects: [...state.effects, entry],
     });
   }
