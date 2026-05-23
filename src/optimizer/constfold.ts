@@ -2,7 +2,7 @@
 // Repeatedly scans for LOAD_CONST, LOAD_CONST, BIN_OP triples and folds them.
 // Rebuilds code array (and constant pool, deduped) on each fixpoint iteration.
 
-import type { Program, Opcode, ConstantPoolEntry } from '../bytecode.js';
+import type { Program, Opcode } from '../bytecode.js';
 import { internConstant, constantToValue, valueToConstant } from '../bytecode.js';
 import type { Value } from '../ast.js';
 

@@ -1,41 +1,34 @@
-// Penelope CLI.
-// Subcommands: run, resume, fork, inspect.
-// Argv parsing is hand-rolled — Phase 1 has zero dependencies.
-//
-// NOTE(T28-T30): run/resume/fork/inspect are stubbed here.
-// They will be rewired to the VM in T28-T30.
+// Penelope CLI. Phase 3 — bytecode VM.
 
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, copyFileSync, existsSync } from 'node:fs';
 import { resolve, dirname, basename, join } from 'node:path';
 import { tokenize } from './lexer.js';
 import { parse } from './parser.js';
 import { compile } from './compiler.js';
 import { run, freshState } from './vm.js';
 import { writePencFile, readPencFile } from './encoder.js';
+import { runOptimizer, type OLevel } from './optimizer.js';
 import { serialize, sha256, deserialize } from './snapshot.js';
-import type { Snapshot } from './snapshot.js';
+import type { Snapshot, VMState } from './snapshot.js';
 import type { Value } from './ast.js';
-
-// Suppress unused-import warnings during migration.
-void (deserialize as unknown);
-void (dirname as unknown); void (basename as unknown); void (join as unknown);
-
-// ============================================================
-// Argv parsing
-// ============================================================
 
 type ParsedArgs = {
   positional: string[];
   flags: Record<string, string | true>;
-  events: Record<string, string>;   // ← NEW
+  events: Record<string, string>;
+  oLevel: OLevel;
 };
 
 function parseArgs(argv: string[]): ParsedArgs {
   const positional: string[] = [];
   const flags: Record<string, string | true> = {};
   const events: Record<string, string> = {};
+  let oLevel: OLevel = 1;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
+    if (a === '-O0') { oLevel = 0; continue; }
+    if (a === '-O1') { oLevel = 1; continue; }
+    if (a === '-O2') { oLevel = 2; continue; }
     if (a === '--event') {
       const next = argv[++i];
       if (!next) throw new Error('--event requires NAME=VALUE');
@@ -57,100 +50,57 @@ function parseArgs(argv: string[]): ParsedArgs {
       positional.push(a);
     }
   }
-  return { positional, flags, events };
+  return { positional, flags, events, oLevel };
 }
 
-// ============================================================
-// Helpers
-// ============================================================
-
-function defaultSnapshotPath(sourcePath: string): string {
-  const dir = dirname(sourcePath);
-  const base = basename(sourcePath).replace(/\.pen$/, '');
-  return join(dir, `${base}.penz`);
+function writeSnapshot(pencPath: string, state: VMState): string {
+  const snapPath = pencPath.replace(/\.penc$/, '.penz');
+  const snap = {
+    version: 3 as const,
+    programPath: pencPath,
+    programHash: 'sha256:' + sha256(readFileSync(pencPath, 'utf8')),
+    pausedAtIP: state.ip,
+    pausedAtMs: Date.now(),
+    state,
+  };
+  writeFileSync(snapPath, serialize(snap));
+  return snapPath;
 }
-
-// Keep defaultSnapshotPath callable to avoid unused-function warning
-void (defaultSnapshotPath as unknown);
-
-function parseResumeValue(text: string): Value | { error: string } {
-  if (/^-?\d+$/.test(text))   return { tag: 'int', v: Number(text) };
-  if (text === 'true')        return { tag: 'bool', v: true };
-  if (text === 'false')       return { tag: 'bool', v: false };
-  return { error: `cannot parse '${text}' as int or bool` };
-}
-
-// Keep parseResumeValue callable to avoid unused-function warning
-void (parseResumeValue as unknown);
-
-// ============================================================
-// build subcommand (T28)
-// ============================================================
 
 function cmdBuild(args: ParsedArgs): number {
   const srcPath = args.positional[1];
-  if (!srcPath) {
-    process.stderr.write('usage: pen build <file.pen>\n');
-    return 2;
-  }
+  if (!srcPath) { process.stderr.write('usage: pen build [-O0|-O1|-O2] <file.pen>\n'); return 2; }
   const absSrc = resolve(srcPath);
   let source: string;
   try { source = readFileSync(absSrc, 'utf8'); }
   catch { process.stderr.write(`cli error: cannot read source: ${srcPath}\n`); return 3; }
 
-  const tokens = tokenize(source);
-  const ast = parse(tokens);
-  const prog = compile(ast);
+  const ast = parse(tokenize(source));
+  const prog = runOptimizer(compile(ast), args.oLevel);
   prog.sourceHash = 'sha256:' + sha256(source);
   const pencPath = absSrc.replace(/\.pen$/, '.penc');
   writePencFile(pencPath, prog);
-  process.stdout.write(`wrote ${pencPath} (${prog.code.length} opcodes, ${prog.constants.length} constants)\n`);
+  process.stdout.write(`wrote ${pencPath} (${prog.code.length} opcodes, ${prog.constants.length} constants, -O${args.oLevel})\n`);
   return 0;
 }
 
-// ============================================================
-// exec subcommand (T29) — run a .penc file directly
-// ============================================================
-
 function cmdExec(args: ParsedArgs): number {
   const pencPath = args.positional[1];
-  if (!pencPath) {
-    process.stderr.write('usage: pen exec <file.penc>\n');
-    return 2;
-  }
+  if (!pencPath) { process.stderr.write('usage: pen exec <file.penc>\n'); return 2; }
   const absPenc = resolve(pencPath);
   const r = readPencFile(absPenc);
-  if ('error' in r) {
-    process.stderr.write(`cli error: ${r.error}\n`);
-    return 1;
-  }
+  if ('error' in r) { process.stderr.write(`cli error: ${r.error}\n`); return 1; }
   const result = run(r.prog);
   if (result.status === 'paused') {
-    const snapPath = absPenc.replace(/\.penc$/, '.penz');
-    const snap = {
-      version: 3 as const,
-      programPath: absPenc,
-      programHash: 'sha256:' + sha256(readFileSync(absPenc, 'utf8')),
-      pausedAtIP: result.state.ip,
-      pausedAtMs: Date.now(),
-      state: result.state,
-    };
-    writeFileSync(snapPath, serialize(snap));
+    const snapPath = writeSnapshot(absPenc, result.state);
     process.stdout.write(`paused at ip ${result.state.ip} → ${snapPath}\n`);
   }
   return 0;
 }
 
-// ============================================================
-// run subcommand (T30) — in-memory compile + VM
-// ============================================================
-
 function cmdRun(args: ParsedArgs): number {
   const filePath = args.positional[1];
-  if (!filePath) {
-    process.stderr.write('usage: pen run <file.pen> [--time N] [--no-replay]\n');
-    return 2;
-  }
+  if (!filePath) { process.stderr.write('usage: pen run [-O0|-O1|-O2] <file.pen> [--time N] [--no-replay]\n'); return 2; }
   const absPath = resolve(filePath);
   let source: string;
   try { source = readFileSync(absPath, 'utf8'); }
@@ -160,9 +110,8 @@ function cmdRun(args: ParsedArgs): number {
   const timeOverride = timeFlag && timeFlag !== true ? parseInt(String(timeFlag), 10) : null;
   const noReplay = args.flags['no-replay'] === true;
 
-  const tokens = tokenize(source);
-  const ast = parse(tokens);
-  const prog = compile(ast);
+  const ast = parse(tokenize(source));
+  const prog = runOptimizer(compile(ast), args.oLevel);
 
   const state = freshState();
   state.timeOverride = timeOverride;
@@ -171,68 +120,129 @@ function cmdRun(args: ParsedArgs): number {
   const r = run(prog, state);
 
   if (r.status === 'paused') {
-    // Write .penc to disk so snapshot has a stable programPath/programHash.
     const pencPath = absPath.replace(/\.pen$/, '.penc');
     prog.sourceHash = 'sha256:' + sha256(source);
     writePencFile(pencPath, prog);
-    const snapPath = absPath.replace(/\.pen$/, '.penz');
-    const snap = {
-      version: 3 as const,
-      programPath: pencPath,
-      programHash: 'sha256:' + sha256(readFileSync(pencPath, 'utf8')),
-      pausedAtIP: r.state.ip,
-      pausedAtMs: Date.now(),
-      state: r.state,
-    };
-    writeFileSync(snapPath, serialize(snap));
+    const snapPath = writeSnapshot(pencPath, r.state);
     process.stdout.write(`paused at ip ${r.state.ip} → ${snapPath}\n`);
   }
-
   return 0;
 }
 
-// ============================================================
-// resume subcommand
-// TODO(T28-T30): rewire to VM
-// ============================================================
+function cmdResume(args: ParsedArgs): number {
+  const snapPath = args.positional[1];
+  if (!snapPath) { process.stderr.write('usage: pen resume <file.penz> [--time N] [--no-replay]\n'); return 2; }
+  const absSnap = resolve(snapPath);
+  let snapText: string;
+  try { snapText = readFileSync(absSnap, 'utf8'); }
+  catch { process.stderr.write(`cli error: cannot read snapshot: ${snapPath}\n`); return 3; }
 
-function cmdResume(_args: ParsedArgs): number {
-  process.stderr.write('pen resume is being migrated to VM in T28-T30\n');
-  process.exit(1);
-}
+  const sr = deserialize(snapText, (p) => readFileSync(p, 'utf8'));
+  if ('error' in sr) { process.stderr.write(`cli error: ${sr.error}\n`); return 1; }
+  if (sr.snap.version !== 3) { process.stderr.write('cli error: snapshot version mismatch (expected 3)\n'); return 1; }
 
-// ============================================================
-// fork subcommand
-// TODO(T28-T30): rewire to VM
-// ============================================================
-
-function cmdFork(_args: ParsedArgs): number {
-  process.stderr.write('pen fork is being migrated to VM in T28-T30\n');
-  process.exit(1);
-}
-
-// ============================================================
-// inspect subcommand
-// TODO(T28-T30): rewire to VM
-// ============================================================
-
-function cmdInspect(_args: ParsedArgs): number {
-  const snapPath = _args.positional[1];
-  if (!snapPath) {
-    process.stderr.write('usage: penelope inspect <file.penz>\n');
-    return 2;
+  const pencPath = resolve(dirname(absSnap), sr.snap.programPath);
+  const pr = readPencFile(pencPath);
+  if ('error' in pr) { process.stderr.write(`cli error: ${pr.error}\n`); return 1; }
+  const hashNow = 'sha256:' + sha256(readFileSync(pencPath, 'utf8'));
+  if (hashNow !== sr.snap.programHash) {
+    process.stderr.write('cli error: program hash mismatch — refusing to resume\n');
+    return 1;
   }
 
+  // Inject any --event values into the wait_for pending entries.
+  const state: VMState = sr.snap.state;
+  for (const [name, valText] of Object.entries(args.events)) {
+    const v = parseResumeValue(valText);
+    if ('error' in v) { process.stderr.write(`cli error: ${v.error}\n`); return 1; }
+    // Match by name in committed/pending wait_for entries — find pending and commit with value.
+    const entry = state.effects.find(e => e.effect === 'wait_for' && e.status === 'pending');
+    if (entry) { entry.status = 'committed'; entry.recordedValue = v; }
+    // For arg-less resumes, name is currently informational only.
+    void name;
+  }
+
+  const timeFlag = args.flags['time'];
+  if (timeFlag && timeFlag !== true) state.timeOverride = parseInt(String(timeFlag), 10);
+  if (args.flags['no-replay'] === true) state.noReplay = true;
+
+  const r = run(pr.prog, state);
+  if (r.status === 'paused') {
+    const newSnapPath = writeSnapshot(pencPath, r.state);
+    process.stdout.write(`paused at ip ${r.state.ip} → ${newSnapPath}\n`);
+  }
+  return 0;
+}
+
+function cmdFork(args: ParsedArgs): number {
+  const src = args.positional[1];
+  const dst = args.positional[2];
+  if (!src || !dst) { process.stderr.write('usage: pen fork <src.penz> <dst.penz>\n'); return 2; }
+  const absSrc = resolve(src);
+  const absDst = resolve(dst);
+  if (!existsSync(absSrc)) { process.stderr.write(`cli error: snapshot not found: ${src}\n`); return 3; }
+  copyFileSync(absSrc, absDst);
+  process.stdout.write(`forked → ${absDst}\n`);
+  return 0;
+}
+
+function cmdDisasm(args: ParsedArgs): number {
+  const pencPath = args.positional[1];
+  if (!pencPath) { process.stderr.write('usage: pen disasm <file.penc>\n'); return 2; }
+  const r = readPencFile(resolve(pencPath));
+  if ('error' in r) { process.stderr.write(`cli error: ${r.error}\n`); return 1; }
+  const out = process.stdout;
+  out.write(`constants (${r.prog.constants.length}):\n`);
+  for (let i = 0; i < r.prog.constants.length; i++) {
+    out.write(`  ${i}: ${JSON.stringify(r.prog.constants[i])}\n`);
+  }
+  out.write(`code (${r.prog.code.length} opcodes):\n`);
+  for (let i = 0; i < r.prog.code.length; i++) {
+    const op = r.prog.code[i];
+    const operands = op.slice(1).map(x => typeof x === 'object' ? JSON.stringify(x) : String(x)).join(' ');
+    out.write(`  ${i.toString().padStart(4, ' ')}: ${op[0]} ${operands}\n`.replace(/ +\n/, '\n'));
+  }
+  return 0;
+}
+
+function cmdBench(args: ParsedArgs): number {
+  const srcPath = args.positional[1];
+  if (!srcPath) { process.stderr.write('usage: pen bench <file.pen>\n'); return 2; }
+  let source: string;
+  try { source = readFileSync(resolve(srcPath), 'utf8'); }
+  catch { process.stderr.write(`cli error: cannot read source: ${srcPath}\n`); return 3; }
+  const ast = parse(tokenize(source));
+  const prog = compile(ast);
+  const reps = 3;
+  const time = (label: string, fn: () => void) => {
+    let total = 0n;
+    for (let i = 0; i < reps; i++) {
+      const t0 = process.hrtime.bigint();
+      fn();
+      const t1 = process.hrtime.bigint();
+      total += t1 - t0;
+    }
+    const avgMs = Number(total / BigInt(reps)) / 1e6;
+    process.stdout.write(`  ${label.padEnd(25)} avg ${avgMs.toFixed(2)} ms\n`);
+  };
+  process.stdout.write(`benchmark: ${srcPath} (${reps} reps)\n`);
+  time('VM (-O0)',  () => { run(runOptimizer(prog, 0)); });
+  time('VM (-O1)',  () => { run(runOptimizer(prog, 1)); });
+  time('VM (-O2)',  () => { run(runOptimizer(prog, 2)); });
+  return 0;
+}
+
+function cmdInspect(args: ParsedArgs): number {
+  const snapPath = args.positional[1];
+  if (!snapPath) { process.stderr.write('usage: pen inspect <file.penz>\n'); return 2; }
   const absSnapPath = resolve(snapPath);
   let snapJson: string;
   try { snapJson = readFileSync(absSnapPath, 'utf8'); }
   catch { process.stderr.write(`cli error: cannot read snapshot: ${snapPath}\n`); return 3; }
-
   let snap: Snapshot;
   try { snap = JSON.parse(snapJson); }
   catch { process.stderr.write(`cli error: snapshot is corrupted (invalid JSON)\n`); return 3; }
 
-  // Try to read source for hash status (non-fatal if it fails)
   let sourceStatus = '? source missing';
   try {
     const source = readFileSync(resolve(dirname(absSnapPath), snap.programPath), 'utf8');
@@ -248,31 +258,43 @@ function cmdInspect(_args: ParsedArgs): number {
 
   const out = process.stdout;
   out.write(`Snapshot: ${basename(absSnapPath)}\n`);
-  out.write(`  Source: ${snap.programPath}  ${sourceStatus}\n`);
-  out.write(`  Full path: ${resolve(dirname(absSnapPath), snap.programPath)}\n`);
-  out.write(`  Paused at IP: ${snap.pausedAtIP}\n`);
-  out.write(`  Time: ${new Date(snap.pausedAtMs).toISOString()} (${ageStr})\n`);
-  out.write(`\n`);
-  out.write(`Effect log (${snap.state.effects.length} entries):\n`);
+  out.write(`  version: ${snap.version}\n`);
+  out.write(`  programPath: ${snap.programPath}  ${sourceStatus}\n`);
+  out.write(`  programHash: ${snap.programHash}\n`);
+  out.write(`  pausedAtIP: ${snap.pausedAtIP}\n`);
+  out.write(`  pausedAtMs: ${snap.pausedAtMs}  (${ageStr})\n`);
+  out.write(`\nframes: ${snap.state.frames.length}\n`);
+  snap.state.frames.forEach((f, i) => {
+    const keys = Object.keys(f.bindings).join(', ');
+    const parent = f.parentIdx !== undefined ? ` parentIdx=${f.parentIdx}` : '';
+    out.write(`  [${i}] bindings: { ${keys} }${parent}\n`);
+  });
+  out.write(`\neffects: ${snap.state.effects.length} entries\n`);
   if (snap.state.effects.length === 0) {
     out.write(`  (empty)\n`);
   } else {
     snap.state.effects.forEach((e, idx) => {
       const status = e.status === 'committed' ? '✓' : '⏳';
       const valueStr = e.recordedValue ? JSON.stringify(e.recordedValue) : '(none)';
-      out.write(`  ${idx + 1}. [${status}] ${e.effect.padEnd(12)} @ip=${e.ip} #${e.invocationCount}  value=${valueStr}\n`);
+      out.write(`  [${idx}] ${status} ${e.effect.padEnd(12)} ip=${e.ip} #${e.invocationCount} value=${valueStr}\n`);
     });
   }
-  out.write(`\n`);
-  out.write(`Value stack (${snap.state.valueStack.length}): `);
-  out.write(snap.state.valueStack.map(v => JSON.stringify(v)).join(', ') || '(empty)');
-  out.write(`\n`);
+  out.write(`\nvalue stack (${snap.state.valueStack.length}): `);
+  out.write(snap.state.valueStack.map((v: Value) => JSON.stringify(v)).join(', ') || '(empty)');
+  out.write('\n');
   return 0;
 }
 
-// ============================================================
-// Main
-// ============================================================
+function parseResumeValue(text: string): Value | { error: string } {
+  if (/^-?\d+$/.test(text))   return { tag: 'int', v: Number(text) };
+  if (text === 'true')        return { tag: 'bool', v: true };
+  if (text === 'false')       return { tag: 'bool', v: false };
+  if (text.startsWith('"') && text.endsWith('"')) return { tag: 'str', v: text.slice(1, -1) };
+  return { error: `cannot parse '${text}' as int, bool, or quoted string` };
+}
+
+void (parseResumeValue as unknown);
+void (join as unknown);
 
 export function main(argv: string[]): number {
   const args = parseArgs(argv);
@@ -282,10 +304,11 @@ export function main(argv: string[]): number {
   if (sub === 'run')     return cmdRun(args);
   if (sub === 'resume')  return cmdResume(args);
   if (sub === 'fork')    return cmdFork(args);
+  if (sub === 'disasm')  return cmdDisasm(args);
+  if (sub === 'bench')   return cmdBench(args);
   if (sub === 'inspect') return cmdInspect(args);
-  process.stderr.write(`usage: penelope <build|exec|run|resume|fork|inspect> [args]\n`);
+  process.stderr.write(`usage: penelope <build|exec|run|resume|fork|disasm|bench|inspect> [-O0|-O1|-O2] [args]\n`);
   return 2;
 }
 
-// Self-invoke when run as a script
 process.exit(main(process.argv.slice(2)));

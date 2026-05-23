@@ -106,8 +106,6 @@ export function inlinePass(prog: Program): Program {
 }
 
 function applyInline(prog: Program, c: InlineCandidate): Program {
-  const argc = c.params.length;
-
   const removedRanges: Array<[number, number]> = [
     [c.makeClosureIp, c.storeVarIp],
     [c.calleeLoadIp, c.calleeLoadIp],
