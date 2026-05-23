@@ -12,6 +12,8 @@ import { check as typeCheck } from './typecheck.js';
 import { format as fmtSource } from './format.js';
 import { extractDocs, renderMarkdown } from './doc-gen.js';
 import { loadSource, loadSourceWithMap } from './loader.js';
+import { buildGraph, renderDot } from './graph-gen.js';
+import { scaffold } from './scaffold.js';
 import { extractExpectations, checkExpectations } from './test-runner.js';
 import { spawnSync } from 'node:child_process';
 import { formatDiagnostic, diagnosticFromMessage } from './diagnostic.js';
@@ -325,6 +327,27 @@ function testOnce(srcPath: string): number {
   return 1;
 }
 
+function cmdGraph(args: ParsedArgs): number {
+  const srcPath = args.positional[1];
+  if (!srcPath) { process.stderr.write('usage: pen graph <file.pen>\n'); return 2; }
+  const edges = buildGraph(srcPath);
+  process.stdout.write(renderDot(srcPath, edges));
+  return 0;
+}
+
+function cmdNew(args: ParsedArgs): number {
+  const dir = args.positional[1];
+  if (!dir) { process.stderr.write('usage: pen new <dir>\n'); return 2; }
+  const r = scaffold(dir);
+  if (r.error) { process.stderr.write(`cli error: ${r.error}\n`); return 1; }
+  process.stdout.write(`created ${dir}/\n`);
+  for (const f of r.created) {
+    process.stdout.write(`  ${f.replace(resolve('.') + '/', '')}\n`);
+  }
+  process.stdout.write(`\nnext:\n  cd ${dir}\n  pen run main.pen\n`);
+  return 0;
+}
+
 function cmdDoc(args: ParsedArgs): number {
   const srcPath = args.positional[1];
   if (!srcPath) { process.stderr.write('usage: pen doc <file.pen>\n'); return 2; }
@@ -576,7 +599,9 @@ export async function main(argv: string[]): Promise<number> {
   if (sub === 'fmt')     return cmdFmt(args);
   if (sub === 'test')    return cmdTest(args);
   if (sub === 'doc')     return cmdDoc(args);
-  process.stderr.write(`usage: penelope <build|exec|run|resume|fork|disasm|bench|inspect|repl|check|profile|fmt|test|doc> [-O0|-O1|-O2] [args]\n`);
+  if (sub === 'graph')   return cmdGraph(args);
+  if (sub === 'new')     return cmdNew(args);
+  process.stderr.write(`usage: penelope <build|exec|run|resume|fork|disasm|bench|inspect|repl|check|profile|fmt|test|doc|graph|new> [-O0|-O1|-O2] [args]\n`);
   return 2;
 }
 
