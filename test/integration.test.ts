@@ -306,6 +306,21 @@ test('H3: multi-pause flow — wait_for, then bare pause, then continue', () => 
   cleanup(source); cleanup(snap);
 });
 
+test('B5: inspect shows effect log section', () => {
+  const source = resolve('/tmp/penelope-inspect-b5.pen');
+  const snap = resolve('/tmp/penelope-inspect-b5.penz');
+  cleanup(source); cleanup(snap);
+  writeFileSync(source, 'print("hi"); let _ = pause; print("done");');
+
+  spawnSync(PEN, ['run', source], { encoding: 'utf8' });
+  const r = spawnSync(PEN, ['inspect', snap], { encoding: 'utf8' });
+  expect(r.status).toBe(0);
+  expect(r.stdout).toMatch(/Effect log/);
+  expect(r.stdout).toMatch(/print/);
+
+  cleanup(source); cleanup(snap);
+});
+
 test('--no-replay flag is accepted and does not break resume', () => {
   const source = resolve('/tmp/penelope-noreplay.pen');
   const snap = resolve('/tmp/penelope-noreplay.penz');

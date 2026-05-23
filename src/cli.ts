@@ -381,6 +381,17 @@ function cmdInspect(args: ParsedArgs): number {
     out.write(`  ${snap.state.control.length - i}. ${JSON.stringify(snap.state.control[i])}\n`);
   }
   out.write(`\n`);
+  out.write(`Effect log (${snap.state.effects.length} entries):\n`);
+  if (snap.state.effects.length === 0) {
+    out.write(`  (empty)\n`);
+  } else {
+    snap.state.effects.forEach((e, idx) => {
+      const status = e.status === 'committed' ? '✓' : '⏳';
+      const valueStr = e.recordedValue ? formatValue(e.recordedValue) : '(none)';
+      out.write(`  ${idx + 1}. [${status}] ${e.effect.padEnd(12)} @${e.nodeId} #${e.invocationCount}  value=${valueStr}\n`);
+    });
+  }
+  out.write(`\n`);
   out.write(`Value stack (${snap.state.valueStack.length}): `);
   out.write(snap.state.valueStack.map(formatValue).join(', ') || '(empty)');
   out.write(`\n`);
