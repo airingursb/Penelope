@@ -50,6 +50,11 @@ function compileNode(node: ASTNode, ast: ASTBundle, prog: Program): void {
       emit(prog, ['BIN_OP', node.op]);
       return;
     }
+    case 'Let': {
+      compileNode(ast.nodes[node.valueId], ast, prog);
+      emit(prog, ['STORE_VAR', node.name]);
+      return;
+    }
     default:
       throw new Error(`compile: unhandled node kind '${(node as ASTNode).kind}'`);
   }

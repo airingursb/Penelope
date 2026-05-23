@@ -84,3 +84,24 @@ test('precedence: 1 + 2 * 3', () => {
   const opNames = prog.code.map(op => op[0]);
   expect(opNames).toEqual(['LOAD_CONST', 'LOAD_CONST', 'LOAD_CONST', 'BIN_OP', 'BIN_OP', 'POP', 'HALT']);
 });
+
+test('let x = 10; compiles to LOAD_CONST, STORE_VAR x', () => {
+  const prog = compile(parse(tokenize('let x = 10;')));
+  expect(prog.constants).toEqual([{ tag: 'int', v: 10 }]);
+  expect(prog.code).toEqual([
+    ['LOAD_CONST', 0],
+    ['STORE_VAR', 'x'],
+    ['HALT'],
+  ]);
+});
+
+test('let then use', () => {
+  const prog = compile(parse(tokenize('let x = 10; x;')));
+  expect(prog.code).toEqual([
+    ['LOAD_CONST', 0],
+    ['STORE_VAR', 'x'],
+    ['LOAD_VAR', 'x', null],
+    ['POP'],
+    ['HALT'],
+  ]);
+});
