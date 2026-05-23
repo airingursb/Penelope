@@ -20,13 +20,23 @@ import type { Value } from './ast.js';
 type ParsedArgs = {
   positional: string[];
   flags: Record<string, string | true>;
+  events: Record<string, string>;   // ← NEW
 };
 
 function parseArgs(argv: string[]): ParsedArgs {
   const positional: string[] = [];
   const flags: Record<string, string | true> = {};
+  const events: Record<string, string> = {};
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
+    if (a === '--event') {
+      const next = argv[++i];
+      if (!next) throw new Error('--event requires NAME=VALUE');
+      const eq = next.indexOf('=');
+      if (eq < 0) throw new Error(`--event expects NAME=VALUE, got '${next}'`);
+      events[next.slice(0, eq)] = next.slice(eq + 1);
+      continue;
+    }
     if (a.startsWith('--')) {
       const eq = a.indexOf('=');
       if (eq >= 0) {
@@ -40,7 +50,7 @@ function parseArgs(argv: string[]): ParsedArgs {
       positional.push(a);
     }
   }
-  return { positional, flags };
+  return { positional, flags, events };
 }
 
 // ============================================================
@@ -97,7 +107,11 @@ function cmdRun(args: ParsedArgs): number {
     return 1;
   }
 
-  const result = loop(initialState(ast.rootId), ast);
+  let state = initialState(ast.rootId);
+  if (typeof args.flags.time === 'string') {
+    state = { ...state, timeOverride: Number(args.flags.time) };
+  }
+  const result = loop(state, ast);
 
   if (result.kind === 'done') {
     return 0;
@@ -113,7 +127,7 @@ function cmdRun(args: ParsedArgs): number {
       : defaultSnapshotPath(absSourcePath);
 
     const snap: Snapshot = {
-      version: 1,
+      version: 2,
       programPath: basename(absSourcePath),
       programHash: 'sha256:' + sha256(source),
       pausedAt: result.pausedAt,
@@ -135,9 +149,9 @@ function cmdRun(args: ParsedArgs): number {
 
 function cmdResume(args: ParsedArgs): number {
   const snapPath = args.positional[1];
-  const valueText = args.positional[2];
-  if (!snapPath || valueText === undefined) {
-    process.stderr.write('usage: penelope resume <file.penz> <value> [--source <path>] [--force] [--out <path>]\n');
+  const valueText = args.positional[2];  // may be undefined now
+  if (!snapPath) {
+    process.stderr.write('usage: penelope resume <file.penz> [<value>] [--time MS] [--force] [--out <path>]\n');
     return 2;
   }
 
@@ -164,19 +178,47 @@ function cmdResume(args: ParsedArgs): number {
     return 3;
   }
 
-  const v = parseResumeValue(valueText);
-  if ('error' in v) {
-    process.stderr.write(`cli error: ${v.error}\n`);
-    return 2;
-  }
-
   const ast = parse(tokenize(dr.source));
 
-  // Inject resume value onto valueStack, then continue stepping.
-  const resumedState: State = {
-    ...dr.snap.state,
-    valueStack: [...dr.snap.state.valueStack, v],
-  };
+  let resumedState: State = { ...dr.snap.state };
+
+  // Phase 1 pause value injection (only if value provided)
+  if (valueText !== undefined) {
+    const v = parseResumeValue(valueText);
+    if ('error' in v) {
+      process.stderr.write(`cli error: ${v.error}\n`);
+      return 2;
+    }
+    resumedState = { ...resumedState, valueStack: [...resumedState.valueStack, v] };
+  }
+
+  // Phase 2: time override
+  if (typeof args.flags.time === 'string') {
+    resumedState = { ...resumedState, timeOverride: Number(args.flags.time) };
+  }
+
+  // Phase 2: --no-replay flag
+  if (args.flags['no-replay'] === true) {
+    resumedState = { ...resumedState, noReplay: true };
+  }
+
+  // Phase 2 wait_for event delivery: --event NAME=VALUE → committed entry with parsed VALUE.
+  const updatedEffects = resumedState.effects.map(e => {
+    if (e.effect !== 'wait_for' || e.status !== 'pending') return e;
+    if (!e.recordedValue || e.recordedValue.tag !== 'str') return e;
+    const eventName = e.recordedValue.v;
+    const eventValueText = args.events[eventName];
+    if (eventValueText === undefined) return e;
+
+    const v = parseResumeValue(eventValueText);
+    if ('error' in v) {
+      // Not parseable as int/bool: treat as string
+      return { ...e, status: 'committed' as const, recordedValue: { tag: 'str' as const, v: eventValueText } };
+    }
+    return { ...e, status: 'committed' as const, recordedValue: v };
+  });
+  resumedState = { ...resumedState, effects: updatedEffects };
+
   const result = loop(resumedState, ast);
 
   if (result.kind === 'done') return 0;
@@ -189,7 +231,7 @@ function cmdResume(args: ParsedArgs): number {
       ? args.flags.out
       : absSnapPath;  // default: overwrite input
     const newSnap: Snapshot = {
-      version: 1,
+      version: 2,
       programPath: dr.snap.programPath,
       programHash: dr.snap.programHash,
       pausedAt: result.pausedAt,
@@ -262,7 +304,7 @@ function cmdFork(args: ParsedArgs): number {
       }
       if (result.kind === 'paused') {
         const newSnap: Snapshot = {
-          version: 1,
+          version: 2,
           programPath: dr.snap.programPath,
           programHash: dr.snap.programHash,
           pausedAt: result.pausedAt,
@@ -337,6 +379,17 @@ function cmdInspect(args: ParsedArgs): number {
   out.write(`Control stack (top → bottom, ${snap.state.control.length} instr):\n`);
   for (let i = snap.state.control.length - 1; i >= 0; i--) {
     out.write(`  ${snap.state.control.length - i}. ${JSON.stringify(snap.state.control[i])}\n`);
+  }
+  out.write(`\n`);
+  out.write(`Effect log (${snap.state.effects.length} entries):\n`);
+  if (snap.state.effects.length === 0) {
+    out.write(`  (empty)\n`);
+  } else {
+    snap.state.effects.forEach((e, idx) => {
+      const status = e.status === 'committed' ? '✓' : '⏳';
+      const valueStr = e.recordedValue ? formatValue(e.recordedValue) : '(none)';
+      out.write(`  ${idx + 1}. [${status}] ${e.effect.padEnd(12)} @${e.nodeId} #${e.invocationCount}  value=${valueStr}\n`);
+    });
   }
   out.write(`\n`);
   out.write(`Value stack (${snap.state.valueStack.length}): `);

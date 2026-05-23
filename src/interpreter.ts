@@ -6,6 +6,21 @@
 // No closures, no Maps, no symbols, no class instances.
 
 import type { ASTBundle, ASTNode, BinOp, NodeId, ScopeId, Value } from './ast.js';
+import { EFFECT_NAMES as EFFECT_NAMES_SET, categoryOf, performWriteFile, performNetFetch, performNow, performRandomInt, performReadFile } from './effects.js';
+import type { EffectName } from './effects.js';
+
+// ============================================================
+// Phase 2: EffectEntry
+// ============================================================
+
+// Phase 2: effect log entry. Filled in by Task 13+. For now just an opaque type.
+export type EffectEntry = {
+  nodeId: NodeId;
+  invocationCount: number;
+  effect: 'print' | 'net_fetch' | 'now' | 'random_int' | 'read_file' | 'write_file' | 'wait_until' | 'wait_for';
+  recordedValue: Value | null;
+  status: 'pending' | 'committed';
+};
 
 // ============================================================
 // State
@@ -19,11 +34,12 @@ export type Scope = {
 export type ControlInstr =
   | { op: 'eval';      nodeId: NodeId }
   | { op: 'applyBin';  binOp: BinOp }
-  | { op: 'applyPrint' }
   | { op: 'bindLet';   name: string }
   | { op: 'branch';    thenBlockId: NodeId; elseBlockId: NodeId }
-  | { op: 'invoke';    argCount: number }
-  | { op: 'popScope';  restoreScopeId: ScopeId }
+  | { op: 'invoke';          argCount: number }
+  | { op: 'applyPureBuiltin'; name: string; argCount: number }
+  | { op: 'applyEffect'; name: EffectName; nodeId: NodeId; argCount: number }
+  | { op: 'popScope';        restoreScopeId: ScopeId }
   | { op: 'pushUnit' }
   | { op: 'discard' };
 
@@ -33,6 +49,9 @@ export type State = {
   scopes: Record<ScopeId, Scope>;
   currentScopeId: ScopeId;
   nextScopeIdCounter: number;
+  effects: EffectEntry[];  // Phase 2: effect log
+  timeOverride?: number | null;  // optional time override for now()
+  noReplay?: boolean;  // Phase 2: skip effect-log replay for write/read effects
 };
 
 export type StepResult =
@@ -40,6 +59,10 @@ export type StepResult =
   | { kind: 'done';     finalValue: Value | null }
   | { kind: 'paused';   state: State; pausedAt: NodeId }
   | { kind: 'error';    message: string; atNode?: NodeId };
+
+const PURE_BUILTINS: ReadonlySet<string> = new Set([
+  'str_length', 'str_slice', 'to_str',
+]);
 
 // ============================================================
 // Construction
@@ -52,6 +75,7 @@ export function initialState(rootId: NodeId): State {
     scopes: { s0: { parentId: null, bindings: {} } },
     currentScopeId: 's0',
     nextScopeIdCounter: 1,
+    effects: [],  // Phase 2
   };
 }
 
@@ -66,6 +90,7 @@ export function runToCompletion(ast: ASTBundle, startNodeId: NodeId = ast.rootId
     scopes: { s0: { parentId: null, bindings: {} } },
     currentScopeId: 's0',
     nextScopeIdCounter: 1,
+    effects: [],  // Phase 2
   };
   while (true) {
     const r = step(state, ast);
@@ -96,13 +121,16 @@ export function step(state: State, ast: ASTBundle): StepResult {
       return stepEval(state, rest, ast.nodes[instr.nodeId], ast);
     case 'applyBin':
       return applyBinOp(state, rest, instr.binOp);
-    case 'applyPrint': {
-      const v = state.valueStack[state.valueStack.length - 1];
-      console.log(formatValue(v));
-      return cont({ ...state, control: rest,
-        valueStack: state.valueStack.slice(0, -1) });
-    }
     case 'bindLet': {
+      // Reserved builtin name guard
+      const reserved = new Set<string>([
+        'str_length', 'str_slice', 'to_str',
+        'print', 'net_fetch', 'now', 'random_int', 'read_file', 'write_file', 'wait_until', 'wait_for',
+      ]);
+      if (reserved.has(instr.name)) {
+        return { kind: 'error', message: `'${instr.name}' is a reserved builtin name; cannot let-bind` };
+      }
+      // ... existing code unchanged ...
       const v = state.valueStack[state.valueStack.length - 1];
       const scope = state.scopes[state.currentScopeId];
       return cont({ ...state, control: rest,
@@ -130,6 +158,10 @@ export function step(state: State, ast: ASTBundle): StepResult {
     }
     case 'invoke':
       return invokeClosure(state, rest, instr.argCount);
+    case 'applyPureBuiltin':
+      return applyPureBuiltin(state, rest, instr.name, instr.argCount);
+    case 'applyEffect':
+      return applyEffect(state, rest, instr.name, instr.nodeId, instr.argCount, ast);
     default:
       return { kind: 'error', message: `unimplemented op: ${(instr as ControlInstr).op}` };
   }
@@ -143,6 +175,9 @@ function stepEval(state: State, rest: ControlInstr[], node: ASTNode, _ast: ASTBu
     case 'BoolLit':
       return cont({ ...state, control: rest,
         valueStack: [...state.valueStack, { tag: 'bool', v: node.value }] });
+    case 'StringLit':
+      return cont({ ...state, control: rest,
+        valueStack: [...state.valueStack, { tag: 'str', v: node.value }] });
     case 'Var': {
       const v = lookup(state.scopes, state.currentScopeId, node.name);
       if (v === undefined)
@@ -173,12 +208,6 @@ function stepEval(state: State, rest: ControlInstr[], node: ASTNode, _ast: ASTBu
         ...rest,
         { op: 'bindLet', name: node.name },
         { op: 'eval', nodeId: node.valueId },
-      ]});
-    case 'Print':
-      return cont({ ...state, control: [
-        ...rest,
-        { op: 'applyPrint' },
-        { op: 'eval', nodeId: node.argId },
       ]});
     case 'Block': {
       const newScopeId = `s${state.nextScopeIdCounter}`;
@@ -215,14 +244,35 @@ function stepEval(state: State, rest: ControlInstr[], node: ASTNode, _ast: ASTBu
       return cont({ ...state, control: rest,
         valueStack: [...state.valueStack, closure] });
     }
-    case 'Call':
-      // Evaluate callee, then args left-to-right (push reversed so they pop in order), then invoke.
+    case 'Call': {
+      const callee = _ast.nodes[node.calleeId];
+
+      // Pure builtin dispatch
+      if (callee.kind === 'Var' && PURE_BUILTINS.has(callee.name)) {
+        return cont({ ...state, control: [
+          ...rest,
+          { op: 'applyPureBuiltin', name: callee.name, argCount: node.argIds.length },
+          ...[...node.argIds].reverse().map(id => ({ op: 'eval' as const, nodeId: id })),
+        ]});
+      }
+
+      // Effect builtin dispatch
+      if (callee.kind === 'Var' && EFFECT_NAMES_SET.has(callee.name as EffectName)) {
+        return cont({ ...state, control: [
+          ...rest,
+          { op: 'applyEffect', name: callee.name as EffectName, nodeId: node.id, argCount: node.argIds.length },
+          ...[...node.argIds].reverse().map(id => ({ op: 'eval' as const, nodeId: id })),
+        ]});
+      }
+
+      // Normal closure call (unchanged from Phase 1)
       return cont({ ...state, control: [
         ...rest,
         { op: 'invoke', argCount: node.argIds.length },
         ...[...node.argIds].reverse().map(id => ({ op: 'eval' as const, nodeId: id })),
         { op: 'eval', nodeId: node.calleeId },
       ]});
+    }
     case 'Pause':
       return { kind: 'paused',
                state: { ...state, control: rest },
@@ -261,6 +311,299 @@ function invokeClosure(state: State, rest: ControlInstr[], argCount: number): St
   });
 }
 
+function applyPureBuiltin(state: State, rest: ControlInstr[], name: string, argCount: number): StepResult {
+  const stack = state.valueStack;
+  const args = stack.slice(stack.length - argCount);
+  const newStack = stack.slice(0, stack.length - argCount);
+
+  if (name === 'str_length') {
+    if (argCount !== 1) return { kind: 'error', message: `str_length expects 1 arg, got ${argCount}` };
+    const a = args[0];
+    if (a.tag !== 'str') return { kind: 'error', message: `str_length expects str, got ${a.tag}` };
+    return cont({ ...state, control: rest,
+      valueStack: [...newStack, { tag: 'int', v: a.v.length }] });
+  }
+
+  if (name === 'str_slice') {
+    if (argCount !== 3) return { kind: 'error', message: `str_slice expects 3 args, got ${argCount}` };
+    const s = args[0];
+    const lo = args[1];
+    const hi = args[2];
+    if (s.tag !== 'str') return { kind: 'error', message: `str_slice expects str, got ${s.tag}` };
+    if (lo.tag !== 'int') return { kind: 'error', message: `str_slice expects int lo, got ${lo.tag}` };
+    if (hi.tag !== 'int') return { kind: 'error', message: `str_slice expects int hi, got ${hi.tag}` };
+    const len = s.v.length;
+    const loClamped = Math.max(0, Math.min(len, lo.v));
+    const hiClamped = Math.max(loClamped, Math.min(len, hi.v));
+    return cont({ ...state, control: rest,
+      valueStack: [...newStack, { tag: 'str', v: s.v.slice(loClamped, hiClamped) }] });
+  }
+
+  if (name === 'to_str') {
+    if (argCount !== 1) return { kind: 'error', message: `to_str expects 1 arg, got ${argCount}` };
+    const v = args[0];
+    return cont({ ...state, control: rest,
+      valueStack: [...newStack, { tag: 'str', v: formatValue(v) }] });
+  }
+
+  return { kind: 'error', message: `unimplemented pure builtin: ${name}` };
+}
+
+function applyEffect(
+  state: State,
+  rest: ControlInstr[],
+  name: EffectName,
+  nodeId: NodeId,
+  argCount: number,
+  _ast: ASTBundle,
+): StepResult {
+  const stack = state.valueStack;
+  const args = stack.slice(stack.length - argCount);
+  const newStack = stack.slice(0, stack.length - argCount);
+
+  const invocationCount = state.effects.filter(e => e.nodeId === nodeId).length;
+  const existing = state.effects.find(e => e.nodeId === nodeId && e.invocationCount === invocationCount);
+
+  // Wait effects have time-based or external-event semantics; handle ahead of generic replay.
+  if (name === 'wait_until') {
+    if (argCount !== 1) return { kind: 'error', message: `wait_until expects 1 arg, got ${argCount}` };
+    const msArg = args[0];
+    if (msArg.tag !== 'int') return { kind: 'error', message: `wait_until ms must be int, got ${msArg.tag}` };
+
+    // For pending wait_until, find the pending entry for this node (invocationCount may differ
+    // because the filter count includes the pending entry itself).
+    const pendingEntry = state.effects.find(e => e.nodeId === nodeId && e.status === 'pending' && e.effect === 'wait_until');
+
+    if (pendingEntry !== undefined) {
+      // Already paused; check if elapsed.
+      const targetVal = pendingEntry.recordedValue;
+      if (!targetVal || targetVal.tag !== 'int') {
+        return { kind: 'error', message: 'wait_until: corrupted target time' };
+      }
+      const currentMs = state.timeOverride ?? Date.now();
+      if (currentMs >= targetVal.v) {
+        // Time elapsed — commit and continue.
+        const updatedEffects = state.effects.map(e =>
+          e.nodeId === nodeId && e.invocationCount === pendingEntry.invocationCount
+            ? { ...e, status: 'committed' as const }
+            : e
+        );
+        return cont({
+          ...state, control: rest,
+          valueStack: [...newStack, { tag: 'unit' as const }],
+          effects: updatedEffects,
+        });
+      } else {
+        // Still pending — re-pause.
+        return { kind: 'paused', state, pausedAt: nodeId };
+      }
+    }
+
+    if (existing !== undefined && existing.status === 'committed') {
+      // Already completed — return unit.
+      return cont({ ...state, control: rest,
+        valueStack: [...newStack, { tag: 'unit' as const }] });
+    }
+
+    // First execution: append pending entry with target time.
+    const nowMs = state.timeOverride ?? Date.now();
+    const target = nowMs + msArg.v;
+    const entry = {
+      nodeId, invocationCount, effect: 'wait_until' as const,
+      recordedValue: { tag: 'int' as const, v: target },
+      status: 'pending' as const,
+    };
+    return {
+      kind: 'paused',
+      state: { ...state, effects: [...state.effects, entry] },
+      pausedAt: nodeId,
+    };
+  }
+
+  if (name === 'wait_for') {
+    if (argCount !== 1) return { kind: 'error', message: `wait_for expects 1 arg, got ${argCount}` };
+    const nameArg = args[0];
+    if (nameArg.tag !== 'str') return { kind: 'error', message: `wait_for name must be str, got ${nameArg.tag}` };
+
+    // Look for any existing entry (pending or committed) at this nodeId for this effect.
+    // Use the same pattern wait_until uses (find by nodeId + effect, not by invocationCount).
+    const waitForEntry = state.effects.find(e =>
+      e.nodeId === nodeId && e.effect === 'wait_for'
+    );
+
+    if (waitForEntry !== undefined && waitForEntry.status === 'committed') {
+      // Event was delivered — return the recordedValue.
+      if (waitForEntry.recordedValue === null) {
+        return { kind: 'error', message: 'wait_for: committed but recordedValue is null (corrupted log)' };
+      }
+      return cont({ ...state, control: rest,
+        valueStack: [...newStack, waitForEntry.recordedValue] });
+    }
+
+    if (waitForEntry !== undefined && waitForEntry.status === 'pending') {
+      // Still pending — re-pause.
+      return { kind: 'paused', state, pausedAt: nodeId };
+    }
+
+    // First execution: append pending entry with event name in recordedValue.
+    const entry = {
+      nodeId, invocationCount, effect: 'wait_for' as const,
+      recordedValue: { tag: 'str' as const, v: nameArg.v },
+      status: 'pending' as const,
+    };
+    return {
+      kind: 'paused',
+      state: { ...state, effects: [...state.effects, entry] },
+      pausedAt: nodeId,
+    };
+  }
+
+  // REPLAY path: committed entry already exists.
+  if (!state.noReplay && existing !== undefined && existing.status === 'committed') {
+    const category = categoryOf(name);
+    if (category === 'write') {
+      // Skip the IO; push unit.
+      return cont({ ...state, control: rest,
+        valueStack: [...newStack, { tag: 'unit' as const }] });
+    }
+    if (category === 'read') {
+      if (existing.recordedValue === null) {
+        return { kind: 'error', message: `replay: read effect ${name} has null recordedValue (corrupted log)` };
+      }
+      return cont({ ...state, control: rest,
+        valueStack: [...newStack, existing.recordedValue] });
+    }
+    // wait category — committed wait_for returns its recordedValue (event payload)
+    if (existing.recordedValue === null) {
+      return { kind: 'error', message: `replay: wait effect ${name} committed with null recordedValue (corrupted log)` };
+    }
+    return cont({ ...state, control: rest,
+      valueStack: [...newStack, existing.recordedValue] });
+  }
+
+  // PENDING wait — re-pause (handled per-effect in T20/T21).
+  if (existing !== undefined && existing.status === 'pending') {
+    return { kind: 'paused', state, pausedAt: nodeId };
+  }
+
+  // FIRST EXECUTION path
+  if (name === 'print') {
+    if (argCount !== 1) return { kind: 'error', message: `print expects 1 arg, got ${argCount}` };
+    console.log(formatValue(args[0]));
+    const entry = {
+      nodeId, invocationCount, effect: 'print' as const,
+      recordedValue: null, status: 'committed' as const,
+    };
+    return cont({
+      ...state, control: rest,
+      valueStack: [...newStack, { tag: 'unit' as const }],
+      effects: [...state.effects, entry],
+    });
+  }
+
+  if (name === 'write_file') {
+    if (argCount !== 2) return { kind: 'error', message: `write_file expects 2 args, got ${argCount}` };
+    const path = args[0];
+    const body = args[1];
+    if (path.tag !== 'str') return { kind: 'error', message: `write_file path must be str, got ${path.tag}` };
+    if (body.tag !== 'str') return { kind: 'error', message: `write_file body must be str, got ${body.tag}` };
+    try {
+      performWriteFile(path.v, body.v);
+    } catch (e) {
+      return { kind: 'error', message: `write_file failed: ${(e as Error).message}`, atNode: nodeId };
+    }
+    const entry = {
+      nodeId, invocationCount, effect: 'write_file' as const,
+      recordedValue: null, status: 'committed' as const,
+    };
+    return cont({
+      ...state, control: rest,
+      valueStack: [...newStack, { tag: 'unit' as const }],
+      effects: [...state.effects, entry],
+    });
+  }
+
+  if (name === 'net_fetch') {
+    if (argCount !== 1) return { kind: 'error', message: `net_fetch expects 1 arg, got ${argCount}` };
+    const url = args[0];
+    if (url.tag !== 'str') return { kind: 'error', message: `net_fetch url must be str, got ${url.tag}` };
+    let body: string;
+    try {
+      body = performNetFetch(url.v);
+    } catch (e) {
+      return { kind: 'error', message: `net_fetch failed: ${(e as Error).message}`, atNode: nodeId };
+    }
+    const entry = {
+      nodeId, invocationCount, effect: 'net_fetch' as const,
+      recordedValue: { tag: 'str' as const, v: body },
+      status: 'committed' as const,
+    };
+    return cont({
+      ...state, control: rest,
+      valueStack: [...newStack, { tag: 'str' as const, v: body }],
+      effects: [...state.effects, entry],
+    });
+  }
+
+  if (name === 'now') {
+    if (argCount !== 0) return { kind: 'error', message: `now expects 0 args, got ${argCount}` };
+    const t = performNow(state.timeOverride ?? null);
+    const entry = {
+      nodeId, invocationCount, effect: 'now' as const,
+      recordedValue: { tag: 'int' as const, v: t },
+      status: 'committed' as const,
+    };
+    return cont({
+      ...state, control: rest,
+      valueStack: [...newStack, { tag: 'int' as const, v: t }],
+      effects: [...state.effects, entry],
+    });
+  }
+
+  if (name === 'random_int') {
+    if (argCount !== 2) return { kind: 'error', message: `random_int expects 2 args, got ${argCount}` };
+    const lo = args[0];
+    const hi = args[1];
+    if (lo.tag !== 'int') return { kind: 'error', message: `random_int lo must be int, got ${lo.tag}` };
+    if (hi.tag !== 'int') return { kind: 'error', message: `random_int hi must be int, got ${hi.tag}` };
+    const r = performRandomInt(lo.v, hi.v);
+    const entry = {
+      nodeId, invocationCount, effect: 'random_int' as const,
+      recordedValue: { tag: 'int' as const, v: r },
+      status: 'committed' as const,
+    };
+    return cont({
+      ...state, control: rest,
+      valueStack: [...newStack, { tag: 'int' as const, v: r }],
+      effects: [...state.effects, entry],
+    });
+  }
+
+  if (name === 'read_file') {
+    if (argCount !== 1) return { kind: 'error', message: `read_file expects 1 arg, got ${argCount}` };
+    const path = args[0];
+    if (path.tag !== 'str') return { kind: 'error', message: `read_file path must be str, got ${path.tag}` };
+    let content: string;
+    try {
+      content = performReadFile(path.v);
+    } catch (e) {
+      return { kind: 'error', message: `read_file failed: ${(e as Error).message}`, atNode: nodeId };
+    }
+    const entry = {
+      nodeId, invocationCount, effect: 'read_file' as const,
+      recordedValue: { tag: 'str' as const, v: content },
+      status: 'committed' as const,
+    };
+    return cont({
+      ...state, control: rest,
+      valueStack: [...newStack, { tag: 'str' as const, v: content }],
+      effects: [...state.effects, entry],
+    });
+  }
+
+  return { kind: 'error', message: `effect '${name}' not yet implemented`, atNode: nodeId };
+}
+
 function cont(state: State): StepResult {
   return { kind: 'continue' as const, state };
 }
@@ -281,12 +624,25 @@ function applyBinOp(state: State, rest: ControlInstr[], op: BinOp): StepResult {
   const left  = stack[stack.length - 2];
   const newStack = stack.slice(0, -2);
 
-  if (op === '+' || op === '-' || op === '*' || op === '/') {
+  if (op === '+') {
+    // String concat overload
+    if (left.tag === 'str' && right.tag === 'str') {
+      return cont({ ...state, control: rest,
+        valueStack: [...newStack, { tag: 'str', v: left.v + right.v }] });
+    }
+    // Integer addition
+    if (left.tag === 'int' && right.tag === 'int') {
+      return cont({ ...state, control: rest,
+        valueStack: [...newStack, { tag: 'int', v: left.v + right.v }] });
+    }
+    return { kind: 'error', message: `cannot apply '+' to ${left.tag} and ${right.tag}` };
+  }
+
+  if (op === '-' || op === '*' || op === '/') {
     if (left.tag !== 'int' || right.tag !== 'int')
       return { kind: 'error', message: `cannot apply '${op}' to ${left.tag} and ${right.tag}` };
     let result: number;
-    if (op === '+') result = left.v + right.v;
-    else if (op === '-') result = left.v - right.v;
+    if (op === '-') result = left.v - right.v;
     else if (op === '*') result = left.v * right.v;
     else {
       if (right.v === 0) return { kind: 'error', message: 'division by zero' };
@@ -314,6 +670,7 @@ function applyBinOp(state: State, rest: ControlInstr[], op: BinOp): StepResult {
     let same: boolean;
     if (left.tag === 'int' && right.tag === 'int') same = left.v === right.v;
     else if (left.tag === 'bool' && right.tag === 'bool') same = left.v === right.v;
+    else if (left.tag === 'str' && right.tag === 'str') same = left.v === right.v;
     else if (left.tag === 'unit' && right.tag === 'unit') same = true;
     else return { kind: 'error', message: `cannot compare ${left.tag} values` };
     return cont({ ...state, control: rest,
@@ -328,6 +685,7 @@ export function formatValue(v: Value): string {
     case 'int':     return String(v.v);
     case 'bool':    return v.v ? 'true' : 'false';
     case 'unit':    return '()';
+    case 'str':     return v.v;
     case 'closure': return '<fn>';
   }
 }

@@ -1,0 +1,3 @@
+let body = net_fetch("https://httpbin.org/uuid");
+let _ = pause;
+print(body);

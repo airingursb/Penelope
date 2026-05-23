@@ -30,9 +30,14 @@ test('tokenizes identifiers', () => {
 });
 
 test('tokenizes keywords', () => {
-  const src = 'let fn if else true false pause print';
+  const src = 'let fn if else true false pause';
   const kinds = tokenize(src).map(t => t.kind);
-  expect(kinds).toEqual(['LET','FN','IF','ELSE','TRUE','FALSE','PAUSE','PRINT','EOF']);
+  expect(kinds).toEqual(['LET','FN','IF','ELSE','TRUE','FALSE','PAUSE','EOF']);
+});
+
+test('print is an identifier (not a keyword)', () => {
+  const tokens = tokenize('print');
+  expect(tokens[0]).toMatchObject({ kind: 'IDENT', text: 'print' });
 });
 
 test('keywords are not identifiers', () => {
@@ -81,4 +86,24 @@ test('does not treat / not followed by / as a comment', () => {
 
 test('throws on unexpected characters', () => {
   expect(() => tokenize('@')).toThrow(/unexpected character/);
+});
+
+test('tokenizes a simple string literal', () => {
+  const tokens = tokenize('"hello"');
+  expect(tokens[0]).toMatchObject({ kind: 'STRING', text: 'hello' });
+  expect(tokens[1].kind).toBe('EOF');
+});
+
+test('handles string escape sequences', () => {
+  expect(tokenize('"a\\nb"')[0]).toMatchObject({ kind: 'STRING', text: 'a\nb' });
+  expect(tokenize('"a\\\\b"')[0]).toMatchObject({ kind: 'STRING', text: 'a\\b' });
+  expect(tokenize('"a\\"b"')[0]).toMatchObject({ kind: 'STRING', text: 'a"b' });
+});
+
+test('empty string literal', () => {
+  expect(tokenize('""')[0]).toMatchObject({ kind: 'STRING', text: '' });
+});
+
+test('unterminated string throws', () => {
+  expect(() => tokenize('"hello')).toThrow(/unterminated string/);
 });

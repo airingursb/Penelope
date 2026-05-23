@@ -87,13 +87,18 @@ test('parses let statement', () => {
   expect(ast.nodes[stmt.valueId]).toMatchObject({ kind: 'IntLit', value: 42 });
 });
 
-test('parses print statement', () => {
+test('parses print(x+1) as ExprStmt(Call(Var("print"), ...))', () => {
   const ast = parse(tokenize('print(x + 1);'));
   const program = ast.nodes[ast.rootId];
   if (program.kind !== 'Program') throw new Error('expected Program');
   const stmt = ast.nodes[program.stmtIds[0]];
-  if (stmt.kind !== 'Print') throw new Error('expected Print');
-  const arg = ast.nodes[stmt.argId];
+  if (stmt.kind !== 'ExprStmt') throw new Error('expected ExprStmt');
+  const call = ast.nodes[stmt.exprId];
+  if (call.kind !== 'Call') throw new Error('expected Call');
+  const callee = ast.nodes[call.calleeId];
+  expect(callee.kind).toBe('Var');
+  if (callee.kind === 'Var') expect(callee.name).toBe('print');
+  const arg = ast.nodes[call.argIds[0]];
   expect(arg.kind).toBe('BinOp');
 });
 
@@ -103,7 +108,8 @@ test('parses multiple top-level statements in order', () => {
   if (program.kind !== 'Program') throw new Error('expected Program');
   expect(program.stmtIds.length).toBe(2);
   expect(ast.nodes[program.stmtIds[0]].kind).toBe('Let');
-  expect(ast.nodes[program.stmtIds[1]].kind).toBe('Print');
+  // print(x) is now an ExprStmt wrapping a Call, not a Print node
+  expect(ast.nodes[program.stmtIds[1]].kind).toBe('ExprStmt');
 });
 
 test('parses a function literal', () => {

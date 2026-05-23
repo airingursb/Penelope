@@ -2,7 +2,7 @@
 // `tokenize(source: string)` returns an array of tokens terminated by EOF.
 
 export type TokenKind =
-  | 'INT' | 'IDENT'
+  | 'INT' | 'IDENT' | 'STRING'
   | 'LET' | 'FN' | 'IF' | 'ELSE' | 'TRUE' | 'FALSE' | 'PAUSE' | 'PRINT'
   | 'PLUS' | 'MINUS' | 'STAR' | 'SLASH'
   | 'LT' | 'GT' | 'LE' | 'GE' | 'EQ_EQ' | 'BANG_EQ'
@@ -26,7 +26,6 @@ const KEYWORDS: Record<string, TokenKind> = {
   true:   'TRUE',
   false:  'FALSE',
   pause:  'PAUSE',
-  print:  'PRINT',
 };
 
 function isDigit(c: string): boolean { return c >= '0' && c <= '9'; }
@@ -59,6 +58,34 @@ export function tokenize(source: string): Token[] {
     // line comment
     if (c === '/' && source[i + 1] === '/') {
       while (i < source.length && source[i] !== '\n') advance();
+      continue;
+    }
+
+    // string literal
+    if (c === '"') {
+      advance();  // consume opening quote
+      let text = '';
+      while (i < source.length && source[i] !== '"') {
+        if (source[i] === '\\') {
+          advance();  // consume backslash
+          if (i >= source.length) {
+            throw new Error(`lexer: unterminated string at line ${startLine} col ${startCol}`);
+          }
+          const esc = source[i];
+          if (esc === 'n')       text += '\n';
+          else if (esc === '\\') text += '\\';
+          else if (esc === '"')  text += '"';
+          else throw new Error(`lexer: unknown escape '\\${esc}' at line ${line} col ${col}`);
+          advance();
+        } else {
+          text += advance();
+        }
+      }
+      if (i >= source.length) {
+        throw new Error(`lexer: unterminated string at line ${startLine} col ${startCol}`);
+      }
+      advance();  // consume closing quote
+      tokens.push({ kind: 'STRING', line: startLine, col: startCol, text });
       continue;
     }
 
