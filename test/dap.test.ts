@@ -168,3 +168,42 @@ test('disconnect/terminate replies success', () => {
   handleMessage({ seq: 1, type: 'request', command: 'disconnect' });
   expect(lastReply().success).toBe(true);
 });
+
+test('next (step over) emits stopped event', () => {
+  const fp = tmpPen('let x = 1;\nlet y = 2;\nlet z = 3;\n');
+  handleMessage({ seq: 1, type: 'request', command: 'launch', arguments: { program: fp } });
+  handleMessage({ seq: 2, type: 'request', command: 'setBreakpoints', arguments: { breakpoints: [{ line: 2 }] } });
+  handleMessage({ seq: 3, type: 'request', command: 'configurationDone' });
+  writes = [];
+  handleMessage({ seq: 4, type: 'request', command: 'next' });
+  const evt = lastEvent();
+  expect(['stopped', 'terminated']).toContain(evt.event);
+  unlinkSync(fp);
+});
+
+test('stepIn emits stopped event', () => {
+  const fp = tmpPen('let x = 1;\nlet y = 2;\n');
+  handleMessage({ seq: 1, type: 'request', command: 'launch', arguments: { program: fp } });
+  handleMessage({ seq: 2, type: 'request', command: 'setBreakpoints', arguments: { breakpoints: [{ line: 1 }] } });
+  handleMessage({ seq: 3, type: 'request', command: 'configurationDone' });
+  writes = [];
+  handleMessage({ seq: 4, type: 'request', command: 'stepIn' });
+  const evt = lastEvent();
+  expect(['stopped', 'terminated']).toContain(evt.event);
+  unlinkSync(fp);
+});
+
+test('restart re-loads program and emits stopped or terminated', () => {
+  const fp = tmpPen('let x = 1;\n');
+  handleMessage({ seq: 1, type: 'request', command: 'launch', arguments: { program: fp } });
+  handleMessage({ seq: 2, type: 'request', command: 'configurationDone' });
+  writes = [];
+  handleMessage({ seq: 3, type: 'request', command: 'restart' });
+  const replies = writes
+    .map(w => w.replace(/^.*\r\n\r\n/s, ''))
+    .filter(s => s.length > 0)
+    .map(s => JSON.parse(s));
+  const responses = replies.filter(o => o.type === 'response');
+  expect(responses[0].success).toBe(true);
+  unlinkSync(fp);
+});

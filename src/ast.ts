@@ -15,15 +15,20 @@ export type Pattern =
   | { kind: 'int';      value: number }
   | { kind: 'bool';     value: boolean }
   | { kind: 'str';      value: string }
-  | { kind: 'var';      name: string }    // binds the scrutinee to `name`
-  | { kind: 'wildcard' };                  // _ (matches anything, no binding)
+  | { kind: 'unit' }
+  | { kind: 'var';      name: string }                    // binds the scrutinee to `name`
+  | { kind: 'wildcard' }                                  // _ (matches anything, no binding)
+  | { kind: 'or';       patterns: Pattern[] }             // p1 | p2 | p3 (no bindings inside)
+  | { kind: 'list';     items: Pattern[]; rest?: string } // [a, b, ...t] — rest binds remainder
+  | { kind: 'dict';     entries: Array<{ key: string; pattern: Pattern }>; rest?: boolean };
 
-export type MatchArm = { pattern: Pattern; bodyId: NodeId };
+export type MatchArm = { pattern: Pattern; bodyId: NodeId; guardId?: NodeId };
 
 export type ASTNode = (
   | { id: NodeId; kind: 'IntLit';    value: number }
   | { id: NodeId; kind: 'BoolLit';   value: boolean }
   | { id: NodeId; kind: 'StringLit'; value: string }
+  | { id: NodeId; kind: 'UnitLit' }
   | { id: NodeId; kind: 'Var';      name: string }
   | { id: NodeId; kind: 'BinOp';    op: BinOp; leftId: NodeId; rightId: NodeId }
   | { id: NodeId; kind: 'Let';      name: string; valueId: NodeId }

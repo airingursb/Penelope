@@ -62,15 +62,27 @@ export function runUntilBreakpoint(prog: Program, state: VMState, breakpoints: S
   return r as DebugStop;
 }
 
+export type StepMode = 'in' | 'over' | 'out';
+
+// Execute one "logical step" then stop. Mode:
+//   in:   stop after exactly one opcode (CALL descends)
+//   over: stop when frames.length is back to the starting depth (skips function bodies)
+//   out:  stop when frames.length drops below the starting depth (run to enclosing return)
+// Also stops on HALT, PAUSE, or breakpoint.
+export function runUntilStep(prog: Program, state: VMState, mode: StepMode, breakpoints?: Set<number>): DebugStop {
+  const startDepth = state.frames.length;
+  return runUntilStop(prog, state, undefined, breakpoints, { mode, startDepth });
+}
+
+type StepCtx = { mode: StepMode; startDepth: number };
+
 function runUntilStop(
   prog: Program,
   state: VMState,
   profile?: ProfileData,
   breakpoints?: Set<number>,
+  stepCtx?: StepCtx,
 ): DebugStop {
-  // Snapshot the pool of pre-existing committed entries per ip. Only these are
-  // eligible for replay. New entries added during this run are NOT replayed —
-  // otherwise a same-ip effect inside recursion would erroneously replay itself.
   const replayPool = new Map<number, EffectEntry[]>();
   for (const e of state.effects) {
     if (e.status === 'committed') {
@@ -81,11 +93,25 @@ function runUntilStop(
   }
   const replayIdx = new Map<number, number>();
   let firstIter = true;
+  let stepIterations = 0;
   while (true) {
     if (breakpoints && !firstIter && breakpoints.has(state.ip)) {
       return { status: 'breakpoint', state, ip: state.ip };
     }
+    // Stepping stop conditions (checked after firstIter so we always make progress).
+    if (stepCtx && !firstIter) {
+      if (stepCtx.mode === 'in' && stepIterations >= 1) {
+        return { status: 'breakpoint', state, ip: state.ip };
+      }
+      if (stepCtx.mode === 'over' && state.frames.length <= stepCtx.startDepth && stepIterations >= 1) {
+        return { status: 'breakpoint', state, ip: state.ip };
+      }
+      if (stepCtx.mode === 'out' && state.frames.length < stepCtx.startDepth) {
+        return { status: 'breakpoint', state, ip: state.ip };
+      }
+    }
     firstIter = false;
+    stepIterations++;
     const op = prog.code[state.ip];
     if (!op) throw new Error(`VM: IP ${state.ip} out of bounds`);
     if (profile) {
@@ -377,6 +403,16 @@ function applyBuiltin(name: string, args: Value[]): Value {
   if (name === 'list_len') {
     if (args.length !== 1 || args[0].tag !== 'list') throw new Error(`list_len(l: list)`);
     return { tag: 'int', v: args[0].items.length };
+  }
+  if (name === 'list_slice') {
+    if (args.length !== 3 || args[0].tag !== 'list' || args[1].tag !== 'int' || args[2].tag !== 'int') {
+      throw new Error(`list_slice(l: list, start: int, end: int)`);
+    }
+    return { tag: 'list', items: args[0].items.slice(args[1].v, args[2].v) };
+  }
+  if (name === 'type_of') {
+    if (args.length !== 1) throw new Error(`type_of(x)`);
+    return { tag: 'str', v: args[0].tag };
   }
   // ── dict builtins ────────────────────────────────────────────────────────
   if (name === 'dict_new') {

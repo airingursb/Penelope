@@ -11,7 +11,9 @@ import { runOptimizer, type OLevel } from './optimizer.js';
 import { check as typeCheck } from './typecheck.js';
 import { format as fmtSource } from './format.js';
 import { extractDocs, renderMarkdown } from './doc-gen.js';
-import { loadSource } from './loader.js';
+import { loadSource, loadSourceWithMap } from './loader.js';
+import { buildGraph, renderDot } from './graph-gen.js';
+import { scaffold } from './scaffold.js';
 import { extractExpectations, checkExpectations } from './test-runner.js';
 import { spawnSync } from 'node:child_process';
 import { formatDiagnostic, diagnosticFromMessage } from './diagnostic.js';
@@ -79,8 +81,12 @@ function cmdBuild(args: ParsedArgs): number {
   if (!srcPath) { process.stderr.write('usage: pen build [-O0|-O1|-O2] <file.pen>\n'); return 2; }
   const absSrc = resolve(srcPath);
   let source: string;
-  try { source = loadSource(absSrc); }
-  catch { process.stderr.write(`cli error: cannot read source: ${srcPath}\n`); return 3; }
+  let lineMap: import('./loader.js').LineOrigin[] = [];
+  try {
+    const loaded = loadSourceWithMap(absSrc);
+    source = loaded.source;
+    lineMap = loaded.lineMap;
+  } catch { process.stderr.write(`cli error: cannot read source: ${srcPath}\n`); return 3; }
 
   try {
     const ast = parse(tokenize(source));
@@ -91,7 +97,7 @@ function cmdBuild(args: ParsedArgs): number {
     process.stdout.write(`wrote ${pencPath} (${prog.code.length} opcodes, ${prog.constants.length} constants, -O${args.oLevel})\n`);
     return 0;
   } catch (e) {
-    const diag = diagnosticFromMessage((e as Error).message, source, srcPath);
+    const diag = diagnosticFromMessage((e as Error).message, source, srcPath, lineMap);
     process.stderr.write(formatDiagnostic(diag) + '\n');
     return 1;
   }
@@ -113,8 +119,12 @@ function cmdExec(args: ParsedArgs): number {
 
 function runOnce(absPath: string, filePath: string, args: ParsedArgs): number {
   let source: string;
-  try { source = loadSource(absPath); }
-  catch { process.stderr.write(`cli error: cannot read source: ${filePath}\n`); return 3; }
+  let lineMap: import('./loader.js').LineOrigin[] = [];
+  try {
+    const loaded = loadSourceWithMap(absPath);
+    source = loaded.source;
+    lineMap = loaded.lineMap;
+  } catch { process.stderr.write(`cli error: cannot read source: ${filePath}\n`); return 3; }
 
   const timeFlag = args.flags['time'];
   const timeOverride = timeFlag && timeFlag !== true ? parseInt(String(timeFlag), 10) : null;
@@ -136,7 +146,7 @@ function runOnce(absPath: string, filePath: string, args: ParsedArgs): number {
     }
     return 0;
   } catch (e) {
-    const diag = diagnosticFromMessage((e as Error).message, source, filePath);
+    const diag = diagnosticFromMessage((e as Error).message, source, filePath, lineMap);
     process.stderr.write(formatDiagnostic(diag) + '\n');
     return 1;
   }
@@ -315,6 +325,27 @@ function testOnce(srcPath: string): number {
     process.stderr.write(`  line ${f.exp.line}: expected ${f.exp.kind === 'eq' ? '"' + f.exp.text + '"' : 'starts with "' + f.exp.text + '"'}, got ${f.got === undefined ? '<no output>' : '"' + f.got + '"'}\n`);
   }
   return 1;
+}
+
+function cmdGraph(args: ParsedArgs): number {
+  const srcPath = args.positional[1];
+  if (!srcPath) { process.stderr.write('usage: pen graph <file.pen>\n'); return 2; }
+  const edges = buildGraph(srcPath);
+  process.stdout.write(renderDot(srcPath, edges));
+  return 0;
+}
+
+function cmdNew(args: ParsedArgs): number {
+  const dir = args.positional[1];
+  if (!dir) { process.stderr.write('usage: pen new <dir>\n'); return 2; }
+  const r = scaffold(dir);
+  if (r.error) { process.stderr.write(`cli error: ${r.error}\n`); return 1; }
+  process.stdout.write(`created ${dir}/\n`);
+  for (const f of r.created) {
+    process.stdout.write(`  ${f.replace(resolve('.') + '/', '')}\n`);
+  }
+  process.stdout.write(`\nnext:\n  cd ${dir}\n  pen run main.pen\n`);
+  return 0;
 }
 
 function cmdDoc(args: ParsedArgs): number {
@@ -568,7 +599,9 @@ export async function main(argv: string[]): Promise<number> {
   if (sub === 'fmt')     return cmdFmt(args);
   if (sub === 'test')    return cmdTest(args);
   if (sub === 'doc')     return cmdDoc(args);
-  process.stderr.write(`usage: penelope <build|exec|run|resume|fork|disasm|bench|inspect|repl|check|profile|fmt|test|doc> [-O0|-O1|-O2] [args]\n`);
+  if (sub === 'graph')   return cmdGraph(args);
+  if (sub === 'new')     return cmdNew(args);
+  process.stderr.write(`usage: penelope <build|exec|run|resume|fork|disasm|bench|inspect|repl|check|profile|fmt|test|doc|graph|new> [-O0|-O1|-O2] [args]\n`);
   return 2;
 }
 

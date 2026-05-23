@@ -52,7 +52,15 @@
 <tr><td><code>list_get</code></td><td><code>(l: list, i: int) -&gt; any</code></td><td>Throws on out-of-bounds</td></tr>
 <tr><td><code>list_set</code></td><td><code>(l: list, i: int, x: any) -&gt; list</code></td><td>Returns new list (immutable)</td></tr>
 <tr><td><code>list_len</code></td><td><code>(l: list) -&gt; int</code></td><td></td></tr>
+<tr><td><code>list_slice</code></td><td><code>(l: list, start: int, end: int) -&gt; list</code></td><td>Half-open [start, end)</td></tr>
 </table>
+
+<h2>Introspection</h2>
+<table>
+<tr><th>Function</th><th>Signature</th></tr>
+<tr><td><code>type_of</code></td><td><code>(x: any) -&gt; str</code></td></tr>
+</table>
+<p>Returns one of <code>"int"</code>, <code>"bool"</code>, <code>"str"</code>, <code>"unit"</code>, <code>"list"</code>, <code>"dict"</code>, <code>"closure"</code>. Used internally by list/dict patterns to fall through on type mismatch.</p>
 
 <h2>Dict builtins</h2>
 <table>
