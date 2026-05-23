@@ -142,3 +142,55 @@ test('block scope isolates lets', () => {
     console.log = origLog;
   }
 });
+
+test('fn definition and call', () => {
+  const ast = parse(tokenize(`
+    let add = fn(a, b) { a + b };
+    print(add(2, 3));
+  `));
+  const logged: string[] = [];
+  const origLog = console.log;
+  console.log = (msg: string) => logged.push(msg);
+  try {
+    const result = runToCompletion(ast);
+    expect(result.kind).toBe('done');
+    expect(logged).toEqual(['5']);
+  } finally {
+    console.log = origLog;
+  }
+});
+
+test('lexical closure captures outer scope', () => {
+  const ast = parse(tokenize(`
+    let outer = fn() {
+      let a = 100;
+      let inner = fn() { a + 1 };
+      inner()
+    };
+    print(outer());
+  `));
+  const logged: string[] = [];
+  const origLog = console.log;
+  console.log = (msg: string) => logged.push(msg);
+  try {
+    const result = runToCompletion(ast);
+    expect(result.kind).toBe('done');
+    expect(logged).toEqual(['101']);
+  } finally {
+    console.log = origLog;
+  }
+});
+
+test('arg-count mismatch is a runtime error', () => {
+  const ast = parse(tokenize('let f = fn(a) { a }; f(1, 2);'));
+  const result = runToCompletion(ast);
+  expect(result.kind).toBe('error');
+  if (result.kind === 'error') expect(result.message).toMatch(/expected 1 args, got 2/);
+});
+
+test('calling a non-function is a runtime error', () => {
+  const ast = parse(tokenize('let x = 1; x(5);'));
+  const result = runToCompletion(ast);
+  expect(result.kind).toBe('error');
+  if (result.kind === 'error') expect(result.message).toMatch(/not callable/);
+});

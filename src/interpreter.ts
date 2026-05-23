@@ -128,6 +128,8 @@ export function step(state: State, ast: ASTBundle): StepResult {
         { op: 'eval', nodeId: cond.v ? instr.thenBlockId : instr.elseBlockId },
       ], valueStack: state.valueStack.slice(0, -1) });
     }
+    case 'invoke':
+      return invokeClosure(state, rest, instr.argCount);
     default:
       return { kind: 'error', message: `unimplemented op: ${(instr as ControlInstr).op}` };
   }
@@ -203,9 +205,56 @@ function stepEval(state: State, rest: ControlInstr[], node: ASTNode, _ast: ASTBu
         { op: 'branch', thenBlockId: node.thenBlockId, elseBlockId: node.elseBlockId },
         { op: 'eval', nodeId: node.condId },
       ]});
+    case 'Fn': {
+      const closure: Value = {
+        tag: 'closure',
+        paramNames: node.params,
+        bodyBlockId: node.bodyBlockId,
+        capturedScopeId: state.currentScopeId,
+      };
+      return cont({ ...state, control: rest,
+        valueStack: [...state.valueStack, closure] });
+    }
+    case 'Call':
+      // Evaluate callee, then args left-to-right (push reversed so they pop in order), then invoke.
+      return cont({ ...state, control: [
+        ...rest,
+        { op: 'invoke', argCount: node.argIds.length },
+        ...[...node.argIds].reverse().map(id => ({ op: 'eval' as const, nodeId: id })),
+        { op: 'eval', nodeId: node.calleeId },
+      ]});
     default:
       return { kind: 'error', message: `unimplemented eval kind: ${(node as ASTNode).kind}`, atNode: node.id };
   }
+}
+
+function invokeClosure(state: State, rest: ControlInstr[], argCount: number): StepResult {
+  const stack = state.valueStack;
+  const args = stack.slice(stack.length - argCount);
+  const closure = stack[stack.length - argCount - 1];
+
+  if (closure.tag !== 'closure')
+    return { kind: 'error', message: `not callable: ${formatValue(closure)}` };
+  if (closure.paramNames.length !== argCount)
+    return { kind: 'error', message: `expected ${closure.paramNames.length} args, got ${argCount}` };
+
+  const newScopeId = `s${state.nextScopeIdCounter}`;
+  const bindings: Record<string, Value> = {};
+  for (let i = 0; i < argCount; i++) bindings[closure.paramNames[i]] = args[i];
+
+  return cont({
+    ...state,
+    control: [
+      ...rest,
+      { op: 'popScope', restoreScopeId: state.currentScopeId },
+      { op: 'eval', nodeId: closure.bodyBlockId },
+    ],
+    valueStack: stack.slice(0, stack.length - argCount - 1),
+    scopes: { ...state.scopes,
+      [newScopeId]: { parentId: closure.capturedScopeId, bindings }},
+    currentScopeId: newScopeId,
+    nextScopeIdCounter: state.nextScopeIdCounter + 1,
+  });
 }
 
 function cont(state: State): StepResult {
