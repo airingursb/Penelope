@@ -55,6 +55,34 @@ function compileNode(node: ASTNode, ast: ASTBundle, prog: Program): void {
       emit(prog, ['STORE_VAR', node.name]);
       return;
     }
+    case 'If': {
+      // Compile cond
+      compileNode(ast.nodes[node.condId], ast, prog);
+      // Emit JUMP_IF_FALSE with placeholder target
+      const jifIp = emit(prog, ['JUMP_IF_FALSE', -1]);
+      // Compile then-block
+      compileNode(ast.nodes[node.thenBlockId], ast, prog);
+      // Emit JUMP past else with placeholder
+      const jmpIp = emit(prog, ['JUMP', -1]);
+      // Back-patch JUMP_IF_FALSE to point here (else start)
+      (prog.code[jifIp] as ['JUMP_IF_FALSE', number])[1] = prog.code.length;
+      // Compile else-block
+      compileNode(ast.nodes[node.elseBlockId], ast, prog);
+      // Back-patch JUMP to point here (past else)
+      (prog.code[jmpIp] as ['JUMP', number])[1] = prog.code.length;
+      return;
+    }
+    case 'Block': {
+      emit(prog, ['ENTER_BLOCK']);
+      for (const stmtId of node.stmtIds) compileNode(ast.nodes[stmtId], ast, prog);
+      if (node.trailingExprId !== null) {
+        compileNode(ast.nodes[node.trailingExprId], ast, prog);
+      } else {
+        emit(prog, ['PUSH_UNIT']);
+      }
+      emit(prog, ['EXIT_BLOCK']);
+      return;
+    }
     default:
       throw new Error(`compile: unhandled node kind '${(node as ASTNode).kind}'`);
   }

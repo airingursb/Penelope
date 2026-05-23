@@ -105,3 +105,35 @@ test('let then use', () => {
     ['HALT'],
   ]);
 });
+
+test('if (true) { 1 } else { 2 } compiles with two jumps', () => {
+  const prog = compile(parse(tokenize('if (true) { 1 } else { 2 };')));
+  const opNames = prog.code.map(op => op[0]);
+  // Expected sequence:
+  //   LOAD_CONST true        (0)
+  //   JUMP_IF_FALSE A        (1)
+  //   ENTER_BLOCK            (2)
+  //   LOAD_CONST 1           (3)
+  //   EXIT_BLOCK             (4)
+  //   JUMP B                 (5)
+  //   ENTER_BLOCK            (6) <- A
+  //   LOAD_CONST 2           (7)
+  //   EXIT_BLOCK             (8)
+  //                          (9) <- B
+  //   POP                    (9)
+  //   HALT                   (10)
+  expect(opNames).toEqual([
+    'LOAD_CONST',
+    'JUMP_IF_FALSE',
+    'ENTER_BLOCK', 'LOAD_CONST', 'EXIT_BLOCK',
+    'JUMP',
+    'ENTER_BLOCK', 'LOAD_CONST', 'EXIT_BLOCK',
+    'POP',
+    'HALT',
+  ]);
+  // Validate jump targets:
+  const jif = prog.code[1] as ['JUMP_IF_FALSE', number];
+  const jmp = prog.code[5] as ['JUMP', number];
+  expect(jif[1]).toBe(6);   // points to ENTER_BLOCK of else branch
+  expect(jmp[1]).toBe(9);   // points past else branch (POP)
+});
