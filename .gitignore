@@ -7,8 +7,9 @@
 
 # Node / TypeScript
 node_modules/
-dist/
+/dist/
 build/
+!src/dist/
 *.log
 *.tsbuildinfo
 .npm/

@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Penelope — distributed pause/resume</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <h1>Penelope</h1>
+  <p class="tagline">Distributed pause/resume — Phase 5.A.</p>
+  <nav>
+    <a href="index.html">Overview</a>
+    <a href="tour.html">Tour</a>
+    <a href="stdlib.html">Stdlib</a>
+    <a href="cli.html">CLI</a>
+    <a href="snapshot.html">Snapshot v3</a>
+    <a href="play.html">Playground</a>
+    <a href="debugger.html">Debugger</a>
+    <a href="phase4.html">Phase 4</a>
+    <a href="distributed.html" class="active">Distributed</a>
+    <a href="https://github.com/airingursb/Penelope">GitHub →</a>
+  </nav>
+</header>
+
+<h2>The thesis, cashed in</h2>
+
+<p>If a paused program is <em>just a value</em>, then "pause on machine A, resume on machine B" is a transport problem, not a runtime problem. Phase 5.A turns that observation into a concrete distributed runtime:</p>
+
+<ul>
+  <li>A <strong>coordinator</strong> process tracks jobs and worker leases.</li>
+  <li><strong>Workers</strong> poll the coordinator, claim jobs, run them on the VM, report results.</li>
+  <li>If a worker dies mid-job, its lease expires and the coordinator hands the job to another worker. The VM is deterministic on replay (effect log), so re-execution produces the same outcome.</li>
+</ul>
+
+<p>This is the same model Temporal/Inngest/Restate use — but where they require you to structure code around <code>activity</code>/<code>step</code>/<code>await</code> boundaries, Penelope lets you just write code, and any <code>pause</code> in the source can travel across processes.</p>
+
+<h2>The architecture</h2>
+
+<pre><code>┌─────────────┐       submit       ┌────────────────────┐
+│   client    │ ─────────────────→ │   coordinator      │
+│ (pen submit)│ ←── jobId ───────  │   (single node)    │
+└─────────────┘                    │                    │
+                                   │  jobs (file store) │
+                                   │  workers/leases    │
+                                   └──┬─────────┬───────┘
+                            poll/heartbeat (HTTP)
+                                ┌──────┴─────┬─────────────┐
+                                ▼            ▼             ▼
+                          ┌─────────┐  ┌─────────┐   ┌─────────┐
+                          │ worker  │  │ worker  │   │ worker  │
+                          │   A     │  │   B     │   │   C     │
+                          └─────────┘  └─────────┘   └─────────┘
+</code></pre>
+
+<h2>Running it</h2>
+
+<pre><code><span class="cm"># start the coordinator (persistent job store)</span>
+$ bin/penelope coordinator --port 7077 --store ./jobs --lease-ms 5000
+pen coordinator listening on http://localhost:7077  store=./jobs  leaseMs=5000
+
+<span class="cm"># start a worker (in another shell)</span>
+$ bin/penelope worker --coord http://localhost:7077 --id worker-1
+pen worker worker-1 → http://localhost:7077
+
+<span class="cm"># submit a job</span>
+$ bin/penelope submit my-workflow.pen --coord http://localhost:7077 --wait
+submitted job 31e0c4f1-491d-4a7a-9ab7-050d857330c1
+status: completed
+bindings: {"result":{"tag":"int","v":42}}
+</code></pre>
+
+<h2>Failure recovery</h2>
+
+<p>The coordinator periodically sweeps for expired leases. A worker that:</p>
+
+<ul>
+  <li>holds a job lease, and</li>
+  <li>hasn't heartbeated within <code>leaseMs</code>, AND</li>
+  <li>claimed the job more than <code>leaseMs</code> ago</li>
+</ul>
+
+<p>…is treated as dead. Its job is marked <code>pending</code> again and the next poll from any worker picks it up. Since the snapshot captures complete VM state and the effect log makes replay deterministic, the second worker's execution produces the same observable behavior.</p>
+
+<h2>HTTP protocol</h2>
+
+<table>
+  <tr><th>Endpoint</th><th>Body</th><th>Response</th></tr>
+  <tr><td>POST /workers/register</td><td>{workerId}</td><td>{ok}</td></tr>
+  <tr><td>POST /workers/heartbeat</td><td>{workerId}</td><td>{ok}</td></tr>
+  <tr><td>POST /jobs/submit</td><td>{program, state}</td><td>{jobId}</td></tr>
+  <tr><td>POST /jobs/next</td><td>{workerId}</td><td>{jobId, program, state} or {empty: true}</td></tr>
+  <tr><td>POST /jobs/:id/complete</td><td>{workerId, result}</td><td>{ok}</td></tr>
+  <tr><td>POST /jobs/:id/fail</td><td>{workerId, error}</td><td>{ok}</td></tr>
+  <tr><td>GET /jobs/:id</td><td>—</td><td>JobRecord</td></tr>
+  <tr><td>GET /health</td><td>—</td><td>{ok, workers, jobs}</td></tr>
+</table>
+
+<h2>What's out of scope</h2>
+
+<p>Single-coordinator: no Raft, no replication. If the coordinator dies, in-flight jobs survive (FileStore persists), but submission is blocked until the coordinator restarts. HA-ing the coordinator is genuinely a separate project (consensus, leader election) — the protocol here is correct, just not redundant.</p>
+
+<p>Also out of scope: authentication (the API is unauthenticated), sharding (one coordinator owns all jobs), back-pressure on submission (the queue is unbounded).</p>
+
+</body>
+</html>
