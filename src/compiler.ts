@@ -20,6 +20,16 @@ function compileNode(node: ASTNode, ast: ASTBundle, prog: Program): void {
       for (const stmtId of node.stmtIds) compileNode(ast.nodes[stmtId], ast, prog);
       return;
     }
+    case 'IntLit': {
+      const idx = internConstant(prog.constants, { tag: 'int', v: node.value });
+      emit(prog, ['LOAD_CONST', idx]);
+      return;
+    }
+    case 'ExprStmt': {
+      compileNode(ast.nodes[node.exprId], ast, prog);
+      emit(prog, ['POP']);
+      return;
+    }
     default:
       throw new Error(`compile: unhandled node kind '${(node as ASTNode).kind}'`);
   }
