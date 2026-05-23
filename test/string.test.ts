@@ -75,3 +75,28 @@ test('A4: string equality (== and !=)', () => {
   if (r2.kind !== 'done') throw new Error('expected done');
   expect(r2.finalValue).toEqual({ tag: 'bool', v: true });
 });
+
+test('A6: str_slice basic', () => {
+  const ast = parse(tokenize('str_slice("hello", 1, 4);'));
+  const stmt = Object.values(ast.nodes).find(n => n.kind === 'ExprStmt');
+  if (!stmt || stmt.kind !== 'ExprStmt') throw new Error('no ExprStmt');
+  const result = runToCompletion(ast, stmt.exprId);
+  if (result.kind !== 'done') throw new Error('expected done');
+  expect(result.finalValue).toEqual({ tag: 'str', v: 'ell' });
+});
+
+test('A7: str_slice edge cases (empty, full, OOB clipped)', () => {
+  function evalSlice(src: string): string {
+    const ast = parse(tokenize(src));
+    const stmt = Object.values(ast.nodes).find(n => n.kind === 'ExprStmt');
+    if (!stmt || stmt.kind !== 'ExprStmt') throw new Error('no ExprStmt');
+    const r = runToCompletion(ast, stmt.exprId);
+    if (r.kind !== 'done') throw new Error('expected done');
+    if (!r.finalValue || r.finalValue.tag !== 'str') throw new Error('expected str');
+    return r.finalValue.v;
+  }
+  expect(evalSlice('str_slice("hello", 0, 0);')).toBe('');
+  expect(evalSlice('str_slice("hello", 0, 5);')).toBe('hello');
+  expect(evalSlice('str_slice("hello", 2, 100);')).toBe('llo');
+  expect(evalSlice('str_slice("hello", 0 - 2, 3);')).toBe('hel');
+});

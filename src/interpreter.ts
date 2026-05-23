@@ -312,7 +312,22 @@ function applyPureBuiltin(state: State, rest: ControlInstr[], name: string, argC
       valueStack: [...newStack, { tag: 'int', v: a.v.length }] });
   }
 
-  // str_slice and to_str fill in via Tasks 8 and 9.
+  if (name === 'str_slice') {
+    if (argCount !== 3) return { kind: 'error', message: `str_slice expects 3 args, got ${argCount}` };
+    const s = args[0];
+    const lo = args[1];
+    const hi = args[2];
+    if (s.tag !== 'str') return { kind: 'error', message: `str_slice expects str, got ${s.tag}` };
+    if (lo.tag !== 'int') return { kind: 'error', message: `str_slice expects int lo, got ${lo.tag}` };
+    if (hi.tag !== 'int') return { kind: 'error', message: `str_slice expects int hi, got ${hi.tag}` };
+    const len = s.v.length;
+    const loClamped = Math.max(0, Math.min(len, lo.v));
+    const hiClamped = Math.max(loClamped, Math.min(len, hi.v));
+    return cont({ ...state, control: rest,
+      valueStack: [...newStack, { tag: 'str', v: s.v.slice(loClamped, hiClamped) }] });
+  }
+
+  // to_str fills in via Task 9.
   return { kind: 'error', message: `unimplemented pure builtin: ${name}` };
 }
 
