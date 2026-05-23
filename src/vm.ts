@@ -64,6 +64,14 @@ function runUntilStop(prog: Program, state: VMState): RunResult {
         state.ip++;
         break;
       }
+      case 'BIN_OP': {
+        const o = op[1] as string;
+        const right = pop(state);
+        const left  = pop(state);
+        push(state, applyBinOp(o, left, right));
+        state.ip++;
+        break;
+      }
       default:
         throw new Error(`VM: unhandled opcode '${op[0]}' at ip ${state.ip}`);
     }
@@ -77,3 +85,34 @@ function pop(state: VMState): Value {
 }
 function push(state: VMState, v: Value): void { state.valueStack.push(v); }
 function topFrame(state: VMState): Frame { return state.frames[state.frames.length - 1]; }
+
+function applyBinOp(o: string, l: Value, r: Value): Value {
+  if (o === '+') {
+    if (l.tag === 'int' && r.tag === 'int') return { tag: 'int', v: l.v + r.v };
+    if (l.tag === 'str' && r.tag === 'str') return { tag: 'str', v: l.v + r.v };
+    throw new Error(`BIN_OP +: type mismatch ${l.tag}+${r.tag}`);
+  }
+  if (o === '-' || o === '*' || o === '/') {
+    if (l.tag !== 'int' || r.tag !== 'int') throw new Error(`BIN_OP ${o}: ints required`);
+    if (o === '-') return { tag: 'int', v: l.v - r.v };
+    if (o === '*') return { tag: 'int', v: l.v * r.v };
+    if (r.v === 0) throw new Error(`BIN_OP /: divide by zero`);
+    return { tag: 'int', v: Math.trunc(l.v / r.v) };
+  }
+  if (o === '<' || o === '>' || o === '<=' || o === '>=') {
+    if (l.tag !== 'int' || r.tag !== 'int') throw new Error(`BIN_OP ${o}: ints required`);
+    if (o === '<')  return { tag: 'bool', v: l.v <  r.v };
+    if (o === '>')  return { tag: 'bool', v: l.v >  r.v };
+    if (o === '<=') return { tag: 'bool', v: l.v <= r.v };
+    return { tag: 'bool', v: l.v >= r.v };
+  }
+  if (o === '==' || o === '!=') {
+    if (l.tag !== r.tag) throw new Error(`BIN_OP ${o}: type mismatch`);
+    let eq: boolean;
+    if (l.tag === 'unit') eq = true;
+    else if (l.tag === 'closure' || (r as any).tag === 'closure') throw new Error(`BIN_OP ${o}: closures not comparable`);
+    else eq = (l as any).v === (r as any).v;
+    return { tag: 'bool', v: o === '==' ? eq : !eq };
+  }
+  throw new Error(`BIN_OP: unknown op '${o}'`);
+}

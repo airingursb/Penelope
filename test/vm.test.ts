@@ -63,3 +63,39 @@ test('LOAD_VAR undefined throws', () => {
   const prog: Program = { version: 1, constants: [], code: [['LOAD_VAR', 'oops', null], ['HALT']] };
   expect(() => run(prog)).toThrow(/undefined variable 'oops'/);
 });
+
+test('BIN_OP + ints', () => {
+  const prog: Program = {
+    version: 1,
+    constants: [{ tag: 'int', v: 2 }, { tag: 'int', v: 3 }],
+    code: [['LOAD_CONST', 0], ['LOAD_CONST', 1], ['BIN_OP', '+'], ['HALT']],
+  };
+  expect(run(prog).state.valueStack).toEqual([{ tag: 'int', v: 5 }]);
+});
+
+test('BIN_OP < returns bool', () => {
+  const prog: Program = {
+    version: 1,
+    constants: [{ tag: 'int', v: 1 }, { tag: 'int', v: 2 }],
+    code: [['LOAD_CONST', 0], ['LOAD_CONST', 1], ['BIN_OP', '<'], ['HALT']],
+  };
+  expect(run(prog).state.valueStack).toEqual([{ tag: 'bool', v: true }]);
+});
+
+test('BIN_OP + strings concatenates', () => {
+  const prog: Program = {
+    version: 1,
+    constants: [{ tag: 'str', v: 'a' }, { tag: 'str', v: 'b' }],
+    code: [['LOAD_CONST', 0], ['LOAD_CONST', 1], ['BIN_OP', '+'], ['HALT']],
+  };
+  expect(run(prog).state.valueStack).toEqual([{ tag: 'str', v: 'ab' }]);
+});
+
+test('BIN_OP / by 0 throws', () => {
+  const prog: Program = {
+    version: 1,
+    constants: [{ tag: 'int', v: 5 }, { tag: 'int', v: 0 }],
+    code: [['LOAD_CONST', 0], ['LOAD_CONST', 1], ['BIN_OP', '/'], ['HALT']],
+  };
+  expect(() => run(prog)).toThrow(/divide by zero/);
+});
