@@ -82,3 +82,23 @@ test('full -O2 pipeline: complex program produces same effect log as -O0', () =>
   expect(r2.state.effects.map(e => e.recordedValue))
     .toEqual(r0.state.effects.map(e => e.recordedValue));
 });
+
+// ── -O0 ≡ -O2 effect equivalence over example programs ────────────────────────
+
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+
+const exampleFiles = fs.readdirSync('examples').filter(f => f.endsWith('.pen')).sort();
+
+test.each(exampleFiles)('example %s: -O0 and -O2 produce identical effect kinds in order', (file) => {
+  const source = fs.readFileSync(path.join('examples', file), 'utf8');
+  const prog = compile(parse(tokenize(source)));
+  const s0 = freshState(); s0.timeOverride = 1700000000;
+  const s2 = freshState(); s2.timeOverride = 1700000000;
+  const r0 = run(runOptimizer(prog, 0), s0);
+  const r2 = run(runOptimizer(prog, 2), s2);
+  expect(r2.status).toBe(r0.status);
+  const eff0 = r0.state.effects.map(e => ({ effect: e.effect, status: e.status }));
+  const eff2 = r2.state.effects.map(e => ({ effect: e.effect, status: e.status }));
+  expect(eff2).toEqual(eff0);
+});
