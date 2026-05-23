@@ -414,6 +414,71 @@ function applyBuiltin(name: string, args: Value[]): Value {
     if (args.length !== 1) throw new Error(`type_of(x)`);
     return { tag: 'str', v: args[0].tag };
   }
+  // ── string introspection ───────────────────────────────────────────────
+  if (name === 'str_chars') {
+    if (args.length !== 1 || args[0].tag !== 'str') throw new Error(`str_chars(s: str)`);
+    const items: Value[] = [];
+    for (const ch of args[0].v) items.push({ tag: 'str', v: ch });
+    return { tag: 'list', items };
+  }
+  if (name === 'str_at') {
+    if (args.length !== 2 || args[0].tag !== 'str' || args[1].tag !== 'int') throw new Error(`str_at(s: str, i: int)`);
+    const i = args[1].v;
+    if (i < 0 || i >= args[0].v.length) throw new Error(`str_at: index ${i} out of bounds [0, ${args[0].v.length})`);
+    return { tag: 'str', v: args[0].v[i] };
+  }
+  if (name === 'str_find') {
+    if (args.length !== 2 || args[0].tag !== 'str' || args[1].tag !== 'str') throw new Error(`str_find(s: str, sub: str)`);
+    return { tag: 'int', v: args[0].v.indexOf(args[1].v) };
+  }
+  if (name === 'str_starts_with') {
+    if (args.length !== 2 || args[0].tag !== 'str' || args[1].tag !== 'str') throw new Error(`str_starts_with(s: str, prefix: str)`);
+    return { tag: 'bool', v: args[0].v.startsWith(args[1].v) };
+  }
+  if (name === 'str_ends_with') {
+    if (args.length !== 2 || args[0].tag !== 'str' || args[1].tag !== 'str') throw new Error(`str_ends_with(s: str, suffix: str)`);
+    return { tag: 'bool', v: args[0].v.endsWith(args[1].v) };
+  }
+  if (name === 'int_of_str') {
+    if (args.length !== 1 || args[0].tag !== 'str') throw new Error(`int_of_str(s: str)`);
+    if (!/^-?\d+$/.test(args[0].v)) throw new Error(`int_of_str: not an integer: '${args[0].v}'`);
+    return { tag: 'int', v: parseInt(args[0].v, 10) };
+  }
+  // ── list helpers ───────────────────────────────────────────────────────
+  if (name === 'list_concat') {
+    if (args.length !== 2 || args[0].tag !== 'list' || args[1].tag !== 'list') throw new Error(`list_concat(a: list, b: list)`);
+    return { tag: 'list', items: [...args[0].items, ...args[1].items] };
+  }
+  if (name === 'list_reverse') {
+    if (args.length !== 1 || args[0].tag !== 'list') throw new Error(`list_reverse(l: list)`);
+    return { tag: 'list', items: args[0].items.slice().reverse() };
+  }
+  // ── character predicates ───────────────────────────────────────────────
+  if (name === 'char_is_digit') {
+    if (args.length !== 1 || args[0].tag !== 'str') throw new Error(`char_is_digit(c: str)`);
+    const c = args[0].v;
+    return { tag: 'bool', v: c.length === 1 && c >= '0' && c <= '9' };
+  }
+  if (name === 'char_is_alpha') {
+    if (args.length !== 1 || args[0].tag !== 'str') throw new Error(`char_is_alpha(c: str)`);
+    const c = args[0].v;
+    return { tag: 'bool', v: c.length === 1 && ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c === '_') };
+  }
+  if (name === 'char_is_alphanum') {
+    if (args.length !== 1 || args[0].tag !== 'str') throw new Error(`char_is_alphanum(c: str)`);
+    const c = args[0].v;
+    return { tag: 'bool', v: c.length === 1 && ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c === '_') };
+  }
+  if (name === 'char_is_whitespace') {
+    if (args.length !== 1 || args[0].tag !== 'str') throw new Error(`char_is_whitespace(c: str)`);
+    const c = args[0].v;
+    return { tag: 'bool', v: c === ' ' || c === '\t' || c === '\n' || c === '\r' };
+  }
+  // ── control ────────────────────────────────────────────────────────────
+  if (name === 'panic') {
+    if (args.length !== 1 || args[0].tag !== 'str') throw new Error(`panic(msg: str)`);
+    throw new Error(`panic: ${args[0].v}`);
+  }
   // ── dict builtins ────────────────────────────────────────────────────────
   if (name === 'dict_new') {
     if (args.length !== 0) throw new Error(`dict_new()`);

@@ -58,6 +58,25 @@ const BUILTIN_SIGS: Record<string, Type> = {
   dict_get:    { kind: 'fn', params: [T_DICT, T_STR], ret: T_UNKNOWN },
   dict_has:    { kind: 'fn', params: [T_DICT, T_STR], ret: T_BOOL },
   dict_keys:   { kind: 'fn', params: [T_DICT], ret: T_LIST },
+  // String introspection
+  str_chars:        { kind: 'fn', params: [T_STR], ret: T_LIST },
+  str_at:           { kind: 'fn', params: [T_STR, T_INT], ret: T_STR },
+  str_find:         { kind: 'fn', params: [T_STR, T_STR], ret: T_INT },
+  str_starts_with:  { kind: 'fn', params: [T_STR, T_STR], ret: T_BOOL },
+  str_ends_with:    { kind: 'fn', params: [T_STR, T_STR], ret: T_BOOL },
+  int_of_str:       { kind: 'fn', params: [T_STR], ret: T_INT },
+  // List helpers
+  list_concat:  { kind: 'fn', params: [T_LIST, T_LIST], ret: T_LIST },
+  list_reverse: { kind: 'fn', params: [T_LIST], ret: T_LIST },
+  // Char predicates
+  char_is_digit:      { kind: 'fn', params: [T_STR], ret: T_BOOL },
+  char_is_alpha:      { kind: 'fn', params: [T_STR], ret: T_BOOL },
+  char_is_alphanum:   { kind: 'fn', params: [T_STR], ret: T_BOOL },
+  char_is_whitespace: { kind: 'fn', params: [T_STR], ret: T_BOOL },
+  // Control
+  panic:    { kind: 'fn', params: [T_STR], ret: T_UNIT },
+  // Introspection
+  type_of:  { kind: 'fn', params: [T_UNKNOWN], ret: T_STR },
 };
 
 const VARARG_BUILTINS = new Set(['list_new']);
