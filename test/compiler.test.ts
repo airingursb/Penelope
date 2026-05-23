@@ -106,6 +106,38 @@ test('let then use', () => {
   ]);
 });
 
+test('fn() { 1 } compiles', () => {
+  const prog = compile(parse(tokenize('let f = fn() { 1 };')));
+  const opNames = prog.code.map(op => op[0]);
+  // Expected:
+  //   MAKE_CLOSURE [], body_ip=2, body_len=4   (0)
+  //   JUMP past=6                              (1)
+  //   ENTER_BLOCK                              (2) <- body_ip
+  //   LOAD_CONST 1                             (3)
+  //   EXIT_BLOCK                               (4)
+  //   RETURN                                   (5)
+  //   STORE_VAR f                              (6) <- past
+  //   HALT                                     (7)
+  expect(opNames).toEqual([
+    'MAKE_CLOSURE', 'JUMP',
+    'ENTER_BLOCK', 'LOAD_CONST', 'EXIT_BLOCK', 'RETURN',
+    'STORE_VAR',
+    'HALT',
+  ]);
+  const mk = prog.code[0] as ['MAKE_CLOSURE', string[], number, number];
+  expect(mk[1]).toEqual([]);         // no params
+  expect(mk[2]).toBe(2);             // body_ip = ENTER_BLOCK position
+  expect(mk[3]).toBe(4);             // body_len = 4 opcodes (ENTER, LOAD, EXIT, RETURN)
+  const jp = prog.code[1] as ['JUMP', number];
+  expect(jp[1]).toBe(6);             // jumps past RETURN to STORE_VAR
+});
+
+test('fn with two params', () => {
+  const prog = compile(parse(tokenize('let add = fn(a, b) { a + b };')));
+  const mk = prog.code.find(op => op[0] === 'MAKE_CLOSURE') as ['MAKE_CLOSURE', string[], number, number];
+  expect(mk[1]).toEqual(['a', 'b']);
+});
+
 test('if (true) { 1 } else { 2 } compiles with two jumps', () => {
   const prog = compile(parse(tokenize('if (true) { 1 } else { 2 };')));
   const opNames = prog.code.map(op => op[0]);

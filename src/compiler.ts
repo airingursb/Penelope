@@ -83,6 +83,23 @@ function compileNode(node: ASTNode, ast: ASTBundle, prog: Program): void {
       emit(prog, ['EXIT_BLOCK']);
       return;
     }
+    case 'Fn': {
+      // Emit MAKE_CLOSURE with placeholders; back-patch body_ip and body_len.
+      const mkIp = emit(prog, ['MAKE_CLOSURE', node.params, -1, -1]);
+      // Emit JUMP-past-body with placeholder
+      const jmpIp = emit(prog, ['JUMP', -1]);
+      // Body starts here
+      const bodyStartIp = prog.code.length;
+      compileNode(ast.nodes[node.bodyBlockId], ast, prog);
+      emit(prog, ['RETURN']);
+      const bodyEndIp = prog.code.length;
+      // Back-patch MAKE_CLOSURE body_ip and body_len
+      (prog.code[mkIp] as ['MAKE_CLOSURE', string[], number, number])[2] = bodyStartIp;
+      (prog.code[mkIp] as ['MAKE_CLOSURE', string[], number, number])[3] = bodyEndIp - bodyStartIp;
+      // Back-patch JUMP to land here (past body)
+      (prog.code[jmpIp] as ['JUMP', number])[1] = prog.code.length;
+      return;
+    }
     default:
       throw new Error(`compile: unhandled node kind '${(node as ASTNode).kind}'`);
   }
