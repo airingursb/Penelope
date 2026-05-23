@@ -30,6 +30,11 @@ function compileNode(node: ASTNode, ast: ASTBundle, prog: Program): void {
       emit(prog, ['POP']);
       return;
     }
+    case 'BoolLit': {
+      const idx = internConstant(prog.constants, { tag: 'bool', v: node.value });
+      emit(prog, ['LOAD_CONST', idx]);
+      return;
+    }
     default:
       throw new Error(`compile: unhandled node kind '${(node as ASTNode).kind}'`);
   }

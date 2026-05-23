@@ -22,3 +22,14 @@ test('"42;" compiles to LOAD_CONST 0; POP; HALT with constants=[int 42]', () => 
     ['HALT'],
   ]);
 });
+
+test('"true;" compiles', () => {
+  const prog = compile(parse(tokenize('true;')));
+  expect(prog.constants).toEqual([{ tag: 'bool', v: true }]);
+  expect(prog.code).toEqual([['LOAD_CONST', 0], ['POP'], ['HALT']]);
+});
+
+test('"false;" compiles', () => {
+  const prog = compile(parse(tokenize('false;')));
+  expect(prog.constants).toEqual([{ tag: 'bool', v: false }]);
+});
