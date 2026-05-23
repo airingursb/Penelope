@@ -77,6 +77,7 @@
 <div class="controls">
   <button class="primary" id="run">▶ Run</button>
   <button id="disasm">Show bytecode</button>
+  <button id="share">🔗 Share</button>
   <select id="example">
     <option value="hello">hello, world</option>
     <option value="arith">arithmetic + let</option>
@@ -134,7 +135,35 @@ function selectExample(name) {
 }
 
 $('example').addEventListener('change', (e) => selectExample(e.target.value));
-selectExample('hello');
+
+// On load: prefer #code=<base64> in the hash, then ?example=<name>, then the default.
+function loadInitial() {
+  const hash = new URLSearchParams(location.hash.slice(1));
+  const encoded = hash.get('code');
+  if (encoded) {
+    try {
+      srcArea.value = atob(encoded.replace(/-/g, '+').replace(/_/g, '/'));
+      status.textContent = 'loaded from URL';
+      return;
+    } catch {}
+  }
+  const params = new URLSearchParams(location.search);
+  const exName = params.get('example');
+  if (exName && EXAMPLES[exName]) {
+    $('example').value = exName;
+    selectExample(exName);
+    return;
+  }
+  selectExample('hello');
+}
+loadInitial();
+
+// Share button: build a URL that encodes the current source in #code=
+function buildShareUrl() {
+  const text = srcArea.value;
+  const b64 = btoa(text).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  return location.origin + location.pathname + '#code=' + b64;
+}
 
 function runProgram() {
   out.innerHTML = '';
@@ -203,6 +232,22 @@ function showBytecode() {
 
 $('run').addEventListener('click', runProgram);
 $('disasm').addEventListener('click', showBytecode);
+
+$('share').addEventListener('click', async () => {
+  const url = buildShareUrl();
+  try {
+    await navigator.clipboard.writeText(url);
+    status.textContent = 'link copied to clipboard';
+  } catch {
+    // Fallback: show URL in output panel
+    out.innerHTML = '';
+    const div = document.createElement('div');
+    div.textContent = url;
+    div.style.wordBreak = 'break-all';
+    out.appendChild(div);
+    status.textContent = 'copy failed — URL shown below';
+  }
+});
 
 // Ctrl/Cmd+Enter runs
 document.addEventListener('keydown', (e) => {
