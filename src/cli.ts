@@ -109,10 +109,7 @@ function cmdExec(args: ParsedArgs): number {
   return 0;
 }
 
-function cmdRun(args: ParsedArgs): number {
-  const filePath = args.positional[1];
-  if (!filePath) { process.stderr.write('usage: pen run [-O0|-O1|-O2] <file.pen> [--time N] [--no-replay]\n'); return 2; }
-  const absPath = resolve(filePath);
+function runOnce(absPath: string, filePath: string, args: ParsedArgs): number {
   let source: string;
   try { source = readFileSync(absPath, 'utf8'); }
   catch { process.stderr.write(`cli error: cannot read source: ${filePath}\n`); return 3; }
@@ -124,13 +121,10 @@ function cmdRun(args: ParsedArgs): number {
   try {
     const ast = parse(tokenize(source));
     const prog = runOptimizer(compile(ast), args.oLevel);
-
     const state = freshState();
     state.timeOverride = timeOverride;
     state.noReplay = noReplay;
-
     const r = run(prog, state);
-
     if (r.status === 'paused') {
       const pencPath = absPath.replace(/\.pen$/, '.penc');
       prog.sourceHash = 'sha256:' + sha256(source);
@@ -144,6 +138,46 @@ function cmdRun(args: ParsedArgs): number {
     process.stderr.write(formatDiagnostic(diag) + '\n');
     return 1;
   }
+}
+
+function cmdRun(args: ParsedArgs): number {
+  const filePath = args.positional[1];
+  if (!filePath) { process.stderr.write('usage: pen run [-O0|-O1|-O2] [--watch] <file.pen> [--time N] [--no-replay]\n'); return 2; }
+  const absPath = resolve(filePath);
+  if (args.flags['watch'] === true) {
+    return cmdRunWatch(absPath, filePath, args);
+  }
+  return runOnce(absPath, filePath, args);
+}
+
+function cmdRunWatch(absPath: string, filePath: string, args: ParsedArgs): number {
+  const { watch } = require('node:fs');
+  const useColor = process.stderr && (process.stderr as { isTTY?: boolean }).isTTY;
+  let running = false;
+  let pending = false;
+  let timer: NodeJS.Timeout | null = null;
+
+  const dim = (s: string) => useColor ? `\x1b[2m${s}\x1b[0m` : s;
+
+  function go() {
+    if (running) { pending = true; return; }
+    running = true;
+    process.stdout.write('\x1b[2J\x1b[H');
+    process.stdout.write(dim(`watching ${filePath} (Ctrl-C to exit)\n\n`));
+    runOnce(absPath, filePath, args);
+    process.stdout.write(dim(`\n[${new Date().toLocaleTimeString()}] waiting for changes\n`));
+    running = false;
+    if (pending) { pending = false; setTimeout(go, 50); }
+  }
+
+  go();
+  watch(absPath, () => {
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(go, 100);
+  });
+  // Hold the event loop open
+  setInterval(() => {}, 1 << 30);
+  return 0;
 }
 
 function cmdResume(args: ParsedArgs): number {
