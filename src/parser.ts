@@ -89,9 +89,8 @@ export function parse(tokens: Token[]): ASTBundle {
 }
 
 function parseStatement(c: Cursor, b: Builder): ASTNode {
-  // For now, every top-level statement is either a let/print or an expr-stmt.
-  if (c.peekKind() === 'LET')   return parseLetStmt(c, b);
-  if (c.peekKind() === 'PRINT') return parsePrintStmt(c, b);
+  // For now, every top-level statement is either a let or an expr-stmt.
+  if (c.peekKind() === 'LET') return parseLetStmt(c, b);
   return parseExprStmt(c, b);
 }
 
@@ -108,15 +107,6 @@ function parseLetStmt(c: Cursor, b: Builder): ASTNode {
   const value = parseExpression(c, b);
   c.eat('SEMI');
   return b.addNode(id => ({ id, kind: 'Let', name: nameTok.text!, valueId: value.id }));
-}
-
-function parsePrintStmt(c: Cursor, b: Builder): ASTNode {
-  c.eat('PRINT');
-  c.eat('LPAREN');
-  const arg = parseExpression(c, b);
-  c.eat('RPAREN');
-  c.eat('SEMI');
-  return b.addNode(id => ({ id, kind: 'Print', argId: arg.id }));
 }
 
 function parseExpression(c: Cursor, b: Builder, minPrec = 0): ASTNode {
@@ -161,10 +151,6 @@ function parseBlock(c: Cursor, b: Builder): ASTNode {
     // expression and check what follows.
     if (c.peekKind() === 'LET') {
       stmtIds.push(parseLetStmt(c, b).id);
-      continue;
-    }
-    if (c.peekKind() === 'PRINT') {
-      stmtIds.push(parsePrintStmt(c, b).id);
       continue;
     }
     const expr = parseExpression(c, b);

@@ -26,7 +26,6 @@ const KEYWORDS: Record<string, TokenKind> = {
   true:   'TRUE',
   false:  'FALSE',
   pause:  'PAUSE',
-  print:  'PRINT',
 };
 
 function isDigit(c: string): boolean { return c >= '0' && c <= '9'; }

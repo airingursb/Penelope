@@ -6,6 +6,8 @@
 // No closures, no Maps, no symbols, no class instances.
 
 import type { ASTBundle, ASTNode, BinOp, NodeId, ScopeId, Value } from './ast.js';
+import { EFFECT_NAMES as EFFECT_NAMES_SET } from './effects.js';
+import type { EffectName } from './effects.js';
 
 // ============================================================
 // Phase 2: EffectEntry
@@ -32,11 +34,11 @@ export type Scope = {
 export type ControlInstr =
   | { op: 'eval';      nodeId: NodeId }
   | { op: 'applyBin';  binOp: BinOp }
-  | { op: 'applyPrint' }
   | { op: 'bindLet';   name: string }
   | { op: 'branch';    thenBlockId: NodeId; elseBlockId: NodeId }
   | { op: 'invoke';          argCount: number }
   | { op: 'applyPureBuiltin'; name: string; argCount: number }
+  | { op: 'applyEffect'; name: EffectName; nodeId: NodeId; argCount: number }
   | { op: 'popScope';        restoreScopeId: ScopeId }
   | { op: 'pushUnit' }
   | { op: 'discard' };
@@ -117,12 +119,6 @@ export function step(state: State, ast: ASTBundle): StepResult {
       return stepEval(state, rest, ast.nodes[instr.nodeId], ast);
     case 'applyBin':
       return applyBinOp(state, rest, instr.binOp);
-    case 'applyPrint': {
-      const v = state.valueStack[state.valueStack.length - 1];
-      console.log(formatValue(v));
-      return cont({ ...state, control: rest,
-        valueStack: state.valueStack.slice(0, -1) });
-    }
     case 'bindLet': {
       // Reserved builtin name guard
       const reserved = new Set<string>([
@@ -162,6 +158,8 @@ export function step(state: State, ast: ASTBundle): StepResult {
       return invokeClosure(state, rest, instr.argCount);
     case 'applyPureBuiltin':
       return applyPureBuiltin(state, rest, instr.name, instr.argCount);
+    case 'applyEffect':
+      return applyEffect(state, rest, instr.name, instr.nodeId, instr.argCount, ast);
     default:
       return { kind: 'error', message: `unimplemented op: ${(instr as ControlInstr).op}` };
   }
@@ -209,12 +207,6 @@ function stepEval(state: State, rest: ControlInstr[], node: ASTNode, _ast: ASTBu
         { op: 'bindLet', name: node.name },
         { op: 'eval', nodeId: node.valueId },
       ]});
-    case 'Print':
-      return cont({ ...state, control: [
-        ...rest,
-        { op: 'applyPrint' },
-        { op: 'eval', nodeId: node.argId },
-      ]});
     case 'Block': {
       const newScopeId = `s${state.nextScopeIdCounter}`;
       const trailing: ControlInstr = node.trailingExprId !== null
@@ -258,6 +250,15 @@ function stepEval(state: State, rest: ControlInstr[], node: ASTNode, _ast: ASTBu
         return cont({ ...state, control: [
           ...rest,
           { op: 'applyPureBuiltin', name: callee.name, argCount: node.argIds.length },
+          ...[...node.argIds].reverse().map(id => ({ op: 'eval' as const, nodeId: id })),
+        ]});
+      }
+
+      // Effect builtin dispatch
+      if (callee.kind === 'Var' && EFFECT_NAMES_SET.has(callee.name as EffectName)) {
+        return cont({ ...state, control: [
+          ...rest,
+          { op: 'applyEffect', name: callee.name as EffectName, nodeId: node.id, argCount: node.argIds.length },
           ...[...node.argIds].reverse().map(id => ({ op: 'eval' as const, nodeId: id })),
         ]});
       }
@@ -344,6 +345,39 @@ function applyPureBuiltin(state: State, rest: ControlInstr[], name: string, argC
   }
 
   return { kind: 'error', message: `unimplemented pure builtin: ${name}` };
+}
+
+function applyEffect(
+  state: State,
+  rest: ControlInstr[],
+  name: EffectName,
+  nodeId: NodeId,
+  argCount: number,
+  _ast: ASTBundle,
+): StepResult {
+  const stack = state.valueStack;
+  const args = stack.slice(stack.length - argCount);
+  const newStack = stack.slice(0, stack.length - argCount);
+
+  const invocationCount = state.effects.filter(e => e.nodeId === nodeId).length;
+
+  // First execution for print (only effect supported in this task).
+  // Other effects added in T14-T21. REPLAY path added in T14.
+  if (name === 'print') {
+    if (argCount !== 1) return { kind: 'error', message: `print expects 1 arg, got ${argCount}` };
+    console.log(formatValue(args[0]));
+    const entry = {
+      nodeId, invocationCount, effect: 'print' as const,
+      recordedValue: null, status: 'committed' as const,
+    };
+    return cont({
+      ...state, control: rest,
+      valueStack: [...newStack, { tag: 'unit' as const }],
+      effects: [...state.effects, entry],
+    });
+  }
+
+  return { kind: 'error', message: `effect '${name}' not yet implemented`, atNode: nodeId };
 }
 
 function cont(state: State): StepResult {

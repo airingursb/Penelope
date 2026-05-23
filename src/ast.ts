@@ -19,7 +19,6 @@ export type ASTNode =
   | { id: NodeId; kind: 'If';       condId: NodeId; thenBlockId: NodeId; elseBlockId: NodeId }
   | { id: NodeId; kind: 'Fn';       params: string[]; bodyBlockId: NodeId }
   | { id: NodeId; kind: 'Call';     calleeId: NodeId; argIds: NodeId[] }
-  | { id: NodeId; kind: 'Print';    argId: NodeId }
   | { id: NodeId; kind: 'Pause' }
   | { id: NodeId; kind: 'ExprStmt'; exprId: NodeId }
   | { id: NodeId; kind: 'Block';    stmtIds: NodeId[]; trailingExprId: NodeId | null }

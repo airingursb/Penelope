@@ -87,3 +87,47 @@ test('reserved pure builtin name cannot be shadowed via let', () => {
   expect(r.kind).toBe('error');
   if (r.kind === 'error') expect(r.message).toMatch(/reserved/);
 });
+
+import { initialState, step } from '../src/interpreter.js';
+
+test('B1: print appends one effect entry', () => {
+  const ast = parse(tokenize('print(1);'));
+  const logged: string[] = [];
+  const origLog = console.log;
+  console.log = (msg: string) => logged.push(msg);
+  try {
+    let s = initialState(ast.rootId);
+    while (true) {
+      const r = step(s, ast);
+      if (r.kind === 'continue') { s = r.state; continue; }
+      if (r.kind === 'done') break;
+      throw new Error(`unexpected result: ${r.kind}`);
+    }
+    expect(logged).toEqual(['1']);
+    expect(s.effects).toHaveLength(1);
+    expect(s.effects[0].effect).toBe('print');
+    expect(s.effects[0].invocationCount).toBe(0);
+    expect(s.effects[0].status).toBe('committed');
+  } finally { console.log = origLog; }
+});
+
+test('B2 + B3: two distinct print call sites get separate entries; invocationCount 0 each', () => {
+  const ast = parse(tokenize('print(1); print(2);'));
+  const logged: string[] = [];
+  const origLog = console.log;
+  console.log = (msg: string) => logged.push(msg);
+  try {
+    let s = initialState(ast.rootId);
+    while (true) {
+      const r = step(s, ast);
+      if (r.kind === 'continue') { s = r.state; continue; }
+      if (r.kind === 'done') break;
+      throw new Error(`unexpected: ${r.kind}`);
+    }
+    expect(logged).toEqual(['1', '2']);
+    expect(s.effects).toHaveLength(2);
+    expect(s.effects[0].nodeId).not.toBe(s.effects[1].nodeId);
+    expect(s.effects[0].invocationCount).toBe(0);
+    expect(s.effects[1].invocationCount).toBe(0);
+  } finally { console.log = origLog; }
+});

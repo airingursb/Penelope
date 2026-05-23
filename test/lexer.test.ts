@@ -30,9 +30,14 @@ test('tokenizes identifiers', () => {
 });
 
 test('tokenizes keywords', () => {
-  const src = 'let fn if else true false pause print';
+  const src = 'let fn if else true false pause';
   const kinds = tokenize(src).map(t => t.kind);
-  expect(kinds).toEqual(['LET','FN','IF','ELSE','TRUE','FALSE','PAUSE','PRINT','EOF']);
+  expect(kinds).toEqual(['LET','FN','IF','ELSE','TRUE','FALSE','PAUSE','EOF']);
+});
+
+test('print is an identifier (not a keyword)', () => {
+  const tokens = tokenize('print');
+  expect(tokens[0]).toMatchObject({ kind: 'IDENT', text: 'print' });
 });
 
 test('keywords are not identifiers', () => {
