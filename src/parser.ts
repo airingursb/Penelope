@@ -101,12 +101,22 @@ function parseExprStmt(c: Cursor, b: Builder): ASTNode {
   return b.addNode(id => ({ id, kind: 'ExprStmt', exprId: expr.id }));
 }
 
-// Filled in by Task 9
-function parseLetStmt(_c: Cursor, _b: Builder): ASTNode {
-  throw new Error('parser: let not yet implemented');
+function parseLetStmt(c: Cursor, b: Builder): ASTNode {
+  c.eat('LET');
+  const nameTok = c.eat('IDENT');
+  c.eat('EQ');
+  const value = parseExpression(c, b);
+  c.eat('SEMI');
+  return b.addNode(id => ({ id, kind: 'Let', name: nameTok.text!, valueId: value.id }));
 }
-function parsePrintStmt(_c: Cursor, _b: Builder): ASTNode {
-  throw new Error('parser: print not yet implemented');
+
+function parsePrintStmt(c: Cursor, b: Builder): ASTNode {
+  c.eat('PRINT');
+  c.eat('LPAREN');
+  const arg = parseExpression(c, b);
+  c.eat('RPAREN');
+  c.eat('SEMI');
+  return b.addNode(id => ({ id, kind: 'Print', argId: arg.id }));
 }
 
 function parseExpression(c: Cursor, b: Builder, minPrec = 0): ASTNode {

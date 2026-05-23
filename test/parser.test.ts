@@ -76,3 +76,32 @@ test('parses comparison', () => {
   if (stmt.kind !== 'ExprStmt') throw new Error('expected ExprStmt');
   expect(ast.nodes[stmt.exprId]).toMatchObject({ kind: 'BinOp', op: '<' });
 });
+
+test('parses let statement', () => {
+  const ast = parse(tokenize('let x = 42;'));
+  const program = ast.nodes[ast.rootId];
+  if (program.kind !== 'Program') throw new Error('expected Program');
+  const stmt = ast.nodes[program.stmtIds[0]];
+  if (stmt.kind !== 'Let') throw new Error('expected Let');
+  expect(stmt.name).toBe('x');
+  expect(ast.nodes[stmt.valueId]).toMatchObject({ kind: 'IntLit', value: 42 });
+});
+
+test('parses print statement', () => {
+  const ast = parse(tokenize('print(x + 1);'));
+  const program = ast.nodes[ast.rootId];
+  if (program.kind !== 'Program') throw new Error('expected Program');
+  const stmt = ast.nodes[program.stmtIds[0]];
+  if (stmt.kind !== 'Print') throw new Error('expected Print');
+  const arg = ast.nodes[stmt.argId];
+  expect(arg.kind).toBe('BinOp');
+});
+
+test('parses multiple top-level statements in order', () => {
+  const ast = parse(tokenize('let x = 1; print(x);'));
+  const program = ast.nodes[ast.rootId];
+  if (program.kind !== 'Program') throw new Error('expected Program');
+  expect(program.stmtIds.length).toBe(2);
+  expect(ast.nodes[program.stmtIds[0]].kind).toBe('Let');
+  expect(ast.nodes[program.stmtIds[1]].kind).toBe('Print');
+});
