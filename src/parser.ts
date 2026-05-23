@@ -70,6 +70,59 @@ export function parse(tokens: Token[]): ASTBundle {
   return { rootId: program.id, nodes: b.nodes };
 }
 
-function parseStatement(_c: Cursor, _b: Builder): ASTNode {
-  throw new Error('parser: statements not yet implemented');
+function parseStatement(c: Cursor, b: Builder): ASTNode {
+  // For now, every top-level statement is either a let/print or an expr-stmt.
+  if (c.peekKind() === 'LET')   return parseLetStmt(c, b);
+  if (c.peekKind() === 'PRINT') return parsePrintStmt(c, b);
+  return parseExprStmt(c, b);
+}
+
+function parseExprStmt(c: Cursor, b: Builder): ASTNode {
+  const expr = parseExpression(c, b);
+  c.eat('SEMI');
+  return b.addNode(id => ({ id, kind: 'ExprStmt', exprId: expr.id }));
+}
+
+// Filled in by Task 9
+function parseLetStmt(_c: Cursor, _b: Builder): ASTNode {
+  throw new Error('parser: let not yet implemented');
+}
+function parsePrintStmt(_c: Cursor, _b: Builder): ASTNode {
+  throw new Error('parser: print not yet implemented');
+}
+
+function parseExpression(c: Cursor, b: Builder): ASTNode {
+  // Placeholder — Task 8 adds binary-operator precedence.
+  return parsePrimary(c, b);
+}
+
+function parsePrimary(c: Cursor, b: Builder): ASTNode {
+  const t = c.peek();
+  switch (t.kind) {
+    case 'INT': {
+      c.eat('INT');
+      return b.addNode(id => ({ id, kind: 'IntLit', value: t.value! }));
+    }
+    case 'TRUE':
+      c.eat('TRUE');
+      return b.addNode(id => ({ id, kind: 'BoolLit', value: true }));
+    case 'FALSE':
+      c.eat('FALSE');
+      return b.addNode(id => ({ id, kind: 'BoolLit', value: false }));
+    case 'IDENT': {
+      c.eat('IDENT');
+      return b.addNode(id => ({ id, kind: 'Var', name: t.text! }));
+    }
+    case 'PAUSE':
+      c.eat('PAUSE');
+      return b.addNode(id => ({ id, kind: 'Pause' }));
+    case 'LPAREN': {
+      c.eat('LPAREN');
+      const inner = parseExpression(c, b);
+      c.eat('RPAREN');
+      return inner;
+    }
+    default:
+      throw new Error(`parser: unexpected token ${t.kind} at line ${t.line} col ${t.col}`);
+  }
 }
