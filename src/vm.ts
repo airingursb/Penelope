@@ -2,10 +2,11 @@
 // State is VMState from snapshot.ts; the VM mutates it in place.
 
 import type { Program, Opcode } from './bytecode.js';
-import type { VMState, Frame, EffectEntry } from './snapshot.js';
+import type { VMState, Frame } from './snapshot.js';
+import type { EffectEntry } from './snapshot.js';
 import type { Value } from './ast.js';
 import { constantToValue } from './bytecode.js';
-import { performNetFetch, performNow, performRandomInt, performReadFile, performWriteFile, categoryOf, EFFECT_NAMES } from './effects.js';
+import { performNetFetch, performNow, performRandomInt, performReadFile, performWriteFile, categoryOf } from './effects.js';
 import type { EffectName } from './effects.js';
 
 export type RunResult =
@@ -27,6 +28,8 @@ export function run(prog: Program, initialState?: VMState): RunResult {
 }
 
 function runUntilStop(prog: Program, state: VMState): RunResult {
+  // Track how many committed entries per ip we've already replayed this run.
+  const replayIdx = new Map<number, number>();
   while (true) {
     const op = prog.code[state.ip];
     if (!op) throw new Error(`VM: IP ${state.ip} out of bounds`);
@@ -122,6 +125,17 @@ function runUntilStop(prog: Program, state: VMState): RunResult {
         state.ip++;
         break;
       }
+      case 'EFFECT': {
+        const name = op[1] as EffectName;
+        const argc = op[2] as number;
+        const args: Value[] = [];
+        for (let i = 0; i < argc; i++) args.unshift(pop(state));
+        const step = executeEffect(state, name, args, replayIdx);
+        if (step.kind === 'pause') return { status: 'paused', state };
+        push(state, step.v);
+        state.ip++;
+        break;
+      }
       case 'CALL_BUILTIN': {
         const name = op[1] as string;
         const argc = op[2] as number;
@@ -197,4 +211,81 @@ function applyBuiltin(name: string, args: Value[]): Value {
     return { tag: 'str', v: args[0].v.slice(args[1].v, args[2].v) };
   }
   throw new Error(`unknown builtin '${name}'`);
+}
+
+type EffectStep = { kind: 'value'; v: Value } | { kind: 'pause' };
+
+function executeEffect(state: VMState, name: EffectName, args: Value[], replayIdx: Map<number, number>): EffectStep {
+  const ip = state.ip;
+  if (categoryOf(name) === 'wait') return executeWaitEffect(state, name, ip);
+  // Find how many committed entries at this ip we've already replayed in this run.
+  const usedCount = replayIdx.get(ip) ?? 0;
+  // Find the nth committed entry at this ip.
+  const committedAtIp = state.effects.filter(e => e.ip === ip && e.status === 'committed');
+  const existing = committedAtIp[usedCount];
+  if (existing && !state.noReplay) {
+    replayIdx.set(ip, usedCount + 1);
+    return { kind: 'value', v: existing.recordedValue ?? { tag: 'unit' } };
+  }
+  // Fresh execution.
+  const invocationCount = state.effects.filter(e => e.ip === ip).length;
+  let v: Value;
+  if (name === 'print') {
+    const arg = args[0];
+    if (!arg) throw new Error(`print expects 1 arg`);
+    console.log(valueToString(arg));
+    v = { tag: 'unit' };
+  } else if (name === 'now') {
+    const t = performNow(state.timeOverride ?? null);
+    v = { tag: 'int', v: t };
+  } else if (name === 'random_int') {
+    const lo = args[0]; const hi = args[1];
+    if (!lo || !hi || lo.tag !== 'int' || hi.tag !== 'int') throw new Error(`random_int(lo, hi: int)`);
+    v = { tag: 'int', v: performRandomInt(lo.v, hi.v) };
+  } else if (name === 'net_fetch') {
+    const url = args[0];
+    if (!url || url.tag !== 'str') throw new Error(`net_fetch(url: str)`);
+    const body = performNetFetch(url.v);
+    v = { tag: 'str', v: body };
+  } else if (name === 'read_file') {
+    const path = args[0];
+    if (!path || path.tag !== 'str') throw new Error(`read_file(path: str)`);
+    const content = performReadFile(path.v);
+    v = { tag: 'str', v: content };
+  } else if (name === 'write_file') {
+    const path = args[0]; const body = args[1];
+    if (!path || path.tag !== 'str' || !body || body.tag !== 'str') throw new Error(`write_file(path, body: str)`);
+    performWriteFile(path.v, body.v);
+    v = { tag: 'unit' };
+  } else {
+    throw new Error(`EFFECT: unhandled name '${name}'`);
+  }
+  state.effects.push({
+    ip, invocationCount, effect: name as EffectEntry['effect'],
+    recordedValue: v, status: 'committed',
+  });
+  return { kind: 'value', v };
+}
+
+function executeWaitEffect(state: VMState, name: EffectName, ip: number): EffectStep {
+  const pending = state.effects.find(e => e.ip === ip && e.effect === name && e.status === 'pending');
+  if (pending) {
+    pending.status = 'committed';
+    pending.recordedValue = { tag: 'unit' };
+    return { kind: 'value', v: { tag: 'unit' } };
+  }
+  const invocationCount = state.effects.filter(e => e.ip === ip).length;
+  state.effects.push({
+    ip, invocationCount, effect: name as EffectEntry['effect'],
+    recordedValue: null, status: 'pending',
+  });
+  return { kind: 'pause' };
+}
+
+function valueToString(v: Value): string {
+  if (v.tag === 'int')  return String(v.v);
+  if (v.tag === 'bool') return v.v ? 'true' : 'false';
+  if (v.tag === 'str')  return v.v;
+  if (v.tag === 'unit') return '()';
+  return '<fn>';
 }

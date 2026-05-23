@@ -240,3 +240,67 @@ test('unknown builtin throws', () => {
   const prog: Program = { version: 1, constants: [], code: [['CALL_BUILTIN', 'nope', 0], ['HALT']] };
   expect(() => run(prog)).toThrow(/unknown builtin/);
 });
+
+test('EFFECT print fresh run: writes committed entry', () => {
+  const prog: Program = {
+    version: 1,
+    constants: [{ tag: 'str', v: 'hi' }],
+    code: [['LOAD_CONST', 0], ['EFFECT', 'print', 1, null], ['HALT']],
+  };
+  const r = run(prog);
+  expect(r.state.effects).toHaveLength(1);
+  expect(r.state.effects[0]).toMatchObject({
+    ip: 1, invocationCount: 0, effect: 'print', status: 'committed',
+  });
+});
+
+test('EFFECT print replay: reuses committed entry; no duplicate', () => {
+  const prog: Program = {
+    version: 1,
+    constants: [{ tag: 'str', v: 'hi' }],
+    code: [['LOAD_CONST', 0], ['EFFECT', 'print', 1, null], ['HALT']],
+  };
+  const initial = freshState();
+  initial.effects = [
+    { ip: 1, invocationCount: 0, effect: 'print', recordedValue: { tag: 'unit' }, status: 'committed' },
+  ];
+  const r = run(prog, initial);
+  expect(r.state.effects).toHaveLength(1);
+});
+
+test('EFFECT now fresh run produces int', () => {
+  const prog: Program = {
+    version: 1, constants: [],
+    code: [['EFFECT', 'now', 0, null], ['POP'], ['HALT']],
+  };
+  const r = run(prog);
+  expect(r.state.effects[0].effect).toBe('now');
+  expect(r.state.effects[0].recordedValue?.tag).toBe('int');
+});
+
+test('EFFECT now respects timeOverride', () => {
+  const prog: Program = {
+    version: 1, constants: [],
+    code: [['EFFECT', 'now', 0, null], ['HALT']],
+  };
+  const initial = freshState();
+  initial.timeOverride = 1234567890;
+  const r = run(prog, initial);
+  expect(r.state.valueStack[0]).toEqual({ tag: 'int', v: 1234567890 });
+});
+
+test('--no-replay re-executes committed print', () => {
+  const prog: Program = {
+    version: 1,
+    constants: [{ tag: 'str', v: 'hi' }],
+    code: [['LOAD_CONST', 0], ['EFFECT', 'print', 1, null], ['HALT']],
+  };
+  const initial = freshState();
+  initial.noReplay = true;
+  initial.effects = [
+    { ip: 1, invocationCount: 0, effect: 'print', recordedValue: { tag: 'unit' }, status: 'committed' },
+  ];
+  const r = run(prog, initial);
+  // With noReplay=true the existing entry is ignored on replay and a new entry is appended.
+  expect(r.state.effects.length).toBe(2);
+});
