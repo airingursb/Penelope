@@ -65,14 +65,30 @@ const VARARG_BUILTINS = new Set(['list_new']);
 export function check(ast: ASTBundle): TypeError[] {
   const errors: TypeError[] = [];
   const env: Env = new Map();
-  checkNode(ast.nodes[ast.rootId], ast, env, errors);
+  const nodeTypes = new Map<string, Type>();
+  checkNode(ast.nodes[ast.rootId], ast, env, errors, nodeTypes);
   return errors;
 }
 
-function checkNode(node: ASTNode, ast: ASTBundle, env: Env, errors: TypeError[]): Type {
+// Like check, but also returns the inferred type for each AST node (by id).
+export function checkWithTypes(ast: ASTBundle): { errors: TypeError[]; types: Map<string, Type> } {
+  const errors: TypeError[] = [];
+  const env: Env = new Map();
+  const types = new Map<string, Type>();
+  checkNode(ast.nodes[ast.rootId], ast, env, errors, types);
+  return { errors, types };
+}
+
+function checkNode(node: ASTNode, ast: ASTBundle, env: Env, errors: TypeError[], nodeTypes?: Map<string, Type>): Type {
+  const t = dispatchNode(node, ast, env, errors, nodeTypes);
+  if (nodeTypes) nodeTypes.set(node.id, t);
+  return t;
+}
+
+function dispatchNode(node: ASTNode, ast: ASTBundle, env: Env, errors: TypeError[], nodeTypes?: Map<string, Type>): Type {
   switch (node.kind) {
     case 'Program': {
-      for (const id of node.stmtIds) checkNode(ast.nodes[id], ast, env, errors);
+      for (const id of node.stmtIds) checkNode(ast.nodes[id], ast, env, errors, nodeTypes);
       return T_UNIT;
     }
     case 'IntLit':    return T_INT;
@@ -88,19 +104,19 @@ function checkNode(node: ASTNode, ast: ASTBundle, env: Env, errors: TypeError[])
       return t;
     }
     case 'ExprStmt': {
-      checkNode(ast.nodes[node.exprId], ast, env, errors);
+      checkNode(ast.nodes[node.exprId], ast, env, errors, nodeTypes);
       return T_UNIT;
     }
     case 'Let': {
-      const vt = checkNode(ast.nodes[node.valueId], ast, env, errors);
+      const vt = checkNode(ast.nodes[node.valueId], ast, env, errors, nodeTypes);
       env.set(node.name, vt);
       return T_UNIT;
     }
-    case 'BinOp':    return checkBinOp(node, ast, env, errors);
-    case 'If':       return checkIf(node, ast, env, errors);
-    case 'Block':    return checkBlock(node, ast, env, errors);
-    case 'Fn':       return checkFn(node, ast, env, errors);
-    case 'Call':     return checkCall(node, ast, env, errors);
+    case 'BinOp':    return checkBinOp(node, ast, env, errors, nodeTypes);
+    case 'If':       return checkIf(node, ast, env, errors, nodeTypes);
+    case 'Block':    return checkBlock(node, ast, env, errors, nodeTypes);
+    case 'Fn':       return checkFn(node, ast, env, errors, nodeTypes);
+    case 'Call':     return checkCall(node, ast, env, errors, nodeTypes);
     default: {
       const n = node as ASTNode;
       errors.push({ message: `typecheck: unhandled node kind '${n.kind}'`, pos: n.pos });
@@ -109,9 +125,9 @@ function checkNode(node: ASTNode, ast: ASTBundle, env: Env, errors: TypeError[])
   }
 }
 
-function checkBinOp(node: Extract<ASTNode, { kind: 'BinOp' }>, ast: ASTBundle, env: Env, errors: TypeError[]): Type {
-  const left = checkNode(ast.nodes[node.leftId], ast, env, errors);
-  const right = checkNode(ast.nodes[node.rightId], ast, env, errors);
+function checkBinOp(node: Extract<ASTNode, { kind: 'BinOp' }>, ast: ASTBundle, env: Env, errors: TypeError[], nodeTypes?: Map<string, Type>): Type {
+  const left = checkNode(ast.nodes[node.leftId], ast, env, errors, nodeTypes);
+  const right = checkNode(ast.nodes[node.rightId], ast, env, errors, nodeTypes);
   const op = node.op as BinOp;
   if (op === '+') {
     if (matches(left, T_INT) && matches(right, T_INT)) return T_INT;
@@ -147,27 +163,27 @@ function checkBinOp(node: Extract<ASTNode, { kind: 'BinOp' }>, ast: ASTBundle, e
   return T_UNKNOWN;
 }
 
-function checkIf(node: Extract<ASTNode, { kind: 'If' }>, ast: ASTBundle, env: Env, errors: TypeError[]): Type {
-  const cond = checkNode(ast.nodes[node.condId], ast, env, errors);
+function checkIf(node: Extract<ASTNode, { kind: 'If' }>, ast: ASTBundle, env: Env, errors: TypeError[], nodeTypes?: Map<string, Type>): Type {
+  const cond = checkNode(ast.nodes[node.condId], ast, env, errors, nodeTypes);
   if (!matches(cond, T_BOOL) && cond.kind !== 'unknown') {
     errors.push({ message: `if condition must be bool, got ${typeStr(cond)}`, pos: ast.nodes[node.condId].pos });
   }
-  const t = checkNode(ast.nodes[node.thenBlockId], ast, env, errors);
-  const e = checkNode(ast.nodes[node.elseBlockId], ast, env, errors);
+  const t = checkNode(ast.nodes[node.thenBlockId], ast, env, errors, nodeTypes);
+  const e = checkNode(ast.nodes[node.elseBlockId], ast, env, errors, nodeTypes);
   if (t.kind !== e.kind && t.kind !== 'unknown' && e.kind !== 'unknown') {
     return T_UNKNOWN;
   }
   return t.kind !== 'unknown' ? t : e;
 }
 
-function checkBlock(node: Extract<ASTNode, { kind: 'Block' }>, ast: ASTBundle, env: Env, errors: TypeError[]): Type {
+function checkBlock(node: Extract<ASTNode, { kind: 'Block' }>, ast: ASTBundle, env: Env, errors: TypeError[], nodeTypes?: Map<string, Type>): Type {
   const local = new Map(env);
-  for (const id of node.stmtIds) checkNode(ast.nodes[id], ast, local, errors);
-  if (node.trailingExprId !== null) return checkNode(ast.nodes[node.trailingExprId], ast, local, errors);
+  for (const id of node.stmtIds) checkNode(ast.nodes[id], ast, local, errors, nodeTypes);
+  if (node.trailingExprId !== null) return checkNode(ast.nodes[node.trailingExprId], ast, local, errors, nodeTypes);
   return T_UNIT;
 }
 
-function checkFn(node: Extract<ASTNode, { kind: 'Fn' }>, ast: ASTBundle, env: Env, errors: TypeError[]): Type {
+function checkFn(node: Extract<ASTNode, { kind: 'Fn' }>, ast: ASTBundle, env: Env, errors: TypeError[], nodeTypes?: Map<string, Type>): Type {
   const body = ast.nodes[node.bodyBlockId];
   const local = new Map(env);
   const paramTypes: Type[] = [];
@@ -175,11 +191,11 @@ function checkFn(node: Extract<ASTNode, { kind: 'Fn' }>, ast: ASTBundle, env: En
     local.set(p, T_UNKNOWN);
     paramTypes.push(T_UNKNOWN);
   }
-  const ret = checkNode(body, ast, local, errors);
+  const ret = checkNode(body, ast, local, errors, nodeTypes);
   return { kind: 'fn', params: paramTypes, ret };
 }
 
-function checkCall(node: Extract<ASTNode, { kind: 'Call' }>, ast: ASTBundle, env: Env, errors: TypeError[]): Type {
+function checkCall(node: Extract<ASTNode, { kind: 'Call' }>, ast: ASTBundle, env: Env, errors: TypeError[], nodeTypes?: Map<string, Type>): Type {
   const callee = ast.nodes[node.calleeId];
   // Special-case for known-name calls (effects/builtins) to use BUILTIN_SIGS.
   if (callee.kind === 'Var' && callee.name in BUILTIN_SIGS) {
@@ -192,7 +208,7 @@ function checkCall(node: Extract<ASTNode, { kind: 'Call' }>, ast: ASTBundle, env
       });
     }
     for (let i = 0; i < node.argIds.length; i++) {
-      const at = checkNode(ast.nodes[node.argIds[i]], ast, env, errors);
+      const at = checkNode(ast.nodes[node.argIds[i]], ast, env, errors, nodeTypes);
       const exp = sig.params[i] ?? T_UNKNOWN;
       if (!matches(at, exp) && at.kind !== 'unknown' && exp.kind !== 'unknown') {
         errors.push({
@@ -203,9 +219,9 @@ function checkCall(node: Extract<ASTNode, { kind: 'Call' }>, ast: ASTBundle, env
     }
     return sig.ret;
   }
-  const calleeType = checkNode(callee, ast, env, errors);
+  const calleeType = checkNode(callee, ast, env, errors, nodeTypes);
   if (calleeType.kind === 'unknown') {
-    for (const id of node.argIds) checkNode(ast.nodes[id], ast, env, errors);
+    for (const id of node.argIds) checkNode(ast.nodes[id], ast, env, errors, nodeTypes);
     return T_UNKNOWN;
   }
   if (calleeType.kind !== 'fn') {
@@ -219,7 +235,7 @@ function checkCall(node: Extract<ASTNode, { kind: 'Call' }>, ast: ASTBundle, env
     });
   }
   for (let i = 0; i < node.argIds.length; i++) {
-    checkNode(ast.nodes[node.argIds[i]], ast, env, errors);
+    checkNode(ast.nodes[node.argIds[i]], ast, env, errors, nodeTypes);
   }
   return calleeType.ret;
 }

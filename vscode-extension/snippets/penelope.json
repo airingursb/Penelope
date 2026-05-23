@@ -1,0 +1,86 @@
+{
+  "let binding": {
+    "prefix": "let",
+    "body": "let ${1:name} = ${2:value};",
+    "description": "Local binding"
+  },
+  "function definition": {
+    "prefix": "fn",
+    "body": [
+      "let ${1:name} = fn(${2:params}) {",
+      "  ${3:body}",
+      "};"
+    ],
+    "description": "Function bound to a name"
+  },
+  "anonymous function": {
+    "prefix": "afn",
+    "body": "fn(${1:params}) { ${2:body} }",
+    "description": "Anonymous function expression"
+  },
+  "if/else": {
+    "prefix": "if",
+    "body": [
+      "if (${1:cond}) {",
+      "  ${2:thenBranch}",
+      "} else {",
+      "  ${3:elseBranch}",
+      "}"
+    ],
+    "description": "Branching"
+  },
+  "pause and resume": {
+    "prefix": "pause",
+    "body": "let ${1:_} = pause;",
+    "description": "Suspend execution; pen resume to continue"
+  },
+  "wait_for event": {
+    "prefix": "wait",
+    "body": "let ${1:value} = wait_for(\"${2:event_name}\");",
+    "description": "Pause until pen resume --event NAME=VAL"
+  },
+  "print": {
+    "prefix": "print",
+    "body": "print(${1:value});",
+    "description": "Print to stdout (replay-safe)"
+  },
+  "print with to_str": {
+    "prefix": "printstr",
+    "body": "print(to_str(${1:value}));",
+    "description": "Print any value coerced to string"
+  },
+  "net_fetch": {
+    "prefix": "fetch",
+    "body": "let ${1:body} = net_fetch(\"${2:https://}\");",
+    "description": "HTTP GET; result recorded in effect log"
+  },
+  "now timestamp": {
+    "prefix": "now",
+    "body": "let ${1:t} = now();",
+    "description": "Current time in ms; replay returns same value"
+  },
+  "list_new": {
+    "prefix": "list",
+    "body": "let ${1:xs} = list_new(${2:1, 2, 3});",
+    "description": "Create a new list"
+  },
+  "dict_new + set": {
+    "prefix": "dict",
+    "body": "let ${1:d} = dict_set(dict_new(), \"${2:key}\", ${3:value});",
+    "description": "Create a dict with one entry"
+  },
+  "for-each over list (recursive)": {
+    "prefix": "foreach",
+    "body": [
+      "let each = fn(xs, f) {",
+      "  if (list_len(xs) == 0) {",
+      "    ()",
+      "  } else {",
+      "    f(list_get(xs, 0));",
+      "    each(list_set(xs, 0, list_get(xs, list_len(xs) - 1)), f)",
+      "  }",
+      "};"
+    ],
+    "description": "Recursive iteration helper (sketch)"
+  }
+}
