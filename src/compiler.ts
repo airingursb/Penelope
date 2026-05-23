@@ -3,7 +3,7 @@
 // Each emitted opcode is at the IP equal to code.length at emission time.
 
 import type { ASTNode, ASTBundle } from './ast.js';
-import type { Program, Opcode, ConstantPoolEntry } from './bytecode.js';
+import type { Program, Opcode } from './bytecode.js';
 import { makeProgram, internConstant } from './bytecode.js';
 import { EFFECT_NAMES } from './effects.js';
 

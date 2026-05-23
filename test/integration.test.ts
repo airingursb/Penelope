@@ -1,6 +1,9 @@
 import { test, expect } from 'vitest';
-import { spawnSync } from 'node:child_process';
+import { spawnSync, execSync } from 'node:child_process';
 import { existsSync, unlinkSync, writeFileSync, readFileSync } from 'node:fs';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import * as os from 'node:os';
 import { resolve } from 'node:path';
 
 const PEN = resolve('bin/penelope');
@@ -450,4 +453,17 @@ test('I1+I2+I3+C3: fork copies effect log; branches diverge after fork', () => {
   expect(r.stdout).toMatch(/\[fork-1\] 2/);
 
   cleanup(source); cleanup(snap); cleanup(fork0); cleanup(fork1);
+});
+
+test('pen build foo.pen creates foo.penc', () => {
+  const srcPath = path.join(os.tmpdir(), `t-${Date.now()}.pen`);
+  fs.writeFileSync(srcPath, 'let x = 42; x;');
+  const r = spawnSync(PEN, ['build', srcPath], { encoding: 'utf8' });
+  expect(r.status).toBe(0);
+  const pencPath = srcPath.replace(/\.pen$/, '.penc');
+  expect(fs.existsSync(pencPath)).toBe(true);
+  const text = fs.readFileSync(pencPath, 'utf8');
+  expect(text).toContain('LOAD_CONST');
+  expect(r.stdout).toMatch(/wrote/);
+  fs.unlinkSync(srcPath); fs.unlinkSync(pencPath);
 });

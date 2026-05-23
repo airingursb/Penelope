@@ -1,7 +1,7 @@
 // Penelope VM. Stack-based bytecode interpreter.
 // State is VMState from snapshot.ts; the VM mutates it in place.
 
-import type { Program, Opcode } from './bytecode.js';
+import type { Program } from './bytecode.js';
 import type { VMState, Frame } from './snapshot.js';
 import type { EffectEntry } from './snapshot.js';
 import type { Value } from './ast.js';

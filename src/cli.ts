@@ -9,15 +9,20 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { resolve, dirname, basename, join } from 'node:path';
 import { tokenize } from './lexer.js';
 import { parse } from './parser.js';
+import { compile } from './compiler.js';
+import { run, freshState } from './vm.js';
+import { writePencFile, readPencFile } from './encoder.js';
 import { serialize, sha256, deserialize } from './snapshot.js';
 import type { Snapshot } from './snapshot.js';
 import type { Value } from './ast.js';
 
-// Suppress unused-import warnings during migration: these will be re-used in T28-T30.
-void (serialize as unknown); void (sha256 as unknown); void (deserialize as unknown);
-void (readFileSync as unknown); void (writeFileSync as unknown);
+// Suppress unused-import warnings during migration (T29, T30 will use these).
+void (deserialize as unknown);
+void (writeFileSync as unknown);
+void (readPencFile as unknown);
+void (serialize as unknown);
+void (run as unknown); void (freshState as unknown);
 void (resolve as unknown); void (dirname as unknown); void (basename as unknown); void (join as unknown);
-void (tokenize as unknown); void (parse as unknown);
 
 // ============================================================
 // Argv parsing
@@ -81,6 +86,31 @@ function parseResumeValue(text: string): Value | { error: string } {
 
 // Keep parseResumeValue callable to avoid unused-function warning
 void (parseResumeValue as unknown);
+
+// ============================================================
+// build subcommand (T28)
+// ============================================================
+
+function cmdBuild(args: ParsedArgs): number {
+  const srcPath = args.positional[1];
+  if (!srcPath) {
+    process.stderr.write('usage: pen build <file.pen>\n');
+    return 2;
+  }
+  const absSrc = resolve(srcPath);
+  let source: string;
+  try { source = readFileSync(absSrc, 'utf8'); }
+  catch { process.stderr.write(`cli error: cannot read source: ${srcPath}\n`); return 3; }
+
+  const tokens = tokenize(source);
+  const ast = parse(tokens);
+  const prog = compile(ast);
+  prog.sourceHash = 'sha256:' + sha256(source);
+  const pencPath = absSrc.replace(/\.pen$/, '.penc');
+  writePencFile(pencPath, prog);
+  process.stdout.write(`wrote ${pencPath} (${prog.code.length} opcodes, ${prog.constants.length} constants)\n`);
+  return 0;
+}
 
 // ============================================================
 // run subcommand
@@ -178,11 +208,12 @@ function cmdInspect(_args: ParsedArgs): number {
 export function main(argv: string[]): number {
   const args = parseArgs(argv);
   const sub = args.positional[0];
+  if (sub === 'build')   return cmdBuild(args);
   if (sub === 'run')     return cmdRun(args);
   if (sub === 'resume')  return cmdResume(args);
   if (sub === 'fork')    return cmdFork(args);
   if (sub === 'inspect') return cmdInspect(args);
-  process.stderr.write(`usage: penelope <run|resume|fork|inspect> [args]\n`);
+  process.stderr.write(`usage: penelope <build|run|exec|resume|fork|inspect> [args]\n`);
   return 2;
 }
 
