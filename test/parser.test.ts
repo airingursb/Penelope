@@ -105,3 +105,58 @@ test('parses multiple top-level statements in order', () => {
   expect(ast.nodes[program.stmtIds[0]].kind).toBe('Let');
   expect(ast.nodes[program.stmtIds[1]].kind).toBe('Print');
 });
+
+test('parses a function literal', () => {
+  const ast = parse(tokenize('let f = fn(x, y) { x + y };'));
+  const program = ast.nodes[ast.rootId];
+  if (program.kind !== 'Program') throw new Error('expected Program');
+  const letStmt = ast.nodes[program.stmtIds[0]];
+  if (letStmt.kind !== 'Let') throw new Error('expected Let');
+  const fn = ast.nodes[letStmt.valueId];
+  if (fn.kind !== 'Fn') throw new Error('expected Fn');
+  expect(fn.params).toEqual(['x', 'y']);
+
+  const body = ast.nodes[fn.bodyBlockId];
+  if (body.kind !== 'Block') throw new Error('expected Block');
+  expect(body.stmtIds).toEqual([]);
+  expect(body.trailingExprId).not.toBeNull();
+});
+
+test('parses a function call', () => {
+  const ast = parse(tokenize('f(1, 2);'));
+  const program = ast.nodes[ast.rootId];
+  if (program.kind !== 'Program') throw new Error('expected Program');
+  const stmt = ast.nodes[program.stmtIds[0]];
+  if (stmt.kind !== 'ExprStmt') throw new Error('expected ExprStmt');
+  const call = ast.nodes[stmt.exprId];
+  if (call.kind !== 'Call') throw new Error('expected Call');
+  expect(call.argIds.length).toBe(2);
+});
+
+test('parses a block with statements and a trailing expression', () => {
+  const ast = parse(tokenize('let f = fn() { let a = 1; a + 2 };'));
+  const program = ast.nodes[ast.rootId];
+  if (program.kind !== 'Program') throw new Error('expected Program');
+  const letStmt = ast.nodes[program.stmtIds[0]];
+  if (letStmt.kind !== 'Let') throw new Error('expected Let');
+  const fn = ast.nodes[letStmt.valueId];
+  if (fn.kind !== 'Fn') throw new Error('expected Fn');
+  const block = ast.nodes[fn.bodyBlockId];
+  if (block.kind !== 'Block') throw new Error('expected Block');
+  expect(block.stmtIds.length).toBe(1);
+  expect(block.trailingExprId).not.toBeNull();
+});
+
+test('parses a block with no trailing expression (unit-valued)', () => {
+  const ast = parse(tokenize('let f = fn() { let a = 1; };'));
+  const program = ast.nodes[ast.rootId];
+  if (program.kind !== 'Program') throw new Error('expected Program');
+  const letStmt = ast.nodes[program.stmtIds[0]];
+  if (letStmt.kind !== 'Let') throw new Error('expected Let');
+  const fn = ast.nodes[letStmt.valueId];
+  if (fn.kind !== 'Fn') throw new Error('expected Fn');
+  const block = ast.nodes[fn.bodyBlockId];
+  if (block.kind !== 'Block') throw new Error('expected Block');
+  expect(block.stmtIds.length).toBe(1);
+  expect(block.trailingExprId).toBeNull();
+});

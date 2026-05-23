@@ -120,7 +120,7 @@ function parsePrintStmt(c: Cursor, b: Builder): ASTNode {
 }
 
 function parseExpression(c: Cursor, b: Builder, minPrec = 0): ASTNode {
-  let left = parsePrimary(c, b);
+  let left = parsePostfix(c, b);
   while (true) {
     const info = INFIX_PRECEDENCE[c.peekKind()];
     if (!info || info.prec < minPrec) break;
@@ -132,6 +132,70 @@ function parseExpression(c: Cursor, b: Builder, minPrec = 0): ASTNode {
     left = node;
   }
   return left;
+}
+
+function parsePostfix(c: Cursor, b: Builder): ASTNode {
+  let expr = parsePrimary(c, b);
+  while (c.peekKind() === 'LPAREN') {
+    c.eat('LPAREN');
+    const argIds: NodeId[] = [];
+    if (c.peekKind() !== 'RPAREN') {
+      argIds.push(parseExpression(c, b).id);
+      while (c.match('COMMA')) argIds.push(parseExpression(c, b).id);
+    }
+    c.eat('RPAREN');
+    const call = b.addNode(id => ({ id, kind: 'Call', calleeId: expr.id, argIds }));
+    expr = call;
+  }
+  return expr;
+}
+
+function parseBlock(c: Cursor, b: Builder): ASTNode {
+  c.eat('LBRACE');
+  const stmtIds: NodeId[] = [];
+  let trailingExprId: NodeId | null = null;
+
+  while (c.peekKind() !== 'RBRACE') {
+    // Decide whether the next thing is a statement or the trailing expression.
+    // Strategy: let/print are clearly statements; for other things, parse an
+    // expression and check what follows.
+    if (c.peekKind() === 'LET') {
+      stmtIds.push(parseLetStmt(c, b).id);
+      continue;
+    }
+    if (c.peekKind() === 'PRINT') {
+      stmtIds.push(parsePrintStmt(c, b).id);
+      continue;
+    }
+    const expr = parseExpression(c, b);
+    if (c.peekKind() === 'SEMI') {
+      c.eat('SEMI');
+      const stmt = b.addNode(id => ({ id, kind: 'ExprStmt', exprId: expr.id }));
+      stmtIds.push(stmt.id);
+    } else if (c.peekKind() === 'RBRACE') {
+      trailingExprId = expr.id;
+      break;
+    } else {
+      const t = c.peek();
+      throw new Error(`parser: expected ';' or '}' after expression at line ${t.line} col ${t.col}, got ${t.kind}`);
+    }
+  }
+
+  c.eat('RBRACE');
+  return b.addNode(id => ({ id, kind: 'Block', stmtIds, trailingExprId }));
+}
+
+function parseFn(c: Cursor, b: Builder): ASTNode {
+  c.eat('FN');
+  c.eat('LPAREN');
+  const params: string[] = [];
+  if (c.peekKind() !== 'RPAREN') {
+    params.push(c.eat('IDENT').text!);
+    while (c.match('COMMA')) params.push(c.eat('IDENT').text!);
+  }
+  c.eat('RPAREN');
+  const body = parseBlock(c, b);
+  return b.addNode(id => ({ id, kind: 'Fn', params, bodyBlockId: body.id }));
 }
 
 function parsePrimary(c: Cursor, b: Builder): ASTNode {
@@ -154,6 +218,8 @@ function parsePrimary(c: Cursor, b: Builder): ASTNode {
     case 'PAUSE':
       c.eat('PAUSE');
       return b.addNode(id => ({ id, kind: 'Pause' }));
+    case 'FN':
+      return parseFn(c, b);
     case 'LPAREN': {
       c.eat('LPAREN');
       const inner = parseExpression(c, b);
