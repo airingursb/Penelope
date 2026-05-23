@@ -15,16 +15,17 @@ const PURE_BUILTINS: ReadonlySet<string> = new Set([
 
 export function compile(ast: ASTBundle): Program {
   const prog = makeProgram();
-  compileNode(ast.nodes[ast.rootId], ast, prog);
+  compileNode(ast.nodes[ast.rootId], ast, prog, false);
   emit(prog, ['HALT']);
   return prog;
 }
 
-// Dispatch on node.kind. Tasks 6-15 fill in per-kind cases.
-function compileNode(node: ASTNode, ast: ASTBundle, prog: Program): void {
+// `tail` = this node is in tail position of an enclosing fn body.
+// A Call in tail position becomes a TAILCALL (frame reuse — no stack growth).
+function compileNode(node: ASTNode, ast: ASTBundle, prog: Program, tail: boolean): void {
   switch (node.kind) {
     case 'Program': {
-      for (const stmtId of node.stmtIds) compileNode(ast.nodes[stmtId], ast, prog);
+      for (const stmtId of node.stmtIds) compileNode(ast.nodes[stmtId], ast, prog, false);
       return;
     }
     case 'IntLit': {
@@ -33,7 +34,7 @@ function compileNode(node: ASTNode, ast: ASTBundle, prog: Program): void {
       return;
     }
     case 'ExprStmt': {
-      compileNode(ast.nodes[node.exprId], ast, prog);
+      compileNode(ast.nodes[node.exprId], ast, prog, false);
       emit(prog, ['POP'], node);
       return;
     }
@@ -52,38 +53,33 @@ function compileNode(node: ASTNode, ast: ASTBundle, prog: Program): void {
       return;
     }
     case 'BinOp': {
-      compileNode(ast.nodes[node.leftId], ast, prog);
-      compileNode(ast.nodes[node.rightId], ast, prog);
+      compileNode(ast.nodes[node.leftId], ast, prog, false);
+      compileNode(ast.nodes[node.rightId], ast, prog, false);
       emit(prog, ['BIN_OP', node.op], node);
       return;
     }
     case 'Let': {
-      compileNode(ast.nodes[node.valueId], ast, prog);
+      compileNode(ast.nodes[node.valueId], ast, prog, false);
       emit(prog, ['STORE_VAR', node.name], node);
       return;
     }
     case 'If': {
-      // Compile cond
-      compileNode(ast.nodes[node.condId], ast, prog);
-      // Emit JUMP_IF_FALSE with placeholder target
+      compileNode(ast.nodes[node.condId], ast, prog, false);
       const jifIp = emit(prog, ['JUMP_IF_FALSE', -1], node);
-      // Compile then-block
-      compileNode(ast.nodes[node.thenBlockId], ast, prog);
-      // Emit JUMP past else with placeholder
+      // If `tail`, both branches inherit tail position.
+      compileNode(ast.nodes[node.thenBlockId], ast, prog, tail);
       const jmpIp = emit(prog, ['JUMP', -1], node);
-      // Back-patch JUMP_IF_FALSE to point here (else start)
       (prog.code[jifIp] as ['JUMP_IF_FALSE', number])[1] = prog.code.length;
-      // Compile else-block
-      compileNode(ast.nodes[node.elseBlockId], ast, prog);
-      // Back-patch JUMP to point here (past else)
+      compileNode(ast.nodes[node.elseBlockId], ast, prog, tail);
       (prog.code[jmpIp] as ['JUMP', number])[1] = prog.code.length;
       return;
     }
     case 'Block': {
       emit(prog, ['ENTER_BLOCK'], node);
-      for (const stmtId of node.stmtIds) compileNode(ast.nodes[stmtId], ast, prog);
+      for (const stmtId of node.stmtIds) compileNode(ast.nodes[stmtId], ast, prog, false);
       if (node.trailingExprId !== null) {
-        compileNode(ast.nodes[node.trailingExprId], ast, prog);
+        // The trailing expression of a tail-block is itself in tail position.
+        compileNode(ast.nodes[node.trailingExprId], ast, prog, tail);
       } else {
         emit(prog, ['PUSH_UNIT'], node);
       }
@@ -92,32 +88,30 @@ function compileNode(node: ASTNode, ast: ASTBundle, prog: Program): void {
     }
     case 'Call': {
       const callee = ast.nodes[node.calleeId];
-      // Effect builtin?
+      // Effect builtin? Never tail-callable (replay semantics + side effects).
       if (callee.kind === 'Var' && EFFECT_NAMES.has(callee.name as any)) {
-        for (const argId of node.argIds) compileNode(ast.nodes[argId], ast, prog);
+        for (const argId of node.argIds) compileNode(ast.nodes[argId], ast, prog, false);
         emit(prog, ['EFFECT', callee.name, node.argIds.length, null], node);
         return;
       }
-      // Pure builtin?
+      // Pure builtin? Never tail-callable (synchronous return, no frame).
       if (callee.kind === 'Var' && PURE_BUILTINS.has(callee.name)) {
-        for (const argId of node.argIds) compileNode(ast.nodes[argId], ast, prog);
+        for (const argId of node.argIds) compileNode(ast.nodes[argId], ast, prog, false);
         emit(prog, ['CALL_BUILTIN', callee.name, node.argIds.length], node);
         return;
       }
-      // Normal closure call: callee, then args, then CALL.
-      compileNode(callee, ast, prog);
-      for (const argId of node.argIds) compileNode(ast.nodes[argId], ast, prog);
-      emit(prog, ['CALL', node.argIds.length], node);
+      // Normal closure call.
+      compileNode(callee, ast, prog, false);
+      for (const argId of node.argIds) compileNode(ast.nodes[argId], ast, prog, false);
+      emit(prog, [tail ? 'TAILCALL' : 'CALL', node.argIds.length], node);
       return;
     }
     case 'Fn': {
-      // Emit MAKE_CLOSURE with placeholders; back-patch body_ip and body_len.
       const mkIp = emit(prog, ['MAKE_CLOSURE', node.params, -1, -1], node);
-      // Emit JUMP-past-body with placeholder
       const jmpIp = emit(prog, ['JUMP', -1], node);
-      // Body starts here
       const bodyStartIp = prog.code.length;
-      compileNode(ast.nodes[node.bodyBlockId], ast, prog);
+      // The body block is in tail position.
+      compileNode(ast.nodes[node.bodyBlockId], ast, prog, true);
       emit(prog, ['RETURN'], node);
       const bodyEndIp = prog.code.length;
       // Back-patch MAKE_CLOSURE body_ip and body_len

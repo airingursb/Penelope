@@ -15,6 +15,7 @@ export type Opcode =
   | ['JUMP_IF_FALSE', targetIp: number]
   | ['MAKE_CLOSURE',  paramNames: string[], bodyIp: number, bodyLen: number]
   | ['CALL',          argc: number]
+  | ['TAILCALL',      argc: number]
   | ['CALL_BUILTIN',  name: string, argc: number]
   | ['RETURN']
   | ['EFFECT',        name: string, argc: number, ic?: number | null]
@@ -45,7 +46,7 @@ export function formatPos(prog: Program, ip: number): string {
 export const OPCODE_NAMES: ReadonlySet<string> = new Set([
   'LOAD_CONST', 'LOAD_VAR', 'STORE_VAR', 'BIN_OP',
   'JUMP', 'JUMP_IF_FALSE',
-  'MAKE_CLOSURE', 'CALL', 'CALL_BUILTIN', 'RETURN',
+  'MAKE_CLOSURE', 'CALL', 'TAILCALL', 'CALL_BUILTIN', 'RETURN',
   'EFFECT', 'PAUSE',
   'POP', 'PUSH_UNIT',
   'ENTER_BLOCK', 'EXIT_BLOCK',

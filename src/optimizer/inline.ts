@@ -54,7 +54,7 @@ export function findInliningCandidates(prog: Program): InlineCandidate[] {
     let pure = true;
     for (let j = bodyIp; j < returnIp; j++) {
       const bop = prog.code[j];
-      if (bop[0] === 'PAUSE' || bop[0] === 'EFFECT' || bop[0] === 'CALL' || bop[0] === 'CALL_BUILTIN') {
+      if (bop[0] === 'PAUSE' || bop[0] === 'EFFECT' || bop[0] === 'CALL' || bop[0] === 'TAILCALL' || bop[0] === 'CALL_BUILTIN') {
         pure = false;
         break;
       }

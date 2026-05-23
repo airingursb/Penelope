@@ -36,16 +36,16 @@ test('Opcode is a tuple — first element is the op name', () => {
   expect(op[0]).toBe('LOAD_CONST');
 });
 
-test('all 17 opcode names are exported as a set', () => {
+test('all 18 opcode names are exported as a set', () => {
   const expected = [
     'LOAD_CONST', 'LOAD_VAR', 'STORE_VAR', 'BIN_OP',
     'JUMP', 'JUMP_IF_FALSE',
-    'MAKE_CLOSURE', 'CALL', 'CALL_BUILTIN', 'RETURN',
+    'MAKE_CLOSURE', 'CALL', 'TAILCALL', 'CALL_BUILTIN', 'RETURN',
     'EFFECT', 'PAUSE',
     'POP', 'PUSH_UNIT',
     'ENTER_BLOCK', 'EXIT_BLOCK',
     'HALT',
   ];
-  expect(OPCODE_NAMES.size).toBe(17);
+  expect(OPCODE_NAMES.size).toBe(18);
   for (const name of expected) expect(OPCODE_NAMES.has(name)).toBe(true);
 });
