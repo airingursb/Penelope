@@ -125,6 +125,10 @@ function compileNode(node: ASTNode, ast: ASTBundle, prog: Program): void {
       (prog.code[jmpIp] as ['JUMP', number])[1] = prog.code.length;
       return;
     }
+    case 'Pause': {
+      emit(prog, ['PAUSE']);
+      return;
+    }
     default:
       throw new Error(`compile: unhandled node kind '${(node as ASTNode).kind}'`);
   }

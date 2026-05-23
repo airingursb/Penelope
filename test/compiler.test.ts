@@ -174,6 +174,33 @@ test('net_fetch is an effect', () => {
   expect(prog.code.find(op => op[0] === 'EFFECT')).toEqual(['EFFECT', 'net_fetch', 1, null]);
 });
 
+test('Block with trailing expression', () => {
+  // Trigger via if branch which uses Block
+  const prog = compile(parse(tokenize('if (true) { 1 } else { 2 };')));
+  // The then-block (single trailing expr 1) is ENTER_BLOCK, LOAD_CONST 1, EXIT_BLOCK
+  const enterAt = prog.code.findIndex(op => op[0] === 'ENTER_BLOCK');
+  expect(prog.code[enterAt + 1][0]).toBe('LOAD_CONST');
+  expect(prog.code[enterAt + 2]).toEqual(['EXIT_BLOCK']);
+});
+
+test('Block with no trailing expression emits PUSH_UNIT', () => {
+  const prog = compile(parse(tokenize('if (true) { let x = 1; } else { };')));
+  // both blocks have no trailing expr — should PUSH_UNIT
+  const pushUnitCount = prog.code.filter(op => op[0] === 'PUSH_UNIT').length;
+  expect(pushUnitCount).toBe(2);
+});
+
+test('Pause compiles to PAUSE opcode', () => {
+  const prog = compile(parse(tokenize('let x = pause;')));
+  expect(prog.code).toContainEqual(['PAUSE']);
+  // Sequence: PAUSE, STORE_VAR x, HALT
+  expect(prog.code).toEqual([
+    ['PAUSE'],
+    ['STORE_VAR', 'x'],
+    ['HALT'],
+  ]);
+});
+
 test('if (true) { 1 } else { 2 } compiles with two jumps', () => {
   const prog = compile(parse(tokenize('if (true) { 1 } else { 2 };')));
   const opNames = prog.code.map(op => op[0]);
