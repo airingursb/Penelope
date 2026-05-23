@@ -6,7 +6,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { resolve, dirname, basename, join } from 'node:path';
 import { tokenize } from './lexer.js';
 import { parse } from './parser.js';
-import { initialState, step } from './interpreter.js';
+import { initialState, step, formatValue } from './interpreter.js';
 import type { State, StepResult } from './interpreter.js';
 import { serialize, sha256, deserialize } from './snapshot.js';
 import type { Snapshot } from './snapshot.js';
@@ -286,6 +286,66 @@ function cmdFork(args: ParsedArgs): number {
 }
 
 // ============================================================
+// inspect subcommand
+// ============================================================
+
+function cmdInspect(args: ParsedArgs): number {
+  const snapPath = args.positional[1];
+  if (!snapPath) {
+    process.stderr.write('usage: penelope inspect <file.penz>\n');
+    return 2;
+  }
+
+  const absSnapPath = resolve(snapPath);
+  let snapJson: string;
+  try { snapJson = readFileSync(absSnapPath, 'utf8'); }
+  catch { process.stderr.write(`cli error: cannot read snapshot: ${snapPath}\n`); return 3; }
+
+  let snap: Snapshot;
+  try { snap = JSON.parse(snapJson); }
+  catch { process.stderr.write(`cli error: snapshot is corrupted (invalid JSON)\n`); return 3; }
+
+  // Try to read source for hash status (non-fatal if it fails)
+  let sourceStatus = '? source missing';
+  try {
+    const source = readFileSync(resolve(dirname(absSnapPath), snap.programPath), 'utf8');
+    const actual = 'sha256:' + sha256(source);
+    sourceStatus = (actual === snap.programHash) ? '✓ source matches' : '✗ source stale';
+  } catch { /* keep sourceStatus as missing */ }
+
+  const ageMs = Date.now() - snap.pausedAtMs;
+  const ageSec = Math.floor(ageMs / 1000);
+  const ageStr = ageSec < 60 ? `${ageSec}s ago`
+    : ageSec < 3600 ? `${Math.floor(ageSec / 60)}m ago`
+    : `${Math.floor(ageSec / 3600)}h ago`;
+
+  const out = process.stdout;
+  out.write(`Snapshot: ${basename(absSnapPath)}\n`);
+  out.write(`  Source: ${snap.programPath}  ${sourceStatus}\n`);
+  out.write(`  Full path: ${resolve(dirname(absSnapPath), snap.programPath)}\n`);
+  out.write(`  Paused at: ${snap.pausedAt}\n`);
+  out.write(`  Time: ${new Date(snap.pausedAtMs).toISOString()} (${ageStr})\n`);
+  out.write(`\n`);
+  out.write(`Scopes:\n`);
+  for (const [sid, sc] of Object.entries(snap.state.scopes)) {
+    const parent = sc.parentId ? ` ← ${sc.parentId}` : '';
+    const binds = Object.entries(sc.bindings).map(([n, v]) => `${n}=${formatValue(v)}`).join(', ');
+    out.write(`  ${sid}${parent}: { ${binds} }\n`);
+  }
+  out.write(`Current scope: ${snap.state.currentScopeId}\n`);
+  out.write(`\n`);
+  out.write(`Control stack (top → bottom, ${snap.state.control.length} instr):\n`);
+  for (let i = snap.state.control.length - 1; i >= 0; i--) {
+    out.write(`  ${snap.state.control.length - i}. ${JSON.stringify(snap.state.control[i])}\n`);
+  }
+  out.write(`\n`);
+  out.write(`Value stack (${snap.state.valueStack.length}): `);
+  out.write(snap.state.valueStack.map(formatValue).join(', ') || '(empty)');
+  out.write(`\n`);
+  return 0;
+}
+
+// ============================================================
 // Main
 // ============================================================
 
@@ -295,6 +355,7 @@ export function main(argv: string[]): number {
   if (sub === 'run')     return cmdRun(args);
   if (sub === 'resume')  return cmdResume(args);
   if (sub === 'fork')    return cmdFork(args);
+  if (sub === 'inspect') return cmdInspect(args);
   process.stderr.write(`usage: penelope <run|resume|fork|inspect> [args]\n`);
   return 2;
 }
