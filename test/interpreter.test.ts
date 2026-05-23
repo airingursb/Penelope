@@ -71,3 +71,30 @@ test('division by zero is a runtime error', () => {
   expect(result.kind).toBe('error');
   if (result.kind === 'error') expect(result.message).toMatch(/division by zero/);
 });
+
+test('let + arithmetic + reference works', () => {
+  const ast = parse(tokenize('let x = 10; let y = 5; x + y;'));
+  const result = runToCompletion(ast);
+  expect(result.kind).toBe('done');
+});
+
+test('print writes to stdout (captured via spy)', () => {
+  const ast = parse(tokenize('print(1 + 2);'));
+  const logged: string[] = [];
+  const origLog = console.log;
+  console.log = (msg: string) => logged.push(msg);
+  try {
+    const result = runToCompletion(ast);
+    expect(result.kind).toBe('done');
+    expect(logged).toEqual(['3']);
+  } finally {
+    console.log = origLog;
+  }
+});
+
+test('undefined variable is a runtime error', () => {
+  const ast = parse(tokenize('x;'));
+  const result = runToCompletion(ast);
+  expect(result.kind).toBe('error');
+  if (result.kind === 'error') expect(result.message).toMatch(/undefined variable 'x'/);
+});

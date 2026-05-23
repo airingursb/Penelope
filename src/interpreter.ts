@@ -96,6 +96,24 @@ export function step(state: State, ast: ASTBundle): StepResult {
       return stepEval(state, rest, ast.nodes[instr.nodeId], ast);
     case 'applyBin':
       return applyBinOp(state, rest, instr.binOp);
+    case 'applyPrint': {
+      const v = state.valueStack[state.valueStack.length - 1];
+      console.log(formatValue(v));
+      return cont({ ...state, control: rest,
+        valueStack: state.valueStack.slice(0, -1) });
+    }
+    case 'bindLet': {
+      const v = state.valueStack[state.valueStack.length - 1];
+      const scope = state.scopes[state.currentScopeId];
+      return cont({ ...state, control: rest,
+        valueStack: state.valueStack.slice(0, -1),
+        scopes: { ...state.scopes,
+          [state.currentScopeId]: { ...scope,
+            bindings: { ...scope.bindings, [instr.name]: v }}}});
+    }
+    case 'discard':
+      return cont({ ...state, control: rest,
+        valueStack: state.valueStack.slice(0, -1) });
     default:
       return { kind: 'error', message: `unimplemented op: ${(instr as ControlInstr).op}` };
   }
@@ -122,6 +140,29 @@ function stepEval(state: State, rest: ControlInstr[], node: ASTNode, _ast: ASTBu
         { op: 'applyBin', binOp: node.op },
         { op: 'eval', nodeId: node.rightId },
         { op: 'eval', nodeId: node.leftId },
+      ]});
+    case 'Program':
+      return cont({ ...state, control: [
+        ...rest,
+        ...[...node.stmtIds].reverse().map(id => ({ op: 'eval' as const, nodeId: id })),
+      ]});
+    case 'ExprStmt':
+      return cont({ ...state, control: [
+        ...rest,
+        { op: 'discard' },
+        { op: 'eval', nodeId: node.exprId },
+      ]});
+    case 'Let':
+      return cont({ ...state, control: [
+        ...rest,
+        { op: 'bindLet', name: node.name },
+        { op: 'eval', nodeId: node.valueId },
+      ]});
+    case 'Print':
+      return cont({ ...state, control: [
+        ...rest,
+        { op: 'applyPrint' },
+        { op: 'eval', nodeId: node.argId },
       ]});
     default:
       return { kind: 'error', message: `unimplemented eval kind: ${(node as ASTNode).kind}`, atNode: node.id };
@@ -188,4 +229,13 @@ function applyBinOp(state: State, rest: ControlInstr[], op: BinOp): StepResult {
   }
 
   return { kind: 'error', message: `unknown binary op: ${op}` };
+}
+
+export function formatValue(v: Value): string {
+  switch (v.tag) {
+    case 'int':     return String(v.v);
+    case 'bool':    return v.v ? 'true' : 'false';
+    case 'unit':    return '()';
+    case 'closure': return '<fn>';
+  }
 }
