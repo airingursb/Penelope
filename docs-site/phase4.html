@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Penelope — Phase 4: live editing, time travel, self-hosting</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <h1>Penelope</h1>
+  <p class="tagline">Phase 4 — three things you get when a paused program is just data.</p>
+  <nav>
+    <a href="index.html">Overview</a>
+    <a href="tour.html">Tour</a>
+    <a href="stdlib.html">Stdlib</a>
+    <a href="cli.html">CLI</a>
+    <a href="snapshot.html">Snapshot v3</a>
+    <a href="play.html">Playground</a>
+    <a href="debugger.html">Debugger</a>
+    <a href="phase4.html" class="active">Phase 4</a>
+    <a href="https://github.com/airingursb/Penelope">GitHub →</a>
+  </nav>
+</header>
+
+<h2>What changed in Phase 4</h2>
+
+<p>The earlier phases established the basics: bytecode, pause/resume, snapshots, modules, a stack-based VM. Phase 4 cashes in the dividend. Because a paused program is <em>just a value</em> (a <code>Snapshot</code>: ip, value stack, frames, effects), three useful things fall out:</p>
+
+<ol>
+  <li><strong>Live editing</strong> — pause a running program, edit the source, resume into the new code with the old state mapped over.</li>
+  <li><strong>Time-travel debugging</strong> — step <em>backward</em> through a paused program from your IDE.</li>
+  <li><strong>Self-hosting</strong> — write the lexer, parser, and compiler in Penelope itself, and verify byte-for-byte that the pen-built compiler produces the same bytecode as the TS-built one.</li>
+</ol>
+
+<h2>4.1 — Live editing (<code>pen edit</code>)</h2>
+
+<p>You paused at line 12. You realize line 14 has a bug. Without phase 4, you'd start over. With phase 4:</p>
+
+<pre><code>bin/penelope run buggy.pen          <span class="cm"># hits pause, writes snapshot.penz</span>
+<span class="cm"># … edit buggy.pen to fix line 14 …</span>
+bin/penelope edit snapshot.penz     <span class="cm"># resume on the new source</span>
+</code></pre>
+
+<p>Behind the scenes <code>src/live-edit.ts</code> recompiles the new source, then walks the old <code>VMState</code>: for each ip in the value stack, frames, return addresses, and pending effects, it looks up the corresponding source position and finds the matching opcode in the new program. If the opcode <em>kinds</em> don't match (e.g., old <code>PAUSE</code> → new <code>LOAD_CONST</code>), the remap is rejected so semantic drift can't silently corrupt the program. If everything lines up, the new state runs on the new bytecode.</p>
+
+<p>This isn't hot-reload-the-module. It's resume-the-exact-paused-frame against new code.</p>
+
+<h2>4.2 — Time-travel debugger</h2>
+
+<p>The DAP adapter (<code>src/dap.ts</code>) snapshots <code>VMState</code> before every advance and keeps a bounded history (1000 entries). Two new requests:</p>
+
+<ul>
+  <li><code>stepBack</code> — pop one entry and restore.</li>
+  <li><code>reverseContinue</code> — pop entries until a breakpoint reappears.</li>
+</ul>
+
+<p>The capability is advertised as <code>supportsStepBack: true</code>, so VSCode shows the reverse-step buttons automatically. Implementation cost: deep-clone <code>VMState</code> as JSON. Cheap because debug sessions are short.</p>
+
+<h2>4.3 — Self-hosting</h2>
+
+<p>The TS compiler is &lt;2000 lines. Reimplementing it in Penelope is a real test of whether the language is good enough to host its own toolchain. Three files in <code>std/</code> do the work:</p>
+
+<table>
+  <tr><th>File</th><th>Lines</th><th>Responsibility</th></tr>
+  <tr><td><code>std/iter.pen</code></td><td>~70</td><td><code>list_map</code>, <code>list_filter</code>, <code>list_reduce</code>, etc. — the HOFs the compiler needs.</td></tr>
+  <tr><td><code>std/lexer.pen</code></td><td>~290</td><td>Tokenizes a source string into <code>[{kind, line, col, …}, …]</code>.</td></tr>
+  <tr><td><code>std/parser.pen</code></td><td>~376</td><td>Pratt-style infix parser, produces <code>{rootId, nodes}</code> AST bundle.</td></tr>
+  <tr><td><code>std/compiler.pen</code></td><td>~380</td><td>AST → <code>{constants, code}</code> bytecode program.</td></tr>
+</table>
+
+<p>The whole thing was painful in instructive ways: Penelope (as it stood) had no unary <code>!</code>, didn't allow <code>else if</code> (you write <code>else { if (…) { … } else { … } }</code>), couldn't use a block as a primary expression in <code>match</code> arms. Each gap surfaced as a parse error in the pen-side code and was either worked around or fixed in the TS frontend. The result is a more honest language.</p>
+
+<h2>Bootstrap correctness — <code>pen self-test</code></h2>
+
+<p>Self-hosting only matters if pen-compile and ts-compile produce the same program. A new CLI command verifies this:</p>
+
+<pre><code>$ bin/penelope self-test
+  ✓ "let x = 42;"
+  ✓ "let f = fn(n) { n + 1 }; print(to_str(f(41)));"
+  ✓ "let r = if (1 &lt; 2) { \"yes\" } else { \"no\" };"
+  ✓ "let r = match 1 { 1 =&gt; \"one\", _ =&gt; \"other\" };"
+  ✓ "print(\"hello, self-hosted Penelope\");"
+
+5/5 bootstrap samples agree (pen-compiled ≡ ts-compiled)
+</code></pre>
+
+<p>For each sample, the same source is run through both compilers and the resulting <code>{constants, code}</code> are compared structurally (modulo inline-cache slots that the TS optimizer adds but the pen compiler doesn't). The extended test suite in <code>test/compiler-pen.test.ts</code> exercises 14 samples end-to-end, including running the pen-compiled bytecode and checking its printed output.</p>
+
+<h2>What's not done</h2>
+
+<p>The self-hosted compiler covers the subset the bootstrap proof needs: int/bool/string/unit literals, arithmetic, comparison, <code>fn</code>/<code>let</code>/<code>if</code>/<code>match</code>/<code>pause</code>/<code>print</code>, literal+var+wildcard patterns. It does <em>not</em> yet handle: template strings, or-patterns, guards, list/dict patterns, modules. Those still belong to the TS frontend. Closing that gap is the obvious next step, but the loop is already closed for the core language.</p>
+
+<h2>Test count</h2>
+
+<p>538 tests across 48 files, including new suites for live editing, reverse stepping, the stdlib expansion, and the pen-side lexer/parser/compiler comparisons.</p>
+
+</body>
+</html>

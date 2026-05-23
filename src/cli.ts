@@ -1,6 +1,6 @@
 // Penelope CLI. Phase 3 — bytecode VM.
 
-import { readFileSync, writeFileSync, copyFileSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, copyFileSync, existsSync, unlinkSync } from 'node:fs';
 import { resolve, dirname, basename, join } from 'node:path';
 import { tokenize, tokenizeWithComments } from './lexer.js';
 import { parse } from './parser.js';
@@ -336,6 +336,71 @@ function cmdGraph(args: ParsedArgs): number {
   return 0;
 }
 
+function cmdSelfTest(_args: ParsedArgs): number {
+  // Runs the same source through both the TS compiler and the Penelope-implemented
+  // compiler (std/parser.pen + std/compiler.pen) and verifies the bytecode matches.
+  // This is the bootstrap-correctness check: pen-compiled === ts-compiled.
+  const samples = [
+    'let x = 42;',
+    'let f = fn(n) { n + 1 }; print(to_str(f(41)));',
+    'let r = if (1 < 2) { "yes" } else { "no" };',
+    'let r = match 1 { 1 => "one", _ => "other" };',
+    'print("hello, self-hosted Penelope");',
+  ];
+  const parserPath = resolve('std/parser.pen');
+  const compilerPath = resolve('std/compiler.pen');
+  if (!existsSync(parserPath) || !existsSync(compilerPath)) {
+    process.stderr.write(`self-test: std/parser.pen or std/compiler.pen not found (cwd=${process.cwd()})\n`);
+    return 2;
+  }
+  const normOp = (op: any[]): any[] => {
+    if (op[0] === 'LOAD_VAR') return [op[0], op[1], op[2] ?? null];
+    if (op[0] === 'EFFECT') return [op[0], op[1], op[2], op[3] ?? null];
+    return op;
+  };
+  let passed = 0;
+  let failed = 0;
+  const tmpDriver = join(process.cwd(), `.pen-self-test-driver.pen`);
+  try {
+    for (const source of samples) {
+      const ts = compile(parse(tokenize(source)));
+      const driverSrc =
+        `import "${parserPath}";\nimport "${compilerPath}";\n` +
+        `let toks = pen_tokenize(${JSON.stringify(source)});\n` +
+        `let ast = pen_parse(toks);\n` +
+        `let prog = pen_compile(ast);\n` +
+        `print(to_str(prog));\n`;
+      writeFileSync(tmpDriver, driverSrc);
+      const lines: string[] = [];
+      const origLog = console.log;
+      console.log = (...args: any[]) => { lines.push(args.join(' ')); };
+      try {
+        const expanded = loadSource(tmpDriver);
+        run(compile(parse(tokenize(expanded))));
+      } finally {
+        console.log = origLog;
+      }
+      let ok = false;
+      try {
+        const pen = JSON.parse(lines[0] ?? '{}');
+        ok = JSON.stringify({ c: ts.constants, k: ts.code.map(normOp) }) ===
+             JSON.stringify({ c: pen.constants, k: pen.code.map(normOp) });
+      } catch { ok = false; }
+      if (ok) {
+        passed++;
+        process.stdout.write(`  ✓ ${JSON.stringify(source)}\n`);
+      } else {
+        failed++;
+        process.stderr.write(`  ✗ ${JSON.stringify(source)}\n`);
+      }
+    }
+  } finally {
+    try { unlinkSync(tmpDriver); } catch {}
+  }
+  process.stdout.write(`\n${passed}/${samples.length} bootstrap samples agree (pen-compiled ≡ ts-compiled)\n`);
+  return failed === 0 ? 0 : 1;
+}
+
 function cmdEdit(args: ParsedArgs): number {
   const snapPath = args.positional[1];
   if (!snapPath) { process.stderr.write('usage: pen edit <file.penz>\n'); return 2; }
@@ -664,7 +729,8 @@ export async function main(argv: string[]): Promise<number> {
   if (sub === 'graph')   return cmdGraph(args);
   if (sub === 'new')     return cmdNew(args);
   if (sub === 'edit')    return cmdEdit(args);
-  process.stderr.write(`usage: penelope <build|exec|run|resume|fork|disasm|bench|inspect|repl|check|profile|fmt|test|doc|graph|new|edit> [-O0|-O1|-O2] [args]\n`);
+  if (sub === 'self-test') return cmdSelfTest(args);
+  process.stderr.write(`usage: penelope <build|exec|run|resume|fork|disasm|bench|inspect|repl|check|profile|fmt|test|doc|graph|new|edit|self-test> [-O0|-O1|-O2] [args]\n`);
   return 2;
 }
 
