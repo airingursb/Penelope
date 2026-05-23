@@ -7,7 +7,7 @@ export type TokenKind =
   | 'PLUS' | 'MINUS' | 'STAR' | 'SLASH'
   | 'LT' | 'GT' | 'LE' | 'GE' | 'EQ_EQ' | 'BANG_EQ'
   | 'EQ' | 'FAT_ARROW'
-  | 'LPAREN' | 'RPAREN' | 'LBRACE' | 'RBRACE' | 'COMMA' | 'SEMI'
+  | 'LPAREN' | 'RPAREN' | 'LBRACE' | 'RBRACE' | 'LBRACK' | 'RBRACK' | 'COMMA' | 'SEMI' | 'COLON' | 'PIPE' | 'DOTDOTDOT'
   | 'EOF';
 
 export type TemplatePart = { kind: 'text'; value: string } | { kind: 'expr'; source: string };
@@ -200,12 +200,20 @@ export function tokenizeWithComments(source: string): { tokens: Token[]; comment
       }
     }
 
+    // three-char operators
+    if (i + 2 < source.length && source[i] === '.' && source[i + 1] === '.' && source[i + 2] === '.') {
+      advance(); advance(); advance();
+      tokens.push({ kind: 'DOTDOTDOT', line: startLine, col: startCol });
+      continue;
+    }
+
     // single-char operators and punctuation
     const oneChar: Record<string, TokenKind> = {
       '+': 'PLUS', '-': 'MINUS', '*': 'STAR', '/': 'SLASH',
       '<': 'LT', '>': 'GT', '=': 'EQ',
       '(': 'LPAREN', ')': 'RPAREN', '{': 'LBRACE', '}': 'RBRACE',
-      ',': 'COMMA', ';': 'SEMI',
+      '[': 'LBRACK', ']': 'RBRACK',
+      ',': 'COMMA', ';': 'SEMI', ':': 'COLON', '|': 'PIPE',
     };
     if (oneChar[c]) {
       advance();

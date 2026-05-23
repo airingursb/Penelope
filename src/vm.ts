@@ -378,6 +378,16 @@ function applyBuiltin(name: string, args: Value[]): Value {
     if (args.length !== 1 || args[0].tag !== 'list') throw new Error(`list_len(l: list)`);
     return { tag: 'int', v: args[0].items.length };
   }
+  if (name === 'list_slice') {
+    if (args.length !== 3 || args[0].tag !== 'list' || args[1].tag !== 'int' || args[2].tag !== 'int') {
+      throw new Error(`list_slice(l: list, start: int, end: int)`);
+    }
+    return { tag: 'list', items: args[0].items.slice(args[1].v, args[2].v) };
+  }
+  if (name === 'type_of') {
+    if (args.length !== 1) throw new Error(`type_of(x)`);
+    return { tag: 'str', v: args[0].tag };
+  }
   // ── dict builtins ────────────────────────────────────────────────────────
   if (name === 'dict_new') {
     if (args.length !== 0) throw new Error(`dict_new()`);

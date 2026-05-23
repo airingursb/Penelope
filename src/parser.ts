@@ -216,9 +216,15 @@ function parseMatch(c: Cursor, b: Builder): ASTNode {
   const arms: import('./ast.js').MatchArm[] = [];
   while (c.peekKind() !== 'RBRACE') {
     const pattern = parsePattern(c);
+    let guardId: import('./ast.js').NodeId | undefined;
+    if (c.peekKind() === 'IF') {
+      c.eat('IF');
+      const g = parseExpression(c, b);
+      guardId = g.id;
+    }
     c.eat('FAT_ARROW');
     const body = parseExpression(c, b);
-    arms.push({ pattern, bodyId: body.id });
+    arms.push(guardId !== undefined ? { pattern, bodyId: body.id, guardId } : { pattern, bodyId: body.id });
     if (c.peekKind() === 'COMMA') c.eat('COMMA');
   }
   c.eat('RBRACE');
@@ -231,14 +237,82 @@ function parseMatch(c: Cursor, b: Builder): ASTNode {
 }
 
 function parsePattern(c: Cursor): import('./ast.js').Pattern {
+  const first = parseAtomPattern(c);
+  if (c.peekKind() !== 'PIPE') return first;
+  const alternatives: import('./ast.js').Pattern[] = [first];
+  while (c.peekKind() === 'PIPE') {
+    c.eat('PIPE');
+    alternatives.push(parseAtomPattern(c));
+  }
+  return { kind: 'or', patterns: alternatives };
+}
+
+function parseAtomPattern(c: Cursor): import('./ast.js').Pattern {
   const t = c.peek();
   if (t.kind === 'INT') {
     c.eat('INT');
     return { kind: 'int', value: t.value! };
   }
+  if (t.kind === 'MINUS') {
+    c.eat('MINUS');
+    const next = c.peek();
+    if (next.kind !== 'INT') throw new Error(`parser: expected INT after - in pattern at line ${next.line} col ${next.col}`);
+    c.eat('INT');
+    return { kind: 'int', value: -next.value! };
+  }
   if (t.kind === 'TRUE')  { c.eat('TRUE');  return { kind: 'bool', value: true  }; }
   if (t.kind === 'FALSE') { c.eat('FALSE'); return { kind: 'bool', value: false }; }
   if (t.kind === 'STRING') { c.eat('STRING'); return { kind: 'str', value: t.text! }; }
+  if (t.kind === 'LPAREN') {
+    c.eat('LPAREN');
+    if (c.peekKind() === 'RPAREN') {
+      c.eat('RPAREN');
+      return { kind: 'unit' };
+    }
+    throw new Error(`parser: only () is supported inside paren-pattern at line ${t.line} col ${t.col}`);
+  }
+  if (t.kind === 'LBRACK') {
+    c.eat('LBRACK');
+    const items: import('./ast.js').Pattern[] = [];
+    let rest: string | undefined;
+    while (c.peekKind() !== 'RBRACK') {
+      if (c.peekKind() === 'DOTDOTDOT') {
+        c.eat('DOTDOTDOT');
+        const restTok = c.peek();
+        if (restTok.kind !== 'IDENT') throw new Error(`parser: expected ident after ... in list pattern at line ${restTok.line} col ${restTok.col}`);
+        c.eat('IDENT');
+        rest = restTok.text!;
+        break;
+      }
+      items.push(parsePattern(c));
+      if (c.peekKind() === 'COMMA') c.eat('COMMA');
+    }
+    c.eat('RBRACK');
+    return rest !== undefined ? { kind: 'list', items, rest } : { kind: 'list', items };
+  }
+  if (t.kind === 'LBRACE') {
+    c.eat('LBRACE');
+    const entries: Array<{ key: string; pattern: import('./ast.js').Pattern }> = [];
+    let rest = false;
+    while (c.peekKind() !== 'RBRACE') {
+      if (c.peekKind() === 'DOTDOTDOT') {
+        c.eat('DOTDOTDOT');
+        rest = true;
+        break;
+      }
+      const keyTok = c.peek();
+      let key: string;
+      if (keyTok.kind === 'STRING') { c.eat('STRING'); key = keyTok.text!; }
+      else if (keyTok.kind === 'IDENT') { c.eat('IDENT'); key = keyTok.text!; }
+      else throw new Error(`parser: expected key (string or ident) in dict pattern at line ${keyTok.line} col ${keyTok.col}`);
+      c.eat('COLON');
+      const subPat = parsePattern(c);
+      entries.push({ key, pattern: subPat });
+      if (c.peekKind() === 'COMMA') c.eat('COMMA');
+    }
+    c.eat('RBRACE');
+    return rest ? { kind: 'dict', entries, rest: true } : { kind: 'dict', entries };
+  }
   if (t.kind === 'IDENT') {
     c.eat('IDENT');
     if (t.text === '_') return { kind: 'wildcard' };
