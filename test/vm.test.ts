@@ -304,3 +304,50 @@ test('--no-replay re-executes committed print', () => {
   // With noReplay=true the existing entry is ignored on replay and a new entry is appended.
   expect(r.state.effects.length).toBe(2);
 });
+
+test('block-local var does not leak out', () => {
+  const prog: Program = {
+    version: 1,
+    constants: [{ tag: 'int', v: 1 }, { tag: 'int', v: 2 }],
+    code: [
+      ['LOAD_CONST', 0], ['STORE_VAR', 'x'],
+      ['ENTER_BLOCK'],
+      ['LOAD_CONST', 1], ['STORE_VAR', 'x'],
+      ['PUSH_UNIT'],
+      ['EXIT_BLOCK'],
+      ['POP'],
+      ['LOAD_VAR', 'x', null],
+      ['HALT'],
+    ],
+  };
+  expect(run(prog).state.valueStack).toEqual([{ tag: 'int', v: 1 }]);
+});
+
+test('trailing expr survives EXIT_BLOCK', () => {
+  const prog: Program = {
+    version: 1,
+    constants: [{ tag: 'int', v: 42 }],
+    code: [
+      ['ENTER_BLOCK'],
+      ['LOAD_CONST', 0],
+      ['EXIT_BLOCK'],
+      ['HALT'],
+    ],
+  };
+  expect(run(prog).state.valueStack).toEqual([{ tag: 'int', v: 42 }]);
+});
+
+test('inner block can read outer binding', () => {
+  const prog: Program = {
+    version: 1,
+    constants: [{ tag: 'int', v: 5 }],
+    code: [
+      ['LOAD_CONST', 0], ['STORE_VAR', 'x'],
+      ['ENTER_BLOCK'],
+      ['LOAD_VAR', 'x', null],
+      ['EXIT_BLOCK'],
+      ['HALT'],
+    ],
+  };
+  expect(run(prog).state.valueStack).toEqual([{ tag: 'int', v: 5 }]);
+});
