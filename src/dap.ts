@@ -18,7 +18,7 @@ import { resolve } from 'node:path';
 import { tokenize } from './lexer.js';
 import { parse } from './parser.js';
 import { compile } from './compiler.js';
-import { freshState, runUntilBreakpoint } from './vm.js';
+import { freshState, runUntilBreakpoint, runUntilStep, type StepMode } from './vm.js';
 import type { Program } from './bytecode.js';
 import type { VMState } from './snapshot.js';
 import type { Value } from './ast.js';
@@ -96,6 +96,9 @@ export function handleMessage(msg: DapMessage): void {
       reply(msg, {
         supportsConfigurationDoneRequest: true,
         supportsBreakpointLocationsRequest: false,
+        supportsStepInTargetsRequest: false,
+        supportsRestartRequest: true,
+        supportsStepBack: false,
       });
       event('initialized');
       break;
@@ -143,6 +146,39 @@ export function handleMessage(msg: DapMessage): void {
     case 'continue': {
       reply(msg, { allThreadsContinued: true });
       runToNextStop('breakpoint');
+      break;
+    }
+    case 'next': {
+      reply(msg);
+      runStep('over', 'step');
+      break;
+    }
+    case 'stepIn': {
+      reply(msg);
+      runStep('in', 'step');
+      break;
+    }
+    case 'stepOut': {
+      reply(msg);
+      runStep('out', 'step');
+      break;
+    }
+    case 'restart': {
+      // Re-load + re-run from the current source.
+      if (sourcePath) {
+        try {
+          const source = readFileSync(resolve(sourcePath), 'utf8');
+          prog = compile(parse(tokenize(source)));
+          state = freshState();
+          buildSourceLineMap();
+          reply(msg);
+          runToNextStop('entry');
+        } catch (e) {
+          reply(msg, { error: (e as Error).message }, false);
+        }
+      } else {
+        reply(msg, { error: 'no program loaded' }, false);
+      }
       break;
     }
     case 'threads': {
@@ -235,6 +271,24 @@ function runToNextStop(reason: 'entry' | 'breakpoint'): void {
   if (!prog || !state) return;
   try {
     const r = runUntilBreakpoint(prog, state, breakpointIps);
+    if (r.status === 'halted') {
+      event('output', { category: 'console', output: '\n[program halted]\n' });
+      event('terminated');
+    } else if (r.status === 'paused') {
+      event('stopped', { reason: 'pause', threadId: 1, allThreadsStopped: true });
+    } else if (r.status === 'breakpoint') {
+      event('stopped', { reason, threadId: 1, allThreadsStopped: true });
+    }
+  } catch (e) {
+    event('output', { category: 'stderr', output: `runtime error: ${(e as Error).message}\n` });
+    event('terminated');
+  }
+}
+
+function runStep(mode: StepMode, reason: 'step' | 'breakpoint'): void {
+  if (!prog || !state) return;
+  try {
+    const r = runUntilStep(prog, state, mode, breakpointIps);
     if (r.status === 'halted') {
       event('output', { category: 'console', output: '\n[program halted]\n' });
       event('terminated');
