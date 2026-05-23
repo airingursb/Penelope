@@ -13,6 +13,16 @@ export type RunResult =
   | { status: 'halted'; state: VMState }
   | { status: 'paused'; state: VMState };
 
+export type ProfileData = {
+  opcodeCount: Record<string, number>;
+  ipCount: Record<number, number>;
+  totalNs: bigint;
+};
+
+export function makeProfile(): ProfileData {
+  return { opcodeCount: {}, ipCount: {}, totalNs: 0n };
+}
+
 export function freshState(): VMState {
   return {
     ip: 0,
@@ -22,17 +32,26 @@ export function freshState(): VMState {
   };
 }
 
-export function run(prog: Program, initialState?: VMState): RunResult {
+export function run(prog: Program, initialState?: VMState, profile?: ProfileData): RunResult {
   const state = initialState ?? freshState();
-  return runUntilStop(prog, state);
+  const t0 = profile ? process.hrtime.bigint() : 0n;
+  try {
+    return runUntilStop(prog, state, profile);
+  } finally {
+    if (profile) profile.totalNs += process.hrtime.bigint() - t0;
+  }
 }
 
-function runUntilStop(prog: Program, state: VMState): RunResult {
-  // Track how many committed entries per ip we've already replayed this run.
+function runUntilStop(prog: Program, state: VMState, profile?: ProfileData): RunResult {
   const replayIdx = new Map<number, number>();
   while (true) {
     const op = prog.code[state.ip];
     if (!op) throw new Error(`VM: IP ${state.ip} out of bounds`);
+    if (profile) {
+      const name = op[0];
+      profile.opcodeCount[name] = (profile.opcodeCount[name] ?? 0) + 1;
+      profile.ipCount[state.ip] = (profile.ipCount[state.ip] ?? 0) + 1;
+    }
     switch (op[0]) {
       case 'HALT': return { status: 'halted', state };
       case 'LOAD_CONST': {
@@ -201,14 +220,34 @@ function applyBinOp(o: string, l: Value, r: Value): Value {
     return { tag: 'bool', v: l.v >= r.v };
   }
   if (o === '==' || o === '!=') {
-    if (l.tag !== r.tag) throw new Error(`BIN_OP ${o}: type mismatch`);
-    let eq: boolean;
-    if (l.tag === 'unit') eq = true;
-    else if (l.tag === 'closure' || (r as any).tag === 'closure') throw new Error(`BIN_OP ${o}: closures not comparable`);
-    else eq = (l as any).v === (r as any).v;
+    const eq = valueEquals(l, r);
     return { tag: 'bool', v: o === '==' ? eq : !eq };
   }
   throw new Error(`BIN_OP: unknown op '${o}'`);
+}
+
+function valueEquals(a: Value, b: Value): boolean {
+  if (a.tag !== b.tag) return false;
+  if (a.tag === 'unit') return true;
+  if (a.tag === 'int'  && b.tag === 'int')  return a.v === b.v;
+  if (a.tag === 'bool' && b.tag === 'bool') return a.v === b.v;
+  if (a.tag === 'str'  && b.tag === 'str')  return a.v === b.v;
+  if (a.tag === 'list' && b.tag === 'list') {
+    if (a.items.length !== b.items.length) return false;
+    for (let i = 0; i < a.items.length; i++) if (!valueEquals(a.items[i], b.items[i])) return false;
+    return true;
+  }
+  if (a.tag === 'dict' && b.tag === 'dict') {
+    const ak = Object.keys(a.entries).sort();
+    const bk = Object.keys(b.entries).sort();
+    if (ak.length !== bk.length) return false;
+    for (let i = 0; i < ak.length; i++) {
+      if (ak[i] !== bk[i]) return false;
+      if (!valueEquals(a.entries[ak[i]], b.entries[bk[i]])) return false;
+    }
+    return true;
+  }
+  throw new Error(`equality on ${a.tag} not supported`);
 }
 
 function applyBuiltin(name: string, args: Value[]): Value {
@@ -218,18 +257,64 @@ function applyBuiltin(name: string, args: Value[]): Value {
   }
   if (name === 'to_str') {
     if (args.length !== 1) throw new Error(`to_str(x)`);
-    const a = args[0];
-    if (a.tag === 'int')  return { tag: 'str', v: String(a.v) };
-    if (a.tag === 'bool') return { tag: 'str', v: a.v ? 'true' : 'false' };
-    if (a.tag === 'str')  return { tag: 'str', v: a.v };
-    if (a.tag === 'unit') return { tag: 'str', v: 'unit' };
-    throw new Error(`to_str: closures not stringifiable`);
+    return { tag: 'str', v: valueToString(args[0]) };
   }
   if (name === 'str_slice') {
     if (args.length !== 3 || args[0].tag !== 'str' || args[1].tag !== 'int' || args[2].tag !== 'int') {
       throw new Error(`str_slice(s, start, end)`);
     }
     return { tag: 'str', v: args[0].v.slice(args[1].v, args[2].v) };
+  }
+  // ── list builtins ────────────────────────────────────────────────────────
+  if (name === 'list_new') {
+    return { tag: 'list', items: args.slice() };
+  }
+  if (name === 'list_push') {
+    if (args.length !== 2 || args[0].tag !== 'list') throw new Error(`list_push(l: list, x): expected list arg`);
+    return { tag: 'list', items: [...args[0].items, args[1]] };
+  }
+  if (name === 'list_get') {
+    if (args.length !== 2 || args[0].tag !== 'list' || args[1].tag !== 'int') throw new Error(`list_get(l: list, i: int)`);
+    const items = args[0].items;
+    const i = args[1].v;
+    if (i < 0 || i >= items.length) throw new Error(`list_get: index ${i} out of bounds [0, ${items.length})`);
+    return items[i];
+  }
+  if (name === 'list_set') {
+    if (args.length !== 3 || args[0].tag !== 'list' || args[1].tag !== 'int') throw new Error(`list_set(l: list, i: int, v)`);
+    const items = args[0].items;
+    const i = args[1].v;
+    if (i < 0 || i >= items.length) throw new Error(`list_set: index ${i} out of bounds [0, ${items.length})`);
+    const next = items.slice();
+    next[i] = args[2];
+    return { tag: 'list', items: next };
+  }
+  if (name === 'list_len') {
+    if (args.length !== 1 || args[0].tag !== 'list') throw new Error(`list_len(l: list)`);
+    return { tag: 'int', v: args[0].items.length };
+  }
+  // ── dict builtins ────────────────────────────────────────────────────────
+  if (name === 'dict_new') {
+    if (args.length !== 0) throw new Error(`dict_new()`);
+    return { tag: 'dict', entries: {} };
+  }
+  if (name === 'dict_set') {
+    if (args.length !== 3 || args[0].tag !== 'dict' || args[1].tag !== 'str') throw new Error(`dict_set(d: dict, k: str, v)`);
+    return { tag: 'dict', entries: { ...args[0].entries, [args[1].v]: args[2] } };
+  }
+  if (name === 'dict_get') {
+    if (args.length !== 2 || args[0].tag !== 'dict' || args[1].tag !== 'str') throw new Error(`dict_get(d: dict, k: str)`);
+    const v = args[0].entries[args[1].v];
+    if (v === undefined) throw new Error(`dict_get: key '${args[1].v}' not found`);
+    return v;
+  }
+  if (name === 'dict_has') {
+    if (args.length !== 2 || args[0].tag !== 'dict' || args[1].tag !== 'str') throw new Error(`dict_has(d: dict, k: str)`);
+    return { tag: 'bool', v: args[1].v in args[0].entries };
+  }
+  if (name === 'dict_keys') {
+    if (args.length !== 1 || args[0].tag !== 'dict') throw new Error(`dict_keys(d: dict)`);
+    return { tag: 'list', items: Object.keys(args[0].entries).sort().map(k => ({ tag: 'str' as const, v: k })) };
   }
   throw new Error(`unknown builtin '${name}'`);
 }
@@ -337,5 +422,17 @@ function valueToString(v: Value): string {
   if (v.tag === 'bool') return v.v ? 'true' : 'false';
   if (v.tag === 'str')  return v.v;
   if (v.tag === 'unit') return '()';
-  return '<fn>';
+  if (v.tag === 'closure') return '<fn>';
+  if (v.tag === 'list') return '[' + v.items.map(valueRepr).join(', ') + ']';
+  if (v.tag === 'dict') {
+    const keys = Object.keys(v.entries).sort();
+    return '{' + keys.map(k => `${JSON.stringify(k)}: ${valueRepr(v.entries[k])}`).join(', ') + '}';
+  }
+  return '<unknown>';
+}
+
+// Like valueToString but with strings quoted — used inside collections.
+function valueRepr(v: Value): string {
+  if (v.tag === 'str') return JSON.stringify(v.v);
+  return valueToString(v);
 }

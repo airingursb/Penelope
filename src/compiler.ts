@@ -9,6 +9,8 @@ import { EFFECT_NAMES } from './effects.js';
 
 const PURE_BUILTINS: ReadonlySet<string> = new Set([
   'str_length', 'str_slice', 'to_str',
+  'list_new', 'list_push', 'list_get', 'list_set', 'list_len',
+  'dict_new', 'dict_set', 'dict_get', 'dict_has', 'dict_keys',
 ]);
 
 export function compile(ast: ASTBundle): Program {

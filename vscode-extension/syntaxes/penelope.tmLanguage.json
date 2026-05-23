@@ -1,0 +1,48 @@
+{
+  "name": "Penelope",
+  "scopeName": "source.penelope",
+  "fileTypes": ["pen"],
+  "patterns": [
+    { "include": "#comment" },
+    { "include": "#string" },
+    { "include": "#number" },
+    { "include": "#keyword" },
+    { "include": "#builtin" },
+    { "include": "#operator" },
+    { "include": "#identifier" }
+  ],
+  "repository": {
+    "comment": {
+      "match": "//.*$",
+      "name": "comment.line.double-slash.penelope"
+    },
+    "string": {
+      "name": "string.quoted.double.penelope",
+      "begin": "\"",
+      "end": "\"",
+      "patterns": [
+        { "match": "\\\\.", "name": "constant.character.escape.penelope" }
+      ]
+    },
+    "number": {
+      "match": "\\b-?\\d+\\b",
+      "name": "constant.numeric.integer.penelope"
+    },
+    "keyword": {
+      "match": "\\b(let|fn|if|else|true|false|pause)\\b",
+      "name": "keyword.control.penelope"
+    },
+    "builtin": {
+      "match": "\\b(print|net_fetch|now|random_int|read_file|write_file|wait_until|wait_for|str_length|str_slice|to_str|list_new|list_push|list_get|list_set|list_len|dict_new|dict_set|dict_get|dict_has|dict_keys)\\b(?=\\s*\\()",
+      "name": "support.function.builtin.penelope"
+    },
+    "operator": {
+      "match": "(\\+|-|\\*|/|<=|>=|<|>|==|!=|=)",
+      "name": "keyword.operator.penelope"
+    },
+    "identifier": {
+      "match": "\\b[a-zA-Z_][a-zA-Z0-9_]*\\b",
+      "name": "variable.other.penelope"
+    }
+  }
+}

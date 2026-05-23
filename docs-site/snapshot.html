@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Penelope — Snapshot v3</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <h1>Snapshot v3 format</h1>
+  <p class="tagline">What "execution is data" looks like on disk.</p>
+  <nav>
+    <a href="index.html">Overview</a>
+    <a href="tour.html">Tour</a>
+    <a href="stdlib.html">Stdlib</a>
+    <a href="cli.html">CLI</a>
+    <a href="snapshot.html" class="active">Snapshot v3</a>
+    <a href="https://github.com/airingursb/Penelope">GitHub →</a>
+  </nav>
+</header>
+
+<h2>Shape</h2>
+
+<pre><code>{
+  "version": 3,
+  "programPath": "fib.penc",
+  "programHash": "sha256:abc...",
+  "pausedAtIP": 42,
+  "pausedAtMs": 1716480000000,
+  "state": {
+    "ip": 42,
+    "valueStack": [...],
+    "frames": [
+      { "bindings": { "x": { "tag": "int", "v": 10 } } }
+    ],
+    "effects": [...],
+    "timeOverride": null,
+    "noReplay": false
+  }
+}</code></pre>
+
+<h2>Effect entries</h2>
+
+<pre><code>{
+  "ip": 3,
+  "invocationCount": 0,
+  "effect": "print",
+  "recordedValue": { "tag": "unit" },
+  "status": "committed",
+  "eventName": "approval"   <span class="cm">// only for wait_for</span>,
+  "waitUntilMs": 1716480060000  <span class="cm">// only for wait_until</span>
+}</code></pre>
+
+<h2>Migration</h2>
+
+<p>Snapshot v3 is NOT migratable from v2. Reasons:</p>
+<ul>
+  <li>v2 stored Phase 2 step-machine state (control stack + scope graph). v3 stores Phase 3 VM state (ip + value stack + frame chain).</li>
+  <li>v2 effect entries were keyed by AST <code>nodeId</code>; v3 keys by bytecode <code>ip</code>.</li>
+</ul>
+<p>If you have a v2 snapshot you need to keep going: re-run from source with Phase 3 binaries (don't try to resume).</p>
+
+<h2>Why JSON</h2>
+
+<p>JSON is verbose, but it makes snapshots:</p>
+<ul>
+  <li><strong>Inspectable</strong>: <code>cat foo.penz | jq .</code></li>
+  <li><strong>Diffable</strong>: a snapshot's diff is its execution diff</li>
+  <li><strong>Forkable</strong>: <code>cp foo.penz bar.penz</code> creates a real fork</li>
+  <li><strong>Migratable to other runtimes</strong>: in principle (not yet implemented)</li>
+</ul>
+
+<h2>Hash verification</h2>
+
+<p>Every snapshot stores the <code>sha256</code> of its <code>.penc</code>. On resume, the runtime verifies the bytecode hasn't changed. Mismatched hash → resume refused with a clear error. (Phase 4 "live editing" will lift this restriction in controlled ways.)</p>
+
+<footer>
+  © 2026 Airing · <a href="https://github.com/airingursb/Penelope">github.com/airingursb/Penelope</a>
+</footer>
+</body>
+</html>

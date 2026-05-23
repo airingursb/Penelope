@@ -41,6 +41,8 @@ export type Value =
   | { tag: 'bool';    v: boolean }
   | { tag: 'closure'; params: string[]; bodyIp: number; bodyLen: number; capturedFrameIdx: number }
   | { tag: 'unit' }
-  | { tag: 'str';     v: string };
+  | { tag: 'str';     v: string }
+  | { tag: 'list';    items: Value[] }
+  | { tag: 'dict';    entries: Record<string, Value> };
 
 export type ScopeId = string;  // e.g., "s0", "s1", ...

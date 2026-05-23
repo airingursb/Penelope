@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Penelope — Tour</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <h1>Penelope — Tour</h1>
+  <p class="tagline">The whole language in 10 minutes.</p>
+  <nav>
+    <a href="index.html">Overview</a>
+    <a href="tour.html" class="active">Tour</a>
+    <a href="stdlib.html">Stdlib</a>
+    <a href="cli.html">CLI</a>
+    <a href="snapshot.html">Snapshot v3</a>
+    <a href="https://github.com/airingursb/Penelope">GitHub →</a>
+  </nav>
+</header>
+
+<h2>Values</h2>
+<p>Penelope has seven runtime value tags: <code>int</code>, <code>bool</code>, <code>str</code>, <code>unit</code>, <code>closure</code>, <code>list</code>, <code>dict</code>.</p>
+<pre><code><span class="num">42</span>           <span class="cm">// int</span>
+<span class="kw">true</span>         <span class="cm">// bool</span>
+<span class="str">"hello"</span>      <span class="cm">// str</span>
+<span class="bi">list_new</span>(<span class="num">1</span>, <span class="num">2</span>, <span class="num">3</span>)              <span class="cm">// list</span>
+<span class="bi">dict_set</span>(<span class="bi">dict_new</span>(), <span class="str">"k"</span>, <span class="num">1</span>)  <span class="cm">// dict</span>
+<span class="kw">fn</span>(x) { x + <span class="num">1</span> }                <span class="cm">// closure</span></code></pre>
+
+<h2>Let bindings</h2>
+<pre><code><span class="kw">let</span> x = <span class="num">10</span>;
+<span class="kw">let</span> y = x + <span class="num">5</span>;
+<span class="bi">print</span>(<span class="bi">to_str</span>(y));  <span class="cm">// 15</span></code></pre>
+
+<h2>Functions are values</h2>
+<pre><code><span class="kw">let</span> add = <span class="kw">fn</span>(a, b) { a + b };
+<span class="bi">print</span>(<span class="bi">to_str</span>(add(<span class="num">2</span>, <span class="num">3</span>)));  <span class="cm">// 5</span>
+
+<span class="cm">// Closures capture lexical scope</span>
+<span class="kw">let</span> mk_counter = <span class="kw">fn</span>(start) {
+  <span class="kw">fn</span>(n) { start + n }
+};
+<span class="kw">let</span> add10 = mk_counter(<span class="num">10</span>);
+<span class="bi">print</span>(<span class="bi">to_str</span>(add10(<span class="num">5</span>)));  <span class="cm">// 15</span></code></pre>
+
+<h2>Conditionals</h2>
+<pre><code><span class="kw">let</span> abs = <span class="kw">fn</span>(n) {
+  <span class="kw">if</span> (n &lt; <span class="num">0</span>) { <span class="num">0</span> - n } <span class="kw">else</span> { n }
+};
+<span class="bi">print</span>(<span class="bi">to_str</span>(abs(<span class="num">0</span> - <span class="num">7</span>)));  <span class="cm">// 7</span></code></pre>
+
+<h2>The headline feature: pause</h2>
+
+<p><code>pause</code> is a runtime primitive. When evaluated, it serializes the entire program state and exits the process. A later <code>pen resume</code> picks up exactly where it left off.</p>
+
+<pre><code><span class="cm">// pause.pen</span>
+<span class="kw">let</span> x = <span class="num">10</span>;
+<span class="kw">let</span> y = <span class="kw">pause</span>;
+<span class="bi">print</span>(<span class="bi">to_str</span>(x + y));</code></pre>
+
+<pre><code>$ bin/penelope run pause.pen
+paused at ip 2 → pause.penz
+
+<span class="cm"># process exits — could be hours, days, years later</span>
+
+$ bin/penelope resume pause.penz
+10
+<span class="cm"># x survived; bare pause returns unit; the print fires on resume</span></code></pre>
+
+<h2>Effects: I/O that survives pause</h2>
+
+<p>All side effects (print, file I/O, network, time, randomness) flow through an <strong>effect log</strong>. On resume, completed effects are <em>replayed from the log</em> — they don't re-execute. This guarantees idempotency across pause boundaries.</p>
+
+<pre><code><span class="kw">let</span> response = <span class="bi">net_fetch</span>(<span class="str">"https://example.test/decision"</span>);
+<span class="kw">let</span> ok = <span class="bi">wait_for</span>(<span class="str">"approval"</span>);
+<span class="bi">write_file</span>(<span class="str">"/tmp/audit.log"</span>, response);
+<span class="bi">print</span>(<span class="str">"audit complete"</span>);</code></pre>
+
+<p>The 8 effects: <code>print</code>, <code>net_fetch</code>, <code>now</code>, <code>random_int</code>, <code>read_file</code>, <code>write_file</code>, <code>wait_until</code>, <code>wait_for</code>.</p>
+
+<h2>wait_for: external value injection</h2>
+
+<p>When a program hits <code>wait_for(name)</code>, the runtime pauses. A later <code>pen resume --event name=value</code> injects the value and resumes.</p>
+
+<pre><code>$ pen run hitl.pen          <span class="cm"># pauses on wait_for("approval")</span>
+$ pen resume hitl.penz --event approval=true</code></pre>
+
+<h2>Forking: two futures from one snapshot</h2>
+
+<pre><code>$ pen fork pause.penz pause-copy.penz
+<span class="cm"># Now you have two snapshots. Resume each independently — they diverge.</span></code></pre>
+
+<h2>Time travel via inspect</h2>
+
+<pre><code>$ pen inspect pause.penz
+Snapshot: pause.penz
+  version: 3
+  pausedAtIP: 2  (line 3 col 9)
+  frames: 1
+    [0] bindings: { x }
+  effects: 0 entries
+  value stack (0): (empty)</code></pre>
+
+<h2>Optimizations</h2>
+
+<p>Compile with <code>-O2</code> to enable all 5 passes (constant folding, dead-code elimination, inline caches, function inlining, peephole):</p>
+
+<pre><code>$ pen build -O2 fib.pen
+wrote fib.penc (14 opcodes, 2 constants, -O2)
+$ pen disasm fib.penc</code></pre>
+
+<footer>
+  © 2026 Airing · <a href="https://github.com/airingursb/Penelope">github.com/airingursb/Penelope</a>
+</footer>
+</body>
+</html>

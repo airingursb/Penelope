@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Penelope — Stdlib reference</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <h1>Stdlib reference</h1>
+  <p class="tagline">All built-in functions, grouped by category.</p>
+  <nav>
+    <a href="index.html">Overview</a>
+    <a href="tour.html">Tour</a>
+    <a href="stdlib.html" class="active">Stdlib</a>
+    <a href="cli.html">CLI</a>
+    <a href="snapshot.html">Snapshot v3</a>
+    <a href="https://github.com/airingursb/Penelope">GitHub →</a>
+  </nav>
+</header>
+
+<h2>Effects (recorded in effect log)</h2>
+
+<table>
+<tr><th>Function</th><th>Signature</th><th>Notes</th></tr>
+<tr><td><code>print</code></td><td><code>(s: str) -&gt; unit</code></td><td>Replay-safe; written once even across resumes</td></tr>
+<tr><td><code>net_fetch</code></td><td><code>(url: str) -&gt; str</code></td><td>Records body to log; replay does not hit network</td></tr>
+<tr><td><code>now</code></td><td><code>() -&gt; int</code></td><td>Records first call; replay returns same value</td></tr>
+<tr><td><code>random_int</code></td><td><code>(lo: int, hi: int) -&gt; int</code></td><td>Records; replay returns same value</td></tr>
+<tr><td><code>read_file</code></td><td><code>(path: str) -&gt; str</code></td><td>Records content; file can be deleted after</td></tr>
+<tr><td><code>write_file</code></td><td><code>(path: str, content: str) -&gt; unit</code></td><td>Replay-safe; written once</td></tr>
+<tr><td><code>wait_until</code></td><td><code>(target_ms: int) -&gt; unit</code></td><td>Pauses until now() &gt;= target_ms</td></tr>
+<tr><td><code>wait_for</code></td><td><code>(name: str) -&gt; any</code></td><td>Pauses until <code>pen resume --event name=val</code></td></tr>
+</table>
+
+<h2>String builtins</h2>
+<table>
+<tr><th>Function</th><th>Signature</th></tr>
+<tr><td><code>str_length</code></td><td><code>(s: str) -&gt; int</code></td></tr>
+<tr><td><code>str_slice</code></td><td><code>(s: str, start: int, end: int) -&gt; str</code></td></tr>
+<tr><td><code>to_str</code></td><td><code>(x: any) -&gt; str</code></td></tr>
+</table>
+
+<h2>List builtins</h2>
+<table>
+<tr><th>Function</th><th>Signature</th><th>Notes</th></tr>
+<tr><td><code>list_new</code></td><td><code>(...elems) -&gt; list</code></td><td>Varargs</td></tr>
+<tr><td><code>list_push</code></td><td><code>(l: list, x: any) -&gt; list</code></td><td>Returns new list (immutable)</td></tr>
+<tr><td><code>list_get</code></td><td><code>(l: list, i: int) -&gt; any</code></td><td>Throws on out-of-bounds</td></tr>
+<tr><td><code>list_set</code></td><td><code>(l: list, i: int, x: any) -&gt; list</code></td><td>Returns new list (immutable)</td></tr>
+<tr><td><code>list_len</code></td><td><code>(l: list) -&gt; int</code></td><td></td></tr>
+</table>
+
+<h2>Dict builtins</h2>
+<table>
+<tr><th>Function</th><th>Signature</th><th>Notes</th></tr>
+<tr><td><code>dict_new</code></td><td><code>() -&gt; dict</code></td><td>Empty dict</td></tr>
+<tr><td><code>dict_set</code></td><td><code>(d: dict, k: str, v: any) -&gt; dict</code></td><td>Returns new dict (immutable)</td></tr>
+<tr><td><code>dict_get</code></td><td><code>(d: dict, k: str) -&gt; any</code></td><td>Throws on missing key</td></tr>
+<tr><td><code>dict_has</code></td><td><code>(d: dict, k: str) -&gt; bool</code></td><td></td></tr>
+<tr><td><code>dict_keys</code></td><td><code>(d: dict) -&gt; list[str]</code></td><td>Sorted</td></tr>
+</table>
+
+<h2>Operators</h2>
+<table>
+<tr><th>Op</th><th>Type</th><th>Notes</th></tr>
+<tr><td><code>+</code></td><td>(int, int) → int; (str, str) → str</td><td>Overloaded</td></tr>
+<tr><td><code>-</code> <code>*</code> <code>/</code></td><td>(int, int) → int</td><td>Integer arithmetic; div truncates</td></tr>
+<tr><td><code>&lt;</code> <code>&gt;</code> <code>&lt;=</code> <code>&gt;=</code></td><td>(int, int) → bool</td><td></td></tr>
+<tr><td><code>==</code> <code>!=</code></td><td>(T, T) → bool</td><td>Structural for list/dict; throws on closures</td></tr>
+</table>
+
+<footer>
+  © 2026 Airing · <a href="https://github.com/airingursb/Penelope">github.com/airingursb/Penelope</a>
+</footer>
+</body>
+</html>
