@@ -14,6 +14,10 @@ export function performNow(timeOverride: number | null = null): number {
   return timeOverride !== null ? timeOverride : Date.now();
 }
 
+export function performRandomInt(lo: number, hi: number): number {
+  return Math.floor(Math.random() * (hi - lo + 1)) + lo;
+}
+
 export function performNetFetch(url: string): string {
   const r = spawnSync('curl', ['-sS', '--fail', '-A', 'Penelope/0.2', url], { encoding: 'utf8' });
   if (r.status !== 0) {

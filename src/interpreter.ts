@@ -6,7 +6,7 @@
 // No closures, no Maps, no symbols, no class instances.
 
 import type { ASTBundle, ASTNode, BinOp, NodeId, ScopeId, Value } from './ast.js';
-import { EFFECT_NAMES as EFFECT_NAMES_SET, categoryOf, performWriteFile, performNetFetch, performNow } from './effects.js';
+import { EFFECT_NAMES as EFFECT_NAMES_SET, categoryOf, performWriteFile, performNetFetch, performNow, performRandomInt } from './effects.js';
 import type { EffectName } from './effects.js';
 
 // ============================================================
@@ -461,6 +461,25 @@ function applyEffect(
     return cont({
       ...state, control: rest,
       valueStack: [...newStack, { tag: 'int' as const, v: t }],
+      effects: [...state.effects, entry],
+    });
+  }
+
+  if (name === 'random_int') {
+    if (argCount !== 2) return { kind: 'error', message: `random_int expects 2 args, got ${argCount}` };
+    const lo = args[0];
+    const hi = args[1];
+    if (lo.tag !== 'int') return { kind: 'error', message: `random_int lo must be int, got ${lo.tag}` };
+    if (hi.tag !== 'int') return { kind: 'error', message: `random_int hi must be int, got ${hi.tag}` };
+    const r = performRandomInt(lo.v, hi.v);
+    const entry = {
+      nodeId, invocationCount, effect: 'random_int' as const,
+      recordedValue: { tag: 'int' as const, v: r },
+      status: 'committed' as const,
+    };
+    return cont({
+      ...state, control: rest,
+      valueStack: [...newStack, { tag: 'int' as const, v: r }],
       effects: [...state.effects, entry],
     });
   }

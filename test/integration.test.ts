@@ -178,3 +178,21 @@ test('E3: --time MS overrides now() on fresh execution', () => {
 
   cleanup(source);
 });
+
+test('E2: random_int recorded then replayed', () => {
+  const source = resolve('/tmp/penelope-rand.pen');
+  const snap = resolve('/tmp/penelope-rand.penz');
+  cleanup(source); cleanup(snap);
+  writeFileSync(source, 'let r = random_int(1, 1000000); let _ = pause; print(to_str(r));');
+
+  spawnSync(PEN, ['run', source], { encoding: 'utf8' });
+
+  const recorded = JSON.parse(readFileSync(snap, 'utf8'))
+    .state.effects.find((e: any) => e.effect === 'random_int').recordedValue.v;
+  expect(typeof recorded).toBe('number');
+
+  const r2 = spawnSync(PEN, ['resume', snap, 'true'], { encoding: 'utf8' });
+  expect(r2.stdout.trim()).toBe(String(recorded));
+
+  cleanup(source); cleanup(snap);
+});
