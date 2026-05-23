@@ -138,6 +138,42 @@ test('fn with two params', () => {
   expect(mk[1]).toEqual(['a', 'b']);
 });
 
+test('print("hi") compiles to LOAD_CONST + EFFECT', () => {
+  const prog = compile(parse(tokenize('print("hi");')));
+  expect(prog.code).toEqual([
+    ['LOAD_CONST', 0],
+    ['EFFECT', 'print', 1, null],
+    ['POP'],
+    ['HALT'],
+  ]);
+});
+
+test('str_length("abc") compiles to LOAD_CONST + CALL_BUILTIN', () => {
+  const prog = compile(parse(tokenize('str_length("abc");')));
+  expect(prog.code).toEqual([
+    ['LOAD_CONST', 0],
+    ['CALL_BUILTIN', 'str_length', 1],
+    ['POP'],
+    ['HALT'],
+  ]);
+});
+
+test('normal closure call compiles to LOAD_VAR callee + args + CALL', () => {
+  const prog = compile(parse(tokenize('let f = fn(x) { x }; f(7);')));
+  // After fn defn and STORE_VAR f, the call sequence is:
+  //   LOAD_VAR f, LOAD_CONST 7, CALL 1
+  const callIdx = prog.code.findIndex(op => op[0] === 'CALL');
+  expect(callIdx).toBeGreaterThan(0);
+  expect(prog.code[callIdx]).toEqual(['CALL', 1]);
+  expect(prog.code[callIdx - 1]).toEqual(['LOAD_CONST', 0]); // arg
+  expect(prog.code[callIdx - 2]).toEqual(['LOAD_VAR', 'f', null]);
+});
+
+test('net_fetch is an effect', () => {
+  const prog = compile(parse(tokenize('net_fetch("http://x");')));
+  expect(prog.code.find(op => op[0] === 'EFFECT')).toEqual(['EFFECT', 'net_fetch', 1, null]);
+});
+
 test('if (true) { 1 } else { 2 } compiles with two jumps', () => {
   const prog = compile(parse(tokenize('if (true) { 1 } else { 2 };')));
   const opNames = prog.code.map(op => op[0]);

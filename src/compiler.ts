@@ -5,6 +5,11 @@
 import type { ASTNode, ASTBundle } from './ast.js';
 import type { Program, Opcode, ConstantPoolEntry } from './bytecode.js';
 import { makeProgram, internConstant } from './bytecode.js';
+import { EFFECT_NAMES } from './effects.js';
+
+const PURE_BUILTINS: ReadonlySet<string> = new Set([
+  'str_length', 'str_slice', 'to_str',
+]);
 
 export function compile(ast: ASTBundle): Program {
   const prog = makeProgram();
@@ -81,6 +86,26 @@ function compileNode(node: ASTNode, ast: ASTBundle, prog: Program): void {
         emit(prog, ['PUSH_UNIT']);
       }
       emit(prog, ['EXIT_BLOCK']);
+      return;
+    }
+    case 'Call': {
+      const callee = ast.nodes[node.calleeId];
+      // Effect builtin?
+      if (callee.kind === 'Var' && EFFECT_NAMES.has(callee.name as any)) {
+        for (const argId of node.argIds) compileNode(ast.nodes[argId], ast, prog);
+        emit(prog, ['EFFECT', callee.name, node.argIds.length, null]);
+        return;
+      }
+      // Pure builtin?
+      if (callee.kind === 'Var' && PURE_BUILTINS.has(callee.name)) {
+        for (const argId of node.argIds) compileNode(ast.nodes[argId], ast, prog);
+        emit(prog, ['CALL_BUILTIN', callee.name, node.argIds.length]);
+        return;
+      }
+      // Normal closure call: callee, then args, then CALL.
+      compileNode(callee, ast, prog);
+      for (const argId of node.argIds) compileNode(ast.nodes[argId], ast, prog);
+      emit(prog, ['CALL', node.argIds.length]);
       return;
     }
     case 'Fn': {
