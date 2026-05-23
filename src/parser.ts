@@ -4,7 +4,25 @@
 // (essential for snapshot resume).
 
 import type { Token, TokenKind } from './lexer.js';
-import type { ASTNode, NodeId, ASTBundle } from './ast.js';
+import type { ASTNode, NodeId, ASTBundle, BinOp } from './ast.js';
+
+// Precedence table. Higher number binds tighter.
+//   1: == !=
+//   2: <  <=  >  >=
+//   3: +  -
+//   4: *  /
+const INFIX_PRECEDENCE: Partial<Record<TokenKind, { prec: number; op: BinOp }>> = {
+  EQ_EQ:   { prec: 1, op: '==' },
+  BANG_EQ: { prec: 1, op: '!=' },
+  LT:      { prec: 2, op: '<' },
+  LE:      { prec: 2, op: '<=' },
+  GT:      { prec: 2, op: '>' },
+  GE:      { prec: 2, op: '>=' },
+  PLUS:    { prec: 3, op: '+' },
+  MINUS:   { prec: 3, op: '-' },
+  STAR:    { prec: 4, op: '*' },
+  SLASH:   { prec: 4, op: '/' },
+};
 
 type Builder = {
   nodes: Record<NodeId, ASTNode>;
@@ -91,9 +109,19 @@ function parsePrintStmt(_c: Cursor, _b: Builder): ASTNode {
   throw new Error('parser: print not yet implemented');
 }
 
-function parseExpression(c: Cursor, b: Builder): ASTNode {
-  // Placeholder — Task 8 adds binary-operator precedence.
-  return parsePrimary(c, b);
+function parseExpression(c: Cursor, b: Builder, minPrec = 0): ASTNode {
+  let left = parsePrimary(c, b);
+  while (true) {
+    const info = INFIX_PRECEDENCE[c.peekKind()];
+    if (!info || info.prec < minPrec) break;
+    c.eat(c.peekKind());                              // consume the operator
+    const right = parseExpression(c, b, info.prec + 1);  // left-assoc
+    const node = b.addNode(id => ({
+      id, kind: 'BinOp', op: info.op, leftId: left.id, rightId: right.id,
+    }));
+    left = node;
+  }
+  return left;
 }
 
 function parsePrimary(c: Cursor, b: Builder): ASTNode {
