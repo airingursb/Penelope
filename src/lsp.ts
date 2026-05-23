@@ -65,6 +65,8 @@ export function handleMessage(msg: LspMessage): void {
         capabilities: {
           textDocumentSync: { openClose: true, change: 1 /* full */, save: true },
           hoverProvider: true,
+          completionProvider: { triggerCharacters: [] },
+          definitionProvider: true,
         },
         serverInfo: { name: 'penelope-lsp', version: '0.0.1' },
       },
@@ -73,6 +75,14 @@ export function handleMessage(msg: LspMessage): void {
   }
   if (msg.method === 'textDocument/hover') {
     handleHover(msg);
+    return;
+  }
+  if (msg.method === 'textDocument/completion') {
+    handleCompletion(msg);
+    return;
+  }
+  if (msg.method === 'textDocument/definition') {
+    handleDefinition(msg);
     return;
   }
   if (msg.method === 'initialized' || msg.method === 'workspace/didChangeConfiguration') {
@@ -112,6 +122,94 @@ export function handleMessage(msg: LspMessage): void {
       error: { code: -32601, message: `method not found: ${msg.method}` },
     });
   }
+}
+
+const KEYWORDS = ['let', 'fn', 'if', 'else', 'true', 'false', 'pause'];
+const BUILTINS = [
+  'print', 'net_fetch', 'now', 'random_int', 'read_file', 'write_file', 'wait_until', 'wait_for',
+  'str_length', 'str_slice', 'to_str',
+  'list_new', 'list_push', 'list_get', 'list_set', 'list_len',
+  'dict_new', 'dict_set', 'dict_get', 'dict_has', 'dict_keys',
+];
+
+function handleCompletion(msg: LspMessage): void {
+  const p = msg.params as { textDocument: { uri: string } };
+  const source = documents.get(p.textDocument.uri) ?? '';
+  const items: object[] = [];
+  for (const k of KEYWORDS) items.push({ label: k, kind: 14 /* Keyword */ });
+  for (const b of BUILTINS) items.push({ label: b, kind: 3 /* Function */, detail: 'builtin' });
+  try {
+    const ast = parse(tokenize(source));
+    const localVars = new Set<string>();
+    for (const id of Object.keys(ast.nodes)) {
+      const n = ast.nodes[id];
+      if (n.kind === 'Let') localVars.add(n.name);
+      if (n.kind === 'Fn') for (const p of n.params) localVars.add(p);
+    }
+    for (const name of localVars) items.push({ label: name, kind: 6 /* Variable */, detail: 'local' });
+  } catch { /* parse errors → just return keywords + builtins */ }
+  send({ jsonrpc: '2.0', id: msg.id, result: items });
+}
+
+function handleDefinition(msg: LspMessage): void {
+  const p = msg.params as {
+    textDocument: { uri: string };
+    position: { line: number; character: number };
+  };
+  const source = documents.get(p.textDocument.uri);
+  if (!source) {
+    send({ jsonrpc: '2.0', id: msg.id, result: null });
+    return;
+  }
+  const targetLine = p.position.line + 1;
+  const targetCol = p.position.character + 1;
+  let result: object | null = null;
+  try {
+    const ast = parse(tokenize(source));
+    // Find Var node at cursor
+    let cursorNode: ASTNode | null = null;
+    for (const id of Object.keys(ast.nodes)) {
+      const node = ast.nodes[id];
+      if (node.kind !== 'Var' || !node.pos) continue;
+      if (node.pos.line !== targetLine) continue;
+      const endCol = node.pos.col + node.name.length;
+      if (targetCol >= node.pos.col && targetCol < endCol) {
+        cursorNode = node;
+        break;
+      }
+    }
+    if (cursorNode && cursorNode.kind === 'Var') {
+      // Find matching Let by walking nodes in source order; pick the latest one before cursor.
+      let bestLet: ASTNode | null = null;
+      for (const id of Object.keys(ast.nodes)) {
+        const node = ast.nodes[id];
+        if (node.kind !== 'Let' || node.name !== cursorNode.name || !node.pos) continue;
+        if (
+          node.pos.line < targetLine ||
+          (node.pos.line === targetLine && node.pos.col < targetCol)
+        ) {
+          if (!bestLet || !bestLet.pos ||
+            node.pos.line > bestLet.pos.line ||
+            (node.pos.line === bestLet.pos.line && node.pos.col > bestLet.pos.col)) {
+            bestLet = node;
+          }
+        }
+      }
+      if (bestLet && bestLet.pos) {
+        // Let.pos points at the `let` keyword; the identifier starts 4 chars later.
+        const nameStart = bestLet.pos.col - 1 + 'let '.length;
+        const nameLen = (bestLet as Extract<ASTNode, { kind: 'Let' }>).name.length;
+        result = {
+          uri: p.textDocument.uri,
+          range: {
+            start: { line: bestLet.pos.line - 1, character: nameStart },
+            end:   { line: bestLet.pos.line - 1, character: nameStart + nameLen },
+          },
+        };
+      }
+    }
+  } catch { /* parse error → no definition */ }
+  send({ jsonrpc: '2.0', id: msg.id, result });
 }
 
 function handleHover(msg: LspMessage): void {
