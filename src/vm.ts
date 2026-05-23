@@ -13,6 +13,16 @@ export type RunResult =
   | { status: 'halted'; state: VMState }
   | { status: 'paused'; state: VMState };
 
+export type ProfileData = {
+  opcodeCount: Record<string, number>;
+  ipCount: Record<number, number>;
+  totalNs: bigint;
+};
+
+export function makeProfile(): ProfileData {
+  return { opcodeCount: {}, ipCount: {}, totalNs: 0n };
+}
+
 export function freshState(): VMState {
   return {
     ip: 0,
@@ -22,17 +32,26 @@ export function freshState(): VMState {
   };
 }
 
-export function run(prog: Program, initialState?: VMState): RunResult {
+export function run(prog: Program, initialState?: VMState, profile?: ProfileData): RunResult {
   const state = initialState ?? freshState();
-  return runUntilStop(prog, state);
+  const t0 = profile ? process.hrtime.bigint() : 0n;
+  try {
+    return runUntilStop(prog, state, profile);
+  } finally {
+    if (profile) profile.totalNs += process.hrtime.bigint() - t0;
+  }
 }
 
-function runUntilStop(prog: Program, state: VMState): RunResult {
-  // Track how many committed entries per ip we've already replayed this run.
+function runUntilStop(prog: Program, state: VMState, profile?: ProfileData): RunResult {
   const replayIdx = new Map<number, number>();
   while (true) {
     const op = prog.code[state.ip];
     if (!op) throw new Error(`VM: IP ${state.ip} out of bounds`);
+    if (profile) {
+      const name = op[0];
+      profile.opcodeCount[name] = (profile.opcodeCount[name] ?? 0) + 1;
+      profile.ipCount[state.ip] = (profile.ipCount[state.ip] ?? 0) + 1;
+    }
     switch (op[0]) {
       case 'HALT': return { status: 'halted', state };
       case 'LOAD_CONST': {

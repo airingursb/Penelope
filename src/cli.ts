@@ -5,7 +5,7 @@ import { resolve, dirname, basename, join } from 'node:path';
 import { tokenize } from './lexer.js';
 import { parse } from './parser.js';
 import { compile } from './compiler.js';
-import { run, freshState } from './vm.js';
+import { run, freshState, makeProfile } from './vm.js';
 import { writePencFile, readPencFile } from './encoder.js';
 import { runOptimizer, type OLevel } from './optimizer.js';
 import { check as typeCheck, formatErrors as formatTypeErrors } from './typecheck.js';
@@ -236,6 +236,41 @@ function cmdBench(args: ParsedArgs): number {
   return 0;
 }
 
+function cmdProfile(args: ParsedArgs): number {
+  const srcPath = args.positional[1];
+  if (!srcPath) { process.stderr.write('usage: pen profile [-O0|-O1|-O2] <file.pen>\n'); return 2; }
+  let source: string;
+  try { source = readFileSync(resolve(srcPath), 'utf8'); }
+  catch { process.stderr.write(`cli error: cannot read source: ${srcPath}\n`); return 3; }
+  const ast = parse(tokenize(source));
+  const prog = runOptimizer(compile(ast), args.oLevel);
+  const profile = makeProfile();
+  run(prog, undefined, profile);
+  const totalMs = Number(profile.totalNs) / 1e6;
+  const out = process.stdout;
+  out.write(`profile: ${srcPath}  (-O${args.oLevel}, ${totalMs.toFixed(2)} ms)\n\n`);
+  // Per-opcode hot table
+  out.write('opcode counts (top 20):\n');
+  const ops = Object.entries(profile.opcodeCount).sort((a, b) => b[1] - a[1]).slice(0, 20);
+  const totalOps = ops.reduce((s, [, n]) => s + n, 0);
+  for (const [name, count] of ops) {
+    const pct = totalOps > 0 ? (count / totalOps * 100).toFixed(1) : '0.0';
+    out.write(`  ${name.padEnd(16)} ${String(count).padStart(8)}  ${pct.padStart(5)}%\n`);
+  }
+  out.write(`  ${''.padEnd(16)} ${String(totalOps).padStart(8)}  total opcodes executed\n`);
+  // Per-ip hot table (top 10)
+  out.write('\nhot ips (top 10):\n');
+  const ips = Object.entries(profile.ipCount).sort((a, b) => b[1] - a[1]).slice(0, 10);
+  for (const [ipStr, count] of ips) {
+    const ip = parseInt(ipStr, 10);
+    const op = prog.code[ip];
+    const pos = prog.sourceMap?.[ip];
+    const posStr = pos ? `line ${pos.line} col ${pos.col}` : '(no pos)';
+    out.write(`  ip ${String(ip).padStart(4)}  ${String(count).padStart(8)}×  ${op[0].padEnd(14)} ${posStr}\n`);
+  }
+  return 0;
+}
+
 function cmdCheck(args: ParsedArgs): number {
   const srcPath = args.positional[1];
   if (!srcPath) { process.stderr.write('usage: pen check <file.pen>\n'); return 2; }
@@ -375,7 +410,8 @@ export async function main(argv: string[]): Promise<number> {
   if (sub === 'inspect') return cmdInspect(args);
   if (sub === 'repl')    return await cmdRepl(args);
   if (sub === 'check')   return cmdCheck(args);
-  process.stderr.write(`usage: penelope <build|exec|run|resume|fork|disasm|bench|inspect|repl|check> [-O0|-O1|-O2] [args]\n`);
+  if (sub === 'profile') return cmdProfile(args);
+  process.stderr.write(`usage: penelope <build|exec|run|resume|fork|disasm|bench|inspect|repl|check|profile> [-O0|-O1|-O2] [args]\n`);
   return 2;
 }
 
