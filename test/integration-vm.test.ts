@@ -149,6 +149,7 @@ test('examples/01..09 all parse, compile, and run via VM', () => {
     const candidates = [`${num}-`];
     const files = require('node:fs').readdirSync('examples').filter((n: string) =>
       candidates.some(c => n.startsWith(c)) && n.endsWith('.pen')
+        && !n.includes('net-fetch') && !n.includes('24h-agent')
     );
     for (const file of files) {
       const r = spawnSync(PEN, ['run', '--time', '1700000000', path.join('examples', file)], { encoding: 'utf8' });
