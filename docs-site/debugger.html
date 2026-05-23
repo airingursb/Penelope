@@ -24,12 +24,14 @@
 
 <p><code>bin/penelope-dap</code> speaks the standard Debug Adapter Protocol over stdio. Any DAP-compatible editor (VSCode, Neovim's <code>nvim-dap</code>) can drive a Penelope debugging session.</p>
 
-<h2>What works (MVP)</h2>
+<h2>What works</h2>
 
 <ul>
   <li><strong>Launch</strong> — open a <code>.pen</code> file and start execution</li>
   <li><strong>Source-line breakpoints</strong> — mapped to opcode IPs via the compiler's <code>sourceMap</code></li>
   <li><strong>Continue</strong> — runs until next breakpoint or program end</li>
+  <li><strong>Step in / over / out</strong> — single-step execution</li>
+  <li><strong>Restart</strong> — re-load and re-run the program</li>
   <li><strong>Stack trace</strong> — single thread; shows the suspended IP's source line + parent call frames</li>
   <li><strong>Scopes</strong> — Locals (visible bindings via parent chain) + Value Stack</li>
   <li><strong>Variables</strong> — current frame's bindings, pretty-printed</li>
@@ -39,10 +41,10 @@
 <h2>What does not work yet</h2>
 
 <ul>
-  <li><code>stepIn</code> / <code>stepOver</code> / <code>stepOut</code> — needs proper single-step in the VM</li>
   <li>Conditional / log breakpoints</li>
   <li>Exception breakpoints</li>
   <li><code>repl</code> evaluation at a breakpoint</li>
+  <li>Reverse / time-travel debugging</li>
 </ul>
 
 <h2>VSCode</h2>
@@ -75,7 +77,7 @@ dap.configurations.penelope = {
 
 <h2>Protocol details</h2>
 
-<p>The adapter understands these DAP requests: <code>initialize</code>, <code>launch</code>, <code>setBreakpoints</code>, <code>configurationDone</code>, <code>continue</code>, <code>threads</code>, <code>stackTrace</code>, <code>scopes</code>, <code>variables</code>, <code>terminate</code>, <code>disconnect</code>. Emits events: <code>initialized</code>, <code>stopped</code>, <code>output</code>, <code>terminated</code>.</p>
+<p>The adapter understands these DAP requests: <code>initialize</code>, <code>launch</code>, <code>setBreakpoints</code>, <code>configurationDone</code>, <code>continue</code>, <code>next</code>, <code>stepIn</code>, <code>stepOut</code>, <code>restart</code>, <code>threads</code>, <code>stackTrace</code>, <code>scopes</code>, <code>variables</code>, <code>terminate</code>, <code>disconnect</code>. Emits events: <code>initialized</code>, <code>stopped</code> (reasons: <code>entry</code>, <code>breakpoint</code>, <code>step</code>, <code>pause</code>), <code>output</code>, <code>terminated</code>.</p>
 
 <p>The wire format is identical to LSP — Content-Length-framed JSON-RPC over stdio.</p>
 

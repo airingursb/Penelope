@@ -42,7 +42,9 @@ $ pen test foo.pen                       <span class="cm"># doctest runner (// E
 $ pen run --watch foo.pen                <span class="cm"># re-run on file change</span>
 $ pen test --watch foo.pen               <span class="cm"># tdd loop</span>
 $ pen check --watch foo.pen              <span class="cm"># typecheck loop</span>
-$ pen doc foo.pen                        <span class="cm"># /// → markdown</span></code></pre>
+$ pen doc foo.pen                        <span class="cm"># /// → markdown</span>
+$ pen graph foo.pen > deps.dot           <span class="cm"># import graph (Graphviz DOT)</span>
+$ pen new my-project                     <span class="cm"># scaffold a new project</span></code></pre>
 
 <h2>Flags</h2>
 <table>
@@ -113,6 +115,27 @@ The official greeting.</code></pre>
 <span class="bi">print</span>(<span class="bi">to_str</span>(sum(<span class="num">100000</span>, <span class="num">0</span>)));  <span class="cm">// 5000050000 — no stack overflow</span></code></pre>
 
 <p>A call is in tail position when it's the trailing expression of a function body, or recursively the trailing expression of an if-branch or block in tail position. When tail-calling a closure whose captured scope would be invalidated by frame reuse, the VM falls back to a regular call (no observable difference, just no stack savings).</p>
+
+<h2>pen graph</h2>
+
+<p>Walks <code>import</code> statements from a root file and emits the dependency graph as <a href="https://graphviz.org/">Graphviz</a> DOT.</p>
+
+<pre><code>$ pen graph main.pen &gt; deps.dot
+$ dot -Tpng deps.dot &gt; deps.png</code></pre>
+
+<h2>pen new</h2>
+
+<p>Scaffold a new project directory with <code>main.pen</code>, a README, and a <code>.gitignore</code>.</p>
+
+<pre><code>$ pen new my-project
+created my-project/
+  my-project/main.pen
+  my-project/README.md
+  my-project/.gitignore
+
+next:
+  cd my-project
+  pen run main.pen</code></pre>
 
 <h2>pen run --watch</h2>
 

@@ -131,6 +131,34 @@ Snapshot: pause.penz
 
 <p>Arms are checked top-to-bottom. A variable pattern (lowercase identifier) matches anything and binds; <code>_</code> matches anything and discards. No exhaustiveness checking — a non-matching scrutinee with no wildcard returns <code>unit</code>.</p>
 
+<h3>Pattern variants</h3>
+
+<p><strong>Or-patterns</strong>: <code>1 | 2 | 3 =&gt; "small"</code> matches any alternative.</p>
+
+<p><strong>Guards</strong>: <code>n if n &gt; 100 =&gt; "huge"</code> — arm fires only if the guard expression is true (after pattern bindings).</p>
+
+<p><strong>List patterns</strong>: <code>[] =&gt; ...</code> matches empty list; <code>[h, ...t] =&gt; ...</code> binds head and rest; <code>[a, b] =&gt; ...</code> requires exactly two elements.</p>
+
+<pre><code><span class="kw">let</span> head = <span class="kw">fn</span>(xs) {
+  <span class="kw">match</span> xs {
+    [] =&gt; <span class="str">"empty"</span>,
+    [h, ...t] =&gt; <span class="str">"head=</span><span class="bi">${h}</span><span class="str">, len(t)=</span><span class="bi">${list_len(t)}</span><span class="str">"</span>,
+  }
+};</code></pre>
+
+<p><strong>Dict patterns</strong>: <code>{name: n} =&gt; ...</code> binds <code>n</code> to the dict's <code>name</code> field; missing key falls through.</p>
+
+<pre><code><span class="kw">let</span> lookup = <span class="kw">fn</span>(d) {
+  <span class="kw">match</span> d {
+    {name: n} =&gt; <span class="str">"name=</span><span class="bi">${n}</span><span class="str">"</span>,
+    _ =&gt; <span class="str">"no name"</span>,
+  }
+};</code></pre>
+
+<h2>Syntax niceties</h2>
+
+<p>Negative literals (<code>-5</code>), hex (<code>0xff</code>), binary (<code>0b1010</code>), underscore separators (<code>1_000_000</code>), block comments (<code>/* ... */</code>), and the unit literal <code>()</code>.</p>
+
 <h2>Modules</h2>
 
 <p><code>import "./path.pen";</code> expands the imported file's top-level bindings into the current scope. Paths are resolved relative to the importing file. Re-imports are idempotent; cycles are safe.</p>
