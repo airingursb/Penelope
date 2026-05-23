@@ -98,3 +98,47 @@ test('undefined variable is a runtime error', () => {
   expect(result.kind).toBe('error');
   if (result.kind === 'error') expect(result.message).toMatch(/undefined variable 'x'/);
 });
+
+test('a fn body block evaluates to its trailing expression (via if)', () => {
+  const ast = parse(tokenize('print(if (true) { 1 + 2 } else { 99 });'));
+  const logged: string[] = [];
+  const origLog = console.log;
+  console.log = (msg: string) => logged.push(msg);
+  try {
+    const result = runToCompletion(ast);
+    expect(result.kind).toBe('done');
+    expect(logged).toEqual(['3']);
+  } finally {
+    console.log = origLog;
+  }
+});
+
+test('a block with no trailing expression evaluates to unit', () => {
+  const ast = parse(tokenize('print(if (true) { } else { });'));
+  const logged: string[] = [];
+  const origLog = console.log;
+  console.log = (msg: string) => logged.push(msg);
+  try {
+    const result = runToCompletion(ast);
+    expect(result.kind).toBe('done');
+    expect(logged).toEqual(['()']);
+  } finally {
+    console.log = origLog;
+  }
+});
+
+test('block scope isolates lets', () => {
+  const ast = parse(tokenize(`
+    print(if (true) { let x = 99; x } else { 0 });
+  `));
+  const logged: string[] = [];
+  const origLog = console.log;
+  console.log = (msg: string) => logged.push(msg);
+  try {
+    const result = runToCompletion(ast);
+    expect(result.kind).toBe('done');
+    expect(logged).toEqual(['99']);
+  } finally {
+    console.log = origLog;
+  }
+});

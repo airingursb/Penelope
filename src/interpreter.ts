@@ -114,6 +114,20 @@ export function step(state: State, ast: ASTBundle): StepResult {
     case 'discard':
       return cont({ ...state, control: rest,
         valueStack: state.valueStack.slice(0, -1) });
+    case 'popScope':
+      return cont({ ...state, control: rest, currentScopeId: instr.restoreScopeId });
+    case 'pushUnit':
+      return cont({ ...state, control: rest,
+        valueStack: [...state.valueStack, { tag: 'unit' }] });
+    case 'branch': {
+      const cond = state.valueStack[state.valueStack.length - 1];
+      if (cond.tag !== 'bool')
+        return { kind: 'error', message: `if condition must be bool, got ${cond.tag}` };
+      return cont({ ...state, control: [
+        ...rest,
+        { op: 'eval', nodeId: cond.v ? instr.thenBlockId : instr.elseBlockId },
+      ], valueStack: state.valueStack.slice(0, -1) });
+    }
     default:
       return { kind: 'error', message: `unimplemented op: ${(instr as ControlInstr).op}` };
   }
@@ -163,6 +177,31 @@ function stepEval(state: State, rest: ControlInstr[], node: ASTNode, _ast: ASTBu
         ...rest,
         { op: 'applyPrint' },
         { op: 'eval', nodeId: node.argId },
+      ]});
+    case 'Block': {
+      const newScopeId = `s${state.nextScopeIdCounter}`;
+      const trailing: ControlInstr = node.trailingExprId !== null
+        ? { op: 'eval', nodeId: node.trailingExprId }
+        : { op: 'pushUnit' };
+      return cont({
+        ...state,
+        control: [
+          ...rest,
+          { op: 'popScope', restoreScopeId: state.currentScopeId },
+          trailing,
+          ...[...node.stmtIds].reverse().map(id => ({ op: 'eval' as const, nodeId: id })),
+        ],
+        scopes: { ...state.scopes,
+          [newScopeId]: { parentId: state.currentScopeId, bindings: {} }},
+        currentScopeId: newScopeId,
+        nextScopeIdCounter: state.nextScopeIdCounter + 1,
+      });
+    }
+    case 'If':
+      return cont({ ...state, control: [
+        ...rest,
+        { op: 'branch', thenBlockId: node.thenBlockId, elseBlockId: node.elseBlockId },
+        { op: 'eval', nodeId: node.condId },
       ]});
     default:
       return { kind: 'error', message: `unimplemented eval kind: ${(node as ASTNode).kind}`, atNode: node.id };
