@@ -205,3 +205,38 @@ test('closure captures outer binding via parentIdx', () => {
   };
   expect(run(prog).state.valueStack).toEqual([{ tag: 'int', v: 10 }]);
 });
+
+test('str_length on string', () => {
+  const prog: Program = {
+    version: 1,
+    constants: [{ tag: 'str', v: 'hello' }],
+    code: [['LOAD_CONST', 0], ['CALL_BUILTIN', 'str_length', 1], ['HALT']],
+  };
+  expect(run(prog).state.valueStack).toEqual([{ tag: 'int', v: 5 }]);
+});
+
+test('to_str on int', () => {
+  const prog: Program = {
+    version: 1,
+    constants: [{ tag: 'int', v: 42 }],
+    code: [['LOAD_CONST', 0], ['CALL_BUILTIN', 'to_str', 1], ['HALT']],
+  };
+  expect(run(prog).state.valueStack).toEqual([{ tag: 'str', v: '42' }]);
+});
+
+test('str_slice', () => {
+  const prog: Program = {
+    version: 1,
+    constants: [{ tag: 'str', v: 'hello' }, { tag: 'int', v: 1 }, { tag: 'int', v: 4 }],
+    code: [
+      ['LOAD_CONST', 0], ['LOAD_CONST', 1], ['LOAD_CONST', 2],
+      ['CALL_BUILTIN', 'str_slice', 3], ['HALT'],
+    ],
+  };
+  expect(run(prog).state.valueStack).toEqual([{ tag: 'str', v: 'ell' }]);
+});
+
+test('unknown builtin throws', () => {
+  const prog: Program = { version: 1, constants: [], code: [['CALL_BUILTIN', 'nope', 0], ['HALT']] };
+  expect(() => run(prog)).toThrow(/unknown builtin/);
+});

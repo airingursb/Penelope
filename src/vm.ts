@@ -122,6 +122,15 @@ function runUntilStop(prog: Program, state: VMState): RunResult {
         state.ip++;
         break;
       }
+      case 'CALL_BUILTIN': {
+        const name = op[1] as string;
+        const argc = op[2] as number;
+        const args: Value[] = [];
+        for (let i = 0; i < argc; i++) args.unshift(pop(state));
+        push(state, applyBuiltin(name, args));
+        state.ip++;
+        break;
+      }
       default:
         throw new Error(`VM: unhandled opcode '${op[0]}' at ip ${state.ip}`);
     }
@@ -165,4 +174,27 @@ function applyBinOp(o: string, l: Value, r: Value): Value {
     return { tag: 'bool', v: o === '==' ? eq : !eq };
   }
   throw new Error(`BIN_OP: unknown op '${o}'`);
+}
+
+function applyBuiltin(name: string, args: Value[]): Value {
+  if (name === 'str_length') {
+    if (args.length !== 1 || args[0].tag !== 'str') throw new Error(`str_length(s: str)`);
+    return { tag: 'int', v: args[0].v.length };
+  }
+  if (name === 'to_str') {
+    if (args.length !== 1) throw new Error(`to_str(x)`);
+    const a = args[0];
+    if (a.tag === 'int')  return { tag: 'str', v: String(a.v) };
+    if (a.tag === 'bool') return { tag: 'str', v: a.v ? 'true' : 'false' };
+    if (a.tag === 'str')  return { tag: 'str', v: a.v };
+    if (a.tag === 'unit') return { tag: 'str', v: 'unit' };
+    throw new Error(`to_str: closures not stringifiable`);
+  }
+  if (name === 'str_slice') {
+    if (args.length !== 3 || args[0].tag !== 'str' || args[1].tag !== 'int' || args[2].tag !== 'int') {
+      throw new Error(`str_slice(s, start, end)`);
+    }
+    return { tag: 'str', v: args[0].v.slice(args[1].v, args[2].v) };
+  }
+  throw new Error(`unknown builtin '${name}'`);
 }
