@@ -247,3 +247,61 @@ test('G2: wait_until resume too early re-pauses', () => {
 
   cleanup(source); cleanup(snap);
 });
+
+test('G3: wait_for + --event approval=true resumes with bool', () => {
+  const source = resolve('examples/07-wait-for.pen');
+  const snap = resolve('examples/07-wait-for.penz');
+  cleanup(snap);
+
+  const r1 = spawnSync(PEN, ['run', source], { encoding: 'utf8' });
+  expect(r1.status).toBe(0);
+  expect(r1.stdout.trim()).toBe('waiting for approval');
+  expect(existsSync(snap)).toBe(true);
+
+  const r2 = spawnSync(PEN, ['resume', snap, '--event', 'approval=true'], { encoding: 'utf8' });
+  expect(r2.status).toBe(0);
+  expect(r2.stdout.trim()).toBe('got: true');
+
+  cleanup(snap);
+});
+
+test('G4: wait_for with int event value', () => {
+  const source = resolve('/tmp/penelope-wfi.pen');
+  const snap = resolve('/tmp/penelope-wfi.penz');
+  cleanup(source); cleanup(snap);
+  writeFileSync(source, 'let n = wait_for("count"); print(to_str(n));');
+
+  spawnSync(PEN, ['run', source], { encoding: 'utf8' });
+  const r = spawnSync(PEN, ['resume', snap, '--event', 'count=42'], { encoding: 'utf8' });
+  expect(r.stdout.trim()).toBe('42');
+
+  cleanup(source); cleanup(snap);
+});
+
+test('G5: wait_for with string event value', () => {
+  const source = resolve('/tmp/penelope-wfs.pen');
+  const snap = resolve('/tmp/penelope-wfs.penz');
+  cleanup(source); cleanup(snap);
+  writeFileSync(source, 'let note = wait_for("memo"); print(note);');
+
+  spawnSync(PEN, ['run', source], { encoding: 'utf8' });
+  const r = spawnSync(PEN, ['resume', snap, '--event', 'memo=hello world'], { encoding: 'utf8' });
+  expect(r.stdout.trim()).toBe('hello world');
+
+  cleanup(source); cleanup(snap);
+});
+
+test('H3: multi-pause flow — wait_for, then bare pause, then continue', () => {
+  const source = resolve('/tmp/penelope-multi.pen');
+  const snap = resolve('/tmp/penelope-multi.penz');
+  cleanup(source); cleanup(snap);
+  writeFileSync(source, 'let a = wait_for("first"); print("got " + a); let b = pause; print("got2 " + to_str(b));');
+
+  spawnSync(PEN, ['run', source], { encoding: 'utf8' });
+  spawnSync(PEN, ['resume', snap, '--event', 'first=hello'], { encoding: 'utf8' });
+  // After first resume: prints "got hello", pauses at bare pause.
+  const r3 = spawnSync(PEN, ['resume', snap, '99'], { encoding: 'utf8' });
+  expect(r3.stdout.trim()).toBe('got2 99');  // first print is replay-skipped
+
+  cleanup(source); cleanup(snap);
+});

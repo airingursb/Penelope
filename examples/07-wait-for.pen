@@ -1,0 +1,3 @@
+print("waiting for approval");
+let ok = wait_for("approval");
+print("got: " + to_str(ok));

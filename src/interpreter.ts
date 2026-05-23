@@ -419,6 +419,44 @@ function applyEffect(
     };
   }
 
+  if (name === 'wait_for') {
+    if (argCount !== 1) return { kind: 'error', message: `wait_for expects 1 arg, got ${argCount}` };
+    const nameArg = args[0];
+    if (nameArg.tag !== 'str') return { kind: 'error', message: `wait_for name must be str, got ${nameArg.tag}` };
+
+    // Look for any existing entry (pending or committed) at this nodeId for this effect.
+    // Use the same pattern wait_until uses (find by nodeId + effect, not by invocationCount).
+    const waitForEntry = state.effects.find(e =>
+      e.nodeId === nodeId && e.effect === 'wait_for'
+    );
+
+    if (waitForEntry !== undefined && waitForEntry.status === 'committed') {
+      // Event was delivered — return the recordedValue.
+      if (waitForEntry.recordedValue === null) {
+        return { kind: 'error', message: 'wait_for: committed but recordedValue is null (corrupted log)' };
+      }
+      return cont({ ...state, control: rest,
+        valueStack: [...newStack, waitForEntry.recordedValue] });
+    }
+
+    if (waitForEntry !== undefined && waitForEntry.status === 'pending') {
+      // Still pending — re-pause.
+      return { kind: 'paused', state, pausedAt: nodeId };
+    }
+
+    // First execution: append pending entry with event name in recordedValue.
+    const entry = {
+      nodeId, invocationCount, effect: 'wait_for' as const,
+      recordedValue: { tag: 'str' as const, v: nameArg.v },
+      status: 'pending' as const,
+    };
+    return {
+      kind: 'paused',
+      state: { ...state, effects: [...state.effects, entry] },
+      pausedAt: nodeId,
+    };
+  }
+
   // REPLAY path: committed entry already exists.
   if (existing !== undefined && existing.status === 'committed') {
     const category = categoryOf(name);

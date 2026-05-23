@@ -20,13 +20,23 @@ import type { Value } from './ast.js';
 type ParsedArgs = {
   positional: string[];
   flags: Record<string, string | true>;
+  events: Record<string, string>;   // ← NEW
 };
 
 function parseArgs(argv: string[]): ParsedArgs {
   const positional: string[] = [];
   const flags: Record<string, string | true> = {};
+  const events: Record<string, string> = {};
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
+    if (a === '--event') {
+      const next = argv[++i];
+      if (!next) throw new Error('--event requires NAME=VALUE');
+      const eq = next.indexOf('=');
+      if (eq < 0) throw new Error(`--event expects NAME=VALUE, got '${next}'`);
+      events[next.slice(0, eq)] = next.slice(eq + 1);
+      continue;
+    }
     if (a.startsWith('--')) {
       const eq = a.indexOf('=');
       if (eq >= 0) {
@@ -40,7 +50,7 @@ function parseArgs(argv: string[]): ParsedArgs {
       positional.push(a);
     }
   }
-  return { positional, flags };
+  return { positional, flags, events };
 }
 
 // ============================================================
@@ -186,6 +196,24 @@ function cmdResume(args: ParsedArgs): number {
   if (typeof args.flags.time === 'string') {
     resumedState = { ...resumedState, timeOverride: Number(args.flags.time) };
   }
+
+  // Phase 2 wait_for event delivery: --event NAME=VALUE → committed entry with parsed VALUE.
+  const updatedEffects = resumedState.effects.map(e => {
+    if (e.effect !== 'wait_for' || e.status !== 'pending') return e;
+    if (!e.recordedValue || e.recordedValue.tag !== 'str') return e;
+    const eventName = e.recordedValue.v;
+    const eventValueText = args.events[eventName];
+    if (eventValueText === undefined) return e;
+
+    const v = parseResumeValue(eventValueText);
+    if ('error' in v) {
+      // Not parseable as int/bool: treat as string
+      return { ...e, status: 'committed' as const, recordedValue: { tag: 'str' as const, v: eventValueText } };
+    }
+    return { ...e, status: 'committed' as const, recordedValue: v };
+  });
+  resumedState = { ...resumedState, effects: updatedEffects };
+
   const result = loop(resumedState, ast);
 
   if (result.kind === 'done') return 0;
