@@ -6,7 +6,7 @@ import type { NodeId } from './ast.js';
 import type { State } from './interpreter.js';
 
 export type Snapshot = {
-  version: 1;
+  version: 2;
   programPath: string;
   programHash: string;        // "sha256:<hex>"
   pausedAt: NodeId;
@@ -42,8 +42,8 @@ export function deserialize(
     return { error: 'snapshot is corrupted (invalid JSON)' };
   }
 
-  if ((snap.version as number) !== 1) {
-    return { error: `unknown snapshot version: ${snap.version}` };
+  if ((snap.version as number) !== 2) {
+    return { error: `unknown snapshot version: ${snap.version}. Phase 2 uses version 2 (Phase 1 snapshots are not migratable; re-run from source).` };
   }
 
   let source: string;

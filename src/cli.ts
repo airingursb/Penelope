@@ -113,7 +113,7 @@ function cmdRun(args: ParsedArgs): number {
       : defaultSnapshotPath(absSourcePath);
 
     const snap: Snapshot = {
-      version: 1,
+      version: 2,
       programPath: basename(absSourcePath),
       programHash: 'sha256:' + sha256(source),
       pausedAt: result.pausedAt,
@@ -189,7 +189,7 @@ function cmdResume(args: ParsedArgs): number {
       ? args.flags.out
       : absSnapPath;  // default: overwrite input
     const newSnap: Snapshot = {
-      version: 1,
+      version: 2,
       programPath: dr.snap.programPath,
       programHash: dr.snap.programHash,
       pausedAt: result.pausedAt,
@@ -262,7 +262,7 @@ function cmdFork(args: ParsedArgs): number {
       }
       if (result.kind === 'paused') {
         const newSnap: Snapshot = {
-          version: 1,
+          version: 2,
           programPath: dr.snap.programPath,
           programHash: dr.snap.programHash,
           pausedAt: result.pausedAt,

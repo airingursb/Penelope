@@ -8,7 +8,7 @@ test('sha256 produces a deterministic hex digest', () => {
 
 test('serialize produces valid pretty-printed JSON', () => {
   const snap: Snapshot = {
-    version: 1,
+    version: 2,
     programPath: 'x.pen',
     programHash: 'sha256:deadbeef',
     pausedAt: 'n5',
@@ -19,6 +19,7 @@ test('serialize produces valid pretty-printed JSON', () => {
       scopes: { s0: { parentId: null, bindings: {} } },
       currentScopeId: 's0',
       nextScopeIdCounter: 1,
+      effects: [],
     },
   };
   const json = serialize(snap);
@@ -28,7 +29,7 @@ test('serialize produces valid pretty-printed JSON', () => {
 
 const goodSource = 'let x = 1;';
 const goodSnap = {
-  version: 1 as const,
+  version: 2 as const,
   programPath: 'x.pen',
   programHash: 'sha256:' + sha256(goodSource),
   pausedAt: 'n5',
@@ -39,6 +40,7 @@ const goodSnap = {
     scopes: { s0: { parentId: null, bindings: {} } },
     currentScopeId: 's0',
     nextScopeIdCounter: 1,
+    effects: [],
   },
 };
 
@@ -71,6 +73,16 @@ test('deserialize rejects unknown version', () => {
   const r = deserialize(JSON.stringify(bad), () => goodSource);
   expect('error' in r).toBe(true);
   if ('error' in r) expect(r.error).toMatch(/unknown snapshot version/);
+});
+
+test('deserialize rejects v1 snapshots with helpful message', () => {
+  const v1snap = { ...goodSnap, version: 1 };
+  const r = deserialize(JSON.stringify(v1snap), () => goodSource);
+  expect('error' in r).toBe(true);
+  if ('error' in r) {
+    expect(r.error).toMatch(/version 2/);
+    expect(r.error).toMatch(/not migratable|re-run/);
+  }
 });
 
 test('deserialize reports missing source file', () => {

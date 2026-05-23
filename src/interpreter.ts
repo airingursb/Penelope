@@ -8,6 +8,19 @@
 import type { ASTBundle, ASTNode, BinOp, NodeId, ScopeId, Value } from './ast.js';
 
 // ============================================================
+// Phase 2: EffectEntry
+// ============================================================
+
+// Phase 2: effect log entry. Filled in by Task 13+. For now just an opaque type.
+export type EffectEntry = {
+  nodeId: NodeId;
+  invocationCount: number;
+  effect: 'print' | 'net_fetch' | 'now' | 'random_int' | 'read_file' | 'write_file' | 'wait_until' | 'wait_for';
+  recordedValue: Value | null;
+  status: 'pending' | 'committed';
+};
+
+// ============================================================
 // State
 // ============================================================
 
@@ -33,6 +46,7 @@ export type State = {
   scopes: Record<ScopeId, Scope>;
   currentScopeId: ScopeId;
   nextScopeIdCounter: number;
+  effects: EffectEntry[];  // Phase 2: effect log
 };
 
 export type StepResult =
@@ -52,6 +66,7 @@ export function initialState(rootId: NodeId): State {
     scopes: { s0: { parentId: null, bindings: {} } },
     currentScopeId: 's0',
     nextScopeIdCounter: 1,
+    effects: [],  // Phase 2
   };
 }
 
@@ -66,6 +81,7 @@ export function runToCompletion(ast: ASTBundle, startNodeId: NodeId = ast.rootId
     scopes: { s0: { parentId: null, bindings: {} } },
     currentScopeId: 's0',
     nextScopeIdCounter: 1,
+    effects: [],  // Phase 2
   };
   while (true) {
     const r = step(state, ast);
