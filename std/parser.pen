@@ -86,6 +86,7 @@ let parse_primary = fn(st) {
     "TRUE" => add_node(p_advance(st), dict_set(dict_set(dict_new(), "kind", "BoolLit"), "value", true)),
     "FALSE" => add_node(p_advance(st), dict_set(dict_set(dict_new(), "kind", "BoolLit"), "value", false)),
     "STRING" => add_node(p_advance(st), dict_set(dict_set(dict_new(), "kind", "StringLit"), "value", dict_get(t, "text"))),
+    "TEMPLATE_STRING" => parse_template_string(st, dict_get(t, "parts")),
     "IDENT" => add_node(p_advance(st), dict_set(dict_set(dict_new(), "kind", "Var"), "name", dict_get(t, "text"))),
     "PAUSE" => add_node(p_advance(st), dict_set(dict_new(), "kind", "Pause")),
     "MINUS" => {
@@ -118,6 +119,64 @@ let parse_primary = fn(st) {
     "MATCH" => parse_match(st),
     "LBRACE" => parse_block(st),
     _ => panic("parser: unexpected token " + kind),
+  }
+};
+
+/// Desugar a TEMPLATE_STRING token into a `+` chain of StringLits and to_str() calls.
+/// "a${x}b" becomes  ("a" + to_str(x)) + "b". To match the TS frontend exactly:
+///   - parts are processed left-to-right (one node per text, three nodes per expr:
+///     the inner expression tree, then Var("to_str"), then Call).
+///   - the BinOp(+) fold runs after all part-nodes are created.
+let parse_template_string = fn(st, parts) {
+  let s0 = p_advance(st);   // consume TEMPLATE_STRING token
+  let build_parts = fn(i, s, ids) {
+    if (i >= list_len(parts)) {
+      dict_set(dict_set(dict_new(), "state", s), "ids", ids)
+    } else {
+      let part = list_get(parts, i);
+      let kind_p = dict_get(part, "kind");
+      if (kind_p == "text") {
+        let lit_r = add_node(s, dict_set(dict_set(dict_new(), "kind", "StringLit"), "value", dict_get(part, "value")));
+        build_parts(i + 1, dict_get(lit_r, "state"), list_push(ids, dict_get(lit_r, "id")))
+      } else {
+        // Expr part: tokenize the source, swap state tokens, parse expression, swap back.
+        let sub_tokens = pen_tokenize(dict_get(part, "source") + ";");
+        let saved_tokens = dict_get(s, "tokens");
+        let saved_pos = dict_get(s, "pos");
+        let s_sub = dict_set(dict_set(s, "tokens", sub_tokens), "pos", 0);
+        let expr_r = parse_expression(s_sub);
+        let s_after_expr = dict_get(expr_r, "state");
+        let callee_r = add_node(s_after_expr, dict_set(dict_set(dict_new(), "kind", "Var"), "name", "to_str"));
+        let call_r = add_node(dict_get(callee_r, "state"), dict_set(dict_set(dict_set(dict_new(),
+          "kind", "Call"),
+          "calleeId", dict_get(callee_r, "id")),
+          "argIds", list_new(dict_get(expr_r, "id"))));
+        let s_call = dict_get(call_r, "state");
+        let s_restored = dict_set(dict_set(s_call, "tokens", saved_tokens), "pos", saved_pos);
+        build_parts(i + 1, s_restored, list_push(ids, dict_get(call_r, "id")))
+      }
+    }
+  };
+  let built = build_parts(0, s0, list_new());
+  let ids = dict_get(built, "ids");
+  let s_after_parts = dict_get(built, "state");
+  // Fold ids left-to-right with BinOp(+).
+  let fold = fn(s, i, acc_id) {
+    if (i >= list_len(ids)) {
+      dict_set(dict_set(dict_new(), "state", s), "id", acc_id)
+    } else {
+      let bop_r = add_node(s, dict_set(dict_set(dict_set(dict_set(dict_new(),
+        "kind", "BinOp"),
+        "op", "+"),
+        "leftId", acc_id),
+        "rightId", list_get(ids, i)));
+      fold(dict_get(bop_r, "state"), i + 1, dict_get(bop_r, "id"))
+    }
+  };
+  if (list_len(ids) == 0) {
+    add_node(s_after_parts, dict_set(dict_set(dict_new(), "kind", "StringLit"), "value", ""))
+  } else {
+    fold(s_after_parts, 1, list_get(ids, 0))
   }
 };
 
@@ -265,19 +324,40 @@ let parse_fn = fn(st) {
     "bodyBlockId", dict_get(body, "id")))
 };
 
-/// Parse a single match pattern. Returns dict shape: {kind, value?, name?}.
-let parse_pattern = fn(st) {
+/// Parse an "atom" pattern (one alternative; or-patterns are built from these).
+let parse_atom_pattern = fn(st) {
   let t = p_peek(st);
   let kind = dict_get(t, "kind");
   match kind {
     "INT" => dict_set(dict_set(dict_new(), "state", p_advance(st)), "pattern",
       dict_set(dict_set(dict_new(), "kind", "int"), "value", dict_get(t, "value"))),
+    "MINUS" => {
+      // Negative int literal in pattern position: `match x { -5 => ... }`.
+      let s1 = p_advance(st);
+      let next = p_peek(s1);
+      if (dict_get(next, "kind") != "INT") { panic("parser: expected INT after - in pattern") }
+      else {
+        dict_set(dict_set(dict_new(), "state", p_advance(s1)), "pattern",
+          dict_set(dict_set(dict_new(), "kind", "int"), "value", 0 - dict_get(next, "value")))
+      }
+    },
     "TRUE" => dict_set(dict_set(dict_new(), "state", p_advance(st)), "pattern",
       dict_set(dict_set(dict_new(), "kind", "bool"), "value", true)),
     "FALSE" => dict_set(dict_set(dict_new(), "state", p_advance(st)), "pattern",
       dict_set(dict_set(dict_new(), "kind", "bool"), "value", false)),
     "STRING" => dict_set(dict_set(dict_new(), "state", p_advance(st)), "pattern",
       dict_set(dict_set(dict_new(), "kind", "str"), "value", dict_get(t, "text"))),
+    "LPAREN" => {
+      // `()` unit pattern; anything else is unsupported.
+      let s1 = p_advance(st);
+      if (p_peek_kind(s1) != "RPAREN") { panic("parser: only () supported as paren-pattern") }
+      else {
+        dict_set(dict_set(dict_new(), "state", p_advance(s1)), "pattern",
+          dict_set(dict_new(), "kind", "unit"))
+      }
+    },
+    "LBRACK" => parse_list_pattern(p_advance(st)),
+    "LBRACE" => parse_dict_pattern(p_advance(st)),
     "IDENT" => {
       let name = dict_get(t, "text");
       if (name == "_") {
@@ -292,6 +372,93 @@ let parse_pattern = fn(st) {
   }
 };
 
+/// Parse a list pattern: `[a, b, ...rest]`. Leading LBRACK already consumed.
+let parse_list_pattern = fn(st) {
+  let go = fn(s, items, rest_name) {
+    if (p_peek_kind(s) == "RBRACK") {
+      let s_end = p_advance(s);
+      let pat = if (rest_name == "") {
+        dict_set(dict_set(dict_new(), "kind", "list"), "items", items)
+      } else {
+        dict_set(dict_set(dict_set(dict_new(), "kind", "list"), "items", items), "rest", rest_name)
+      };
+      dict_set(dict_set(dict_new(), "state", s_end), "pattern", pat)
+    } else {
+      if (p_peek_kind(s) == "DOTDOTDOT") {
+        let s1 = p_advance(s);
+        let name_tok = p_peek(s1);
+        if (dict_get(name_tok, "kind") != "IDENT") { panic("parser: expected ident after ... in list pattern") }
+        else {
+          // After ...name, expect RBRACK
+          let s2 = p_advance(s1);
+          go(s2, items, dict_get(name_tok, "text"))
+        }
+      } else {
+        let sub = parse_pattern(s);
+        let after = dict_get(sub, "state");
+        let after2 = if (p_peek_kind(after) == "COMMA") { p_advance(after) } else { after };
+        go(after2, list_push(items, dict_get(sub, "pattern")), rest_name)
+      }
+    }
+  };
+  go(st, list_new(), "")
+};
+
+/// Parse a dict pattern: `{key: pat, "str": pat, ...}`. Leading LBRACE already consumed.
+let parse_dict_pattern = fn(st) {
+  let go = fn(s, entries, has_rest) {
+    if (p_peek_kind(s) == "RBRACE") {
+      let s_end = p_advance(s);
+      let pat = if (has_rest) {
+        dict_set(dict_set(dict_set(dict_new(), "kind", "dict"), "entries", entries), "rest", true)
+      } else {
+        dict_set(dict_set(dict_new(), "kind", "dict"), "entries", entries)
+      };
+      dict_set(dict_set(dict_new(), "state", s_end), "pattern", pat)
+    } else {
+      if (p_peek_kind(s) == "DOTDOTDOT") {
+        go(p_advance(s), entries, true)
+      } else {
+        let key_tok = p_peek(s);
+        let key_kind = dict_get(key_tok, "kind");
+        let key = if (key_kind == "STRING") { dict_get(key_tok, "text") }
+                  else { if (key_kind == "IDENT") { dict_get(key_tok, "text") }
+                         else { panic("parser: expected key (string or ident) in dict pattern") } };
+        let s1 = p_advance(s);
+        let s2 = p_eat(s1, "COLON");
+        let sub = parse_pattern(s2);
+        let entry = dict_set(dict_set(dict_new(), "key", key), "pattern", dict_get(sub, "pattern"));
+        let after = dict_get(sub, "state");
+        let after2 = if (p_peek_kind(after) == "COMMA") { p_advance(after) } else { after };
+        go(after2, list_push(entries, entry), has_rest)
+      }
+    }
+  };
+  go(st, list_new(), false)
+};
+
+/// Parse a full pattern: atom-pattern (`|` atom-pattern)*. Or-pattern shape:
+/// {kind: "or", patterns: [...]}.
+let parse_pattern = fn(st) {
+  let first = parse_atom_pattern(st);
+  let s_after = dict_get(first, "state");
+  if (p_peek_kind(s_after) != "PIPE") {
+    first
+  } else {
+    let go = fn(s, alts) {
+      if (p_peek_kind(s) != "PIPE") {
+        let pat = dict_set(dict_set(dict_new(), "kind", "or"), "patterns", alts);
+        dict_set(dict_set(dict_new(), "state", s), "pattern", pat)
+      } else {
+        let s1 = p_advance(s);
+        let next = parse_atom_pattern(s1);
+        go(dict_get(next, "state"), list_push(alts, dict_get(next, "pattern")))
+      }
+    };
+    go(s_after, list_new(dict_get(first, "pattern")))
+  }
+};
+
 /// Parse a match expression: match scrutinee { pat => body, ... }
 let parse_match = fn(st) {
   let s1 = p_eat(st, "MATCH");
@@ -302,11 +469,22 @@ let parse_match = fn(st) {
       dict_set(dict_set(dict_new(), "state", s), "arms", acc)
     } else {
       let pat_r = parse_pattern(s);
-      let s2 = p_eat(dict_get(pat_r, "state"), "FAT_ARROW");
+      // Optional guard: `pat if cond => body`
+      let after_pat = dict_get(pat_r, "state");
+      let with_guard = if (p_peek_kind(after_pat) == "IF") {
+        let s_if = p_advance(after_pat);
+        let guard = parse_expression(s_if);
+        dict_set(dict_set(dict_new(), "state", dict_get(guard, "state")), "guardId", dict_get(guard, "id"))
+      } else {
+        dict_set(dict_set(dict_new(), "state", after_pat), "guardId", "")
+      };
+      let s2 = p_eat(dict_get(with_guard, "state"), "FAT_ARROW");
       let body = parse_expression(s2);
-      let arm = dict_set(dict_set(dict_new(),
+      let guard_id = dict_get(with_guard, "guardId");
+      let arm_base = dict_set(dict_set(dict_new(),
         "pattern", dict_get(pat_r, "pattern")),
         "bodyId", dict_get(body, "id"));
+      let arm = if (guard_id == "") { arm_base } else { dict_set(arm_base, "guardId", guard_id) };
       let after = dict_get(body, "state");
       let after2 = if (p_peek_kind(after) == "COMMA") { p_advance(after) } else { after };
       collect_arms(after2, list_push(acc, arm))

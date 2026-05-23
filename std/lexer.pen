@@ -1,17 +1,16 @@
 /// Penelope lexer — written in Penelope.
 ///
-/// Scope: handles the subset of Penelope used to write the self-hosted compiler:
-/// decimal INT, IDENT/keywords, STRING (no template interpolation), all single +
-/// two-char operators, punctuation, // line comments, whitespace.
+/// Handles the full surface syntax: decimal INT, IDENT/keywords, STRING with
+/// template interpolation (TEMPLATE_STRING tokens carry a `parts` list of
+/// text+expr segments), all single + two-char operators, DOTDOTDOT, PIPE,
+/// punctuation, // line comments, /// doc comments (treated as comments),
+/// whitespace.
 ///
-/// NOT supported in this MVP self-hosted lexer:
-///   - template strings ("${...}")
-///   - /// doc comments (treated as plain line comments)
+/// Still NOT supported (rarely used in this codebase):
 ///   - hex/binary/underscore numeric literals
 ///   - block comments (/* ... */)
-///   - DOTDOTDOT, PIPE pattern operators
 ///
-/// Output: list of token dicts of shape {kind, line, col, text?, value?}.
+/// Output: list of token dicts of shape {kind, line, col, text?, value?, parts?}.
 
 import "./iter.pen";
 
@@ -165,18 +164,57 @@ let lex_ident = fn(st) {
   st_push(dict_get(r, "state"), tok)
 };
 
-/// Lex a string literal. Handles \n \t \r \\ \"  escapes. No interpolation.
+/// Capture characters until a matching `}` (tracking brace depth) — used by
+/// template string parsing to grab the source of a `${...}` expression.
+let capture_until_close_brace = fn(s, expr_src, depth) {
+  if (st_done(s)) {
+    panic("lexer: unterminated interpolation in string")
+  } else {
+    let c = st_at(s);
+    if (c == "}") {
+      if (depth == 1) {
+        dict_set(dict_set(dict_new(), "expr", expr_src), "state", st_advance(s))
+      } else {
+        capture_until_close_brace(st_advance(s), expr_src + c, depth - 1)
+      }
+    } else {
+      if (c == "{") {
+        capture_until_close_brace(st_advance(s), expr_src + c, depth + 1)
+      } else {
+        capture_until_close_brace(st_advance(s), expr_src + c, depth)
+      }
+    }
+  }
+};
+
+/// Build a text-part dict.
+let mk_text_part = fn(value) {
+  dict_set(dict_set(dict_new(), "kind", "text"), "value", value)
+};
+
+/// Build an expr-part dict.
+let mk_expr_part = fn(source) {
+  dict_set(dict_set(dict_new(), "kind", "expr"), "source", source)
+};
+
+/// Lex a string literal. Handles \n \t \r \\ \" \$ escapes and ${...} template
+/// interpolation. Emits STRING when no interp, TEMPLATE_STRING (with parts list)
+/// when ${...} appears.
 let lex_string = fn(st) {
   let start_line = dict_get(st, "line");
   let start_col = dict_get(st, "col");
   let s1 = st_advance(st);   // consume opening quote
-  let acc = fn(s, text) {
+  let go = fn(s, text, parts, has_interp) {
     if (st_done(s)) {
       panic("lexer: unterminated string")
     } else {
       let c = st_at(s);
       if (c == "\"") {
-        dict_set(dict_set(dict_new(), "text", text), "state", st_advance(s))
+        dict_set(dict_set(dict_set(dict_set(dict_new(),
+          "text", text),
+          "parts", parts),
+          "has_interp", has_interp),
+          "state", st_advance(s))
       } else {
         if (c == "\\") {
           let s2 = st_advance(s);
@@ -187,17 +225,41 @@ let lex_string = fn(st) {
             "r" => "\r",
             "\\" => "\\",
             "\"" => "\"",
+            "$" => "$",
             _ => panic("lexer: bad escape"),
           };
-          acc(st_advance(s2), text + ch)
+          go(st_advance(s2), text + ch, parts, has_interp)
         } else {
-          acc(st_advance(s), text + c)
+          if (c == "$") {
+            if (st_peek(s, 1) == "{") {
+              // ${...} interpolation: flush current text, capture expr, continue.
+              let parts_with_text = list_push(parts, mk_text_part(text));
+              let s_after_dollar = st_advance(st_advance(s));   // consume ${
+              let captured = capture_until_close_brace(s_after_dollar, "", 1);
+              let parts_with_expr = list_push(parts_with_text, mk_expr_part(dict_get(captured, "expr")));
+              go(dict_get(captured, "state"), "", parts_with_expr, true)
+            } else {
+              go(st_advance(s), text + c, parts, has_interp)
+            }
+          } else {
+            go(st_advance(s), text + c, parts, has_interp)
+          }
         }
       }
     }
   };
-  let r = acc(s1, "");
-  let tok = token_with_text("STRING", start_line, start_col, dict_get(r, "text"));
+  let r = go(s1, "", list_new(), false);
+  let tok = if (dict_get(r, "has_interp")) {
+    // Flush final text segment, emit TEMPLATE_STRING.
+    let final_parts = list_push(dict_get(r, "parts"), mk_text_part(dict_get(r, "text")));
+    dict_set(dict_set(dict_set(dict_set(dict_new(),
+      "kind", "TEMPLATE_STRING"),
+      "line", start_line),
+      "col", start_col),
+      "parts", final_parts)
+  } else {
+    token_with_text("STRING", start_line, start_col, dict_get(r, "text"))
+  };
   st_push(dict_get(r, "state"), tok)
 };
 
@@ -253,17 +315,27 @@ let lex_one = fn(st) {
         if (c == "\"") {
           lex_string(s)
         } else {
-          let two = two_char_kind(c, st_peek(s, 1));
-          if (two != "") {
-            let tok = make_token(two, dict_get(s, "line"), dict_get(s, "col"));
-            st_push(st_advance(st_advance(s)), tok)
+          // DOTDOTDOT (three-char `...`) — pattern rest binding.
+          if (c == ".") {
+            if (st_peek(s, 1) == ".") {
+              if (st_peek(s, 2) == ".") {
+                let tok = make_token("DOTDOTDOT", dict_get(s, "line"), dict_get(s, "col"));
+                st_push(st_advance(st_advance(st_advance(s))), tok)
+              } else { panic("lexer: unexpected '..' (expected '...')") }
+            } else { panic("lexer: unexpected '.'") }
           } else {
-            let one = one_char_kind(c);
-            if (one != "") {
-              let tok = make_token(one, dict_get(s, "line"), dict_get(s, "col"));
-              st_push(st_advance(s), tok)
+            let two = two_char_kind(c, st_peek(s, 1));
+            if (two != "") {
+              let tok = make_token(two, dict_get(s, "line"), dict_get(s, "col"));
+              st_push(st_advance(st_advance(s)), tok)
             } else {
-              panic("lexer: unexpected character '" + c + "'")
+              let one = one_char_kind(c);
+              if (one != "") {
+                let tok = make_token(one, dict_get(s, "line"), dict_get(s, "col"));
+                st_push(st_advance(s), tok)
+              } else {
+                panic("lexer: unexpected character '" + c + "'")
+              }
             }
           }
         }

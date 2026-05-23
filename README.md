@@ -126,9 +126,9 @@ The CLI also supports `exec`, `resume`, `fork`, `disasm`, `profile`, `doc`, plus
 | Polish R5 | comment-preserving fmt · `pen doc` · TCO · `--watch` on test/check · VSCode debugger | ✅ |
 | Lang ext | string interpolation · pattern matching · module system (`import`) | ✅ |
 | Polish Final | syntax niceties · or/guard/list/dict patterns · DAP step · cross-import source maps · `pen graph`/`new` · playground sharing | ✅ |
-| Phase 4 | Live editing (`pen edit`) · time-travel debugger · self-hosting (lexer.pen / parser.pen / compiler.pen + `pen self-test`) | ✅ |
+| Phase 4 | Live editing (`pen edit`) · time-travel debugger · **full self-hosting** (lexer/parser/compiler in Penelope, including template strings, or-patterns, guards, list/dict patterns, TCO) | ✅ |
 
-**Final test count: 538 passing across 48 test files.** Zero production dependencies. Hand-written lexer, recursive-descent parser, stack-based VM with TCO, 18 opcodes, optimizer levels `-O0` / `-O1` / `-O2`, snapshot format v3. The compiler is now bootstrap-verified: `pen self-test` confirms `pen_compile(x) ≡ ts_compile(x)` on a battery of samples.
+**Final test count: 557 passing across 50 test files.** Zero production dependencies. Hand-written lexer, recursive-descent parser, stack-based VM with TCO, 18 opcodes, optimizer levels `-O0` / `-O1` / `-O2`, snapshot format v3. The compiler is bootstrap-verified in three stages by `pen self-test`: (1) pen-built bytecode is byte-identical to ts-built on a battery of samples; (2) the pen frontend's own source round-trips; (3) the pen-built pen-frontend, when actually run, correctly compiles new programs to the same bytecode TS would produce. Penelope self-hosts.
 
 ---
 

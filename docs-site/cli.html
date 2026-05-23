@@ -147,13 +147,20 @@ resumed (frame@line 14) — printing: 42</code></pre>
 
 <h2>pen self-test</h2>
 
-<p>Bootstrap-correctness check: runs a battery of source samples through both the TS compiler and the Penelope-implemented compiler (<code>std/parser.pen</code> + <code>std/compiler.pen</code>) and verifies the bytecode matches. See <a href="phase4.html">Phase 4</a>.</p>
+<p>Three-stage self-hosting verification: (1) pen-built bytecode is byte-identical to ts-built on samples and on all <code>std/*.pen</code> files (self-bootstrap), and (2) the pen-built pen-frontend, when run, correctly compiles new programs (fixpoint). See <a href="phase4.html">Phase 4</a> for the diagram.</p>
 
 <pre><code>$ pen self-test
-  ✓ "let x = 42;"
-  ✓ "let f = fn(n) { n + 1 }; print(to_str(f(41)));"
-  …
-5/5 bootstrap samples agree (pen-compiled ≡ ts-compiled)</code></pre>
+Stage 1: round-trip on inline samples
+  ✓ …
+Stage 2: round-trip on std/*.pen (self-bootstrap)
+  ✓ std/iter.pen
+  ✓ std/lexer.pen
+  ✓ std/parser.pen
+  ✓ std/compiler.pen
+Stage 3: acid test — pen-built pen-frontend compiles a program
+  ✓ …
+
+12/12 checks passed — Penelope self-hosts ✓</code></pre>
 
 <h2>pen run --watch</h2>
 

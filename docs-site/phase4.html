@@ -57,43 +57,76 @@ bin/penelope edit snapshot.penz     <span class="cm"># resume on the new source<
 
 <p>The capability is advertised as <code>supportsStepBack: true</code>, so VSCode shows the reverse-step buttons automatically. Implementation cost: deep-clone <code>VMState</code> as JSON. Cheap because debug sessions are short.</p>
 
-<h2>4.3 — Self-hosting</h2>
+<h2>4.3 — Self-hosting (full language)</h2>
 
-<p>The TS compiler is &lt;2000 lines. Reimplementing it in Penelope is a real test of whether the language is good enough to host its own toolchain. Three files in <code>std/</code> do the work:</p>
+<p>The TS compiler is &lt;2000 lines. Reimplementing it in Penelope is a real test of whether the language is good enough to host its own toolchain. Four files in <code>std/</code> do the work:</p>
 
 <table>
   <tr><th>File</th><th>Lines</th><th>Responsibility</th></tr>
   <tr><td><code>std/iter.pen</code></td><td>~70</td><td><code>list_map</code>, <code>list_filter</code>, <code>list_reduce</code>, etc. — the HOFs the compiler needs.</td></tr>
-  <tr><td><code>std/lexer.pen</code></td><td>~290</td><td>Tokenizes a source string into <code>[{kind, line, col, …}, …]</code>.</td></tr>
-  <tr><td><code>std/parser.pen</code></td><td>~376</td><td>Pratt-style infix parser, produces <code>{rootId, nodes}</code> AST bundle.</td></tr>
-  <tr><td><code>std/compiler.pen</code></td><td>~380</td><td>AST → <code>{constants, code}</code> bytecode program.</td></tr>
+  <tr><td><code>std/lexer.pen</code></td><td>~340</td><td>Tokenizes a source string. Handles template strings (<code>TEMPLATE_STRING</code> tokens with <code>parts</code>), <code>DOTDOTDOT</code>, <code>PIPE</code>, and the <code>\$</code> escape.</td></tr>
+  <tr><td><code>std/parser.pen</code></td><td>~500</td><td>Pratt-style infix parser, produces <code>{rootId, nodes}</code> AST bundle. Pattern kinds: literal / var / wildcard / unit / or / list (with <code>...rest</code>) / dict. Guard arms (<code>pat if cond =&gt; body</code>). Template-string desugaring to <code>+</code> chains.</td></tr>
+  <tr><td><code>std/compiler.pen</code></td><td>~520</td><td>AST → <code>{constants, code}</code>. Tail-call optimization (CALL → TAILCALL in tail position). Full pattern compilation including or-pattern chaining, list-pattern length+items+rest-bind, and dict-pattern <code>dict_has</code> + recursive sub-check.</td></tr>
 </table>
 
-<p>The whole thing was painful in instructive ways: Penelope (as it stood) had no unary <code>!</code>, didn't allow <code>else if</code> (you write <code>else { if (…) { … } else { … } }</code>), couldn't use a block as a primary expression in <code>match</code> arms. Each gap surfaced as a parse error in the pen-side code and was either worked around or fixed in the TS frontend. The result is a more honest language.</p>
+<p>The whole thing was painful in instructive ways. Penelope (as it stood) had no unary <code>!</code>, didn't allow <code>else if</code>, couldn't use a block as a primary expression in <code>match</code> arms. Each gap surfaced as a parse error in the pen-side code and was either worked around or fixed in the TS frontend. The result is a more honest language.</p>
 
-<h2>Bootstrap correctness — <code>pen self-test</code></h2>
+<h2>Bootstrap correctness — three-stage <code>pen self-test</code></h2>
 
-<p>Self-hosting only matters if pen-compile and ts-compile produce the same program. A new CLI command verifies this:</p>
+<p>"Self-hosting" is easy to overclaim. <code>pen self-test</code> verifies three increasingly strong properties in sequence:</p>
+
+<ol>
+  <li><strong>Stage 1 — round-trip.</strong> For a battery of source samples (including template strings, or-patterns, guards, list patterns), the pen frontend emits the same bytecode as the TS frontend.</li>
+  <li><strong>Stage 2 — self-bootstrap.</strong> The pen frontend's own source (<code>std/iter.pen</code>, <code>std/lexer.pen</code>, <code>std/parser.pen</code>, <code>std/compiler.pen</code>) round-trips. Pen-compiling pen-frontend produces byte-identical bytecode to ts-compiling pen-frontend.</li>
+  <li><strong>Stage 3 — acid test (fixpoint).</strong> Take the pen-built pen-frontend bytecode. Actually <em>run</em> it. Have it compile a source. Verify the resulting bytecode matches what TS produces directly. This proves the pen-built bytecode isn't just byte-identical — it's runnable and behaviorally correct.</li>
+</ol>
 
 <pre><code>$ bin/penelope self-test
+
+Stage 1: round-trip on inline samples
   ✓ "let x = 42;"
   ✓ "let f = fn(n) { n + 1 }; print(to_str(f(41)));"
   ✓ "let r = if (1 &lt; 2) { \"yes\" } else { \"no\" };"
-  ✓ "let r = match 1 { 1 =&gt; \"one\", _ =&gt; \"other\" };"
-  ✓ "print(\"hello, self-hosted Penelope\");"
+  ✓ "let r = match 1 { 1 | 2 =&gt; \"small\", n if n &gt; 100 =&gt; \"big\", _ =&gt; \"mid\" };"
+  ✓ "let n = 7; print(\"sum 1..\${n} = \${n * (n + 1) / 2}\");"
 
-5/5 bootstrap samples agree (pen-compiled ≡ ts-compiled)
+Stage 2: round-trip on std/*.pen (self-bootstrap)
+  ✓ std/iter.pen
+  ✓ std/lexer.pen
+  ✓ std/parser.pen
+  ✓ std/compiler.pen
+
+Stage 3: acid test — pen-built pen-frontend compiles a program
+  ✓ "let x = 42;"
+  ✓ "let f = fn(n) { n + 1 }; print(to_str(f(41)));"
+  ✓ "let r = if (1 &lt; 2) { \"yes\" } else { \"no\" };"
+
+12/12 checks passed — Penelope self-hosts ✓
 </code></pre>
 
-<p>For each sample, the same source is run through both compilers and the resulting <code>{constants, code}</code> are compared structurally (modulo inline-cache slots that the TS optimizer adds but the pen compiler doesn't). The extended test suite in <code>test/compiler-pen.test.ts</code> exercises 14 samples end-to-end, including running the pen-compiled bytecode and checking its printed output.</p>
+<p>The extended test suite (<code>test/self-host-roundtrip.test.ts</code> + <code>test/self-host-acid.test.ts</code>) covers 19 cases end-to-end, including all four std/*.pen files and two real examples that use template strings and nested match.</p>
 
-<h2>What's not done</h2>
+<h2>The fixpoint diagram</h2>
 
-<p>The self-hosted compiler covers the subset the bootstrap proof needs: int/bool/string/unit literals, arithmetic, comparison, <code>fn</code>/<code>let</code>/<code>if</code>/<code>match</code>/<code>pause</code>/<code>print</code>, literal+var+wildcard patterns. It does <em>not</em> yet handle: template strings, or-patterns, guards, list/dict patterns, modules. Those still belong to the TS frontend. Closing that gap is the obvious next step, but the loop is already closed for the core language.</p>
+<pre><code>             ts_compile
+   source ─────────────────▶ bytecode_A
+      │
+      │  pen_compile
+      ▼
+   bytecode_B
+      │
+      │  pen_compile (run as bytecode)
+      ▼
+   bytecode_C
+
+   self-test verifies:  bytecode_A ≡ bytecode_B ≡ bytecode_C
+</code></pre>
+
+<p>Stage 1 proves A ≡ B. Stage 2 proves the pen frontend's own source round-trips. Stage 3 proves B ≡ C — i.e., when the pen frontend is ITSELF compiled by the pen frontend, the resulting bytecode still computes the same answers.</p>
 
 <h2>Test count</h2>
 
-<p>538 tests across 48 files, including new suites for live editing, reverse stepping, the stdlib expansion, and the pen-side lexer/parser/compiler comparisons.</p>
+<p>557 tests across 50 files, including new suites for live editing, reverse stepping, the stdlib expansion, full pen lexer/parser/compiler comparisons (15 samples + 4 std files), and the 4 acid tests that prove pen-built bytecode is runnable.</p>
 
 </body>
 </html>
