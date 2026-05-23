@@ -14,6 +14,7 @@ import { extractDocs, renderMarkdown } from './doc-gen.js';
 import { loadSource, loadSourceWithMap } from './loader.js';
 import { buildGraph, renderDot } from './graph-gen.js';
 import { scaffold } from './scaffold.js';
+import { remapState } from './live-edit.js';
 import { extractExpectations, checkExpectations } from './test-runner.js';
 import { spawnSync } from 'node:child_process';
 import { formatDiagnostic, diagnosticFromMessage } from './diagnostic.js';
@@ -335,6 +336,67 @@ function cmdGraph(args: ParsedArgs): number {
   return 0;
 }
 
+function cmdEdit(args: ParsedArgs): number {
+  const snapPath = args.positional[1];
+  if (!snapPath) { process.stderr.write('usage: pen edit <file.penz>\n'); return 2; }
+  const absSnap = resolve(snapPath);
+
+  let snapText: string;
+  try { snapText = readFileSync(absSnap, 'utf8'); }
+  catch { process.stderr.write(`cli error: cannot read snapshot: ${snapPath}\n`); return 3; }
+
+  const sr = deserialize(snapText, (p) => readFileSync(p, 'utf8'));
+  if ('error' in sr) { process.stderr.write(`cli error: ${sr.error}\n`); return 1; }
+  if (sr.snap.version !== 3) { process.stderr.write('cli error: snapshot version mismatch\n'); return 1; }
+
+  // Load the OLD bytecode (with its sourceMap) — referenced by snapshot.programPath.
+  const oldPencPath = resolve(dirname(absSnap), sr.snap.programPath);
+  const oldR = readPencFile(oldPencPath);
+  if ('error' in oldR) { process.stderr.write(`cli error: ${oldR.error}\n`); return 1; }
+
+  // Derive the source path from .penc → .pen.
+  const srcPath = oldPencPath.replace(/\.penc$/, '.pen');
+  let source: string;
+  let lineMap: import('./loader.js').LineOrigin[] = [];
+  try {
+    const loaded = loadSourceWithMap(srcPath);
+    source = loaded.source;
+    lineMap = loaded.lineMap;
+  } catch { process.stderr.write(`cli error: cannot read source: ${srcPath}\n`); return 3; }
+
+  // Recompile.
+  let newProg;
+  try {
+    const ast = parse(tokenize(source));
+    newProg = runOptimizer(compile(ast), args.oLevel);
+    newProg.sourceHash = 'sha256:' + sha256(source);
+  } catch (e) {
+    const diag = diagnosticFromMessage((e as Error).message, source, srcPath, lineMap);
+    process.stderr.write(formatDiagnostic(diag) + '\n');
+    return 1;
+  }
+
+  // Attempt to remap the VMState.
+  const remap = remapState(oldR.prog, newProg, sr.snap.state);
+  if (!remap.ok) {
+    process.stderr.write(`cli error: cannot apply live edit: ${remap.reason}\n`);
+    process.stderr.write('hint: revert your changes or use `pen resume` on the old .penc.\n');
+    return 1;
+  }
+
+  // Write new .penc (overwriting the old) and resume.
+  writePencFile(oldPencPath, newProg);
+  const r = run(newProg, remap.state);
+  if (r.status === 'paused') {
+    const newSnapPath = writeSnapshot(oldPencPath, r.state);
+    process.stdout.write(`re-paused at ip ${r.state.ip} → ${newSnapPath}\n`);
+  } else {
+    // halted — remove the snapshot since the program is done
+    process.stdout.write('program completed after live edit\n');
+  }
+  return 0;
+}
+
 function cmdNew(args: ParsedArgs): number {
   const dir = args.positional[1];
   if (!dir) { process.stderr.write('usage: pen new <dir>\n'); return 2; }
@@ -601,7 +663,8 @@ export async function main(argv: string[]): Promise<number> {
   if (sub === 'doc')     return cmdDoc(args);
   if (sub === 'graph')   return cmdGraph(args);
   if (sub === 'new')     return cmdNew(args);
-  process.stderr.write(`usage: penelope <build|exec|run|resume|fork|disasm|bench|inspect|repl|check|profile|fmt|test|doc|graph|new> [-O0|-O1|-O2] [args]\n`);
+  if (sub === 'edit')    return cmdEdit(args);
+  process.stderr.write(`usage: penelope <build|exec|run|resume|fork|disasm|bench|inspect|repl|check|profile|fmt|test|doc|graph|new|edit> [-O0|-O1|-O2] [args]\n`);
   return 2;
 }
 
