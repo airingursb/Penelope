@@ -26,3 +26,20 @@ test('demo 1: top-level pause survives across processes', () => {
 
   cleanup(snap);
 });
+
+test('demo 2: nested-function pause preserves the enclosing call frame', () => {
+  const source = resolve('examples/02-nested-pause.pen');
+  const snap = resolve('examples/02-nested-pause.penz');
+  cleanup(snap);
+
+  const r1 = spawnSync(PEN, ['run', source], { encoding: 'utf8' });
+  expect(r1.status).toBe(0);
+  expect(existsSync(snap)).toBe(true);
+
+  // Resume with b = 41; outer should print 42 (a=1 + b=41).
+  const r2 = spawnSync(PEN, ['resume', snap, '41'], { encoding: 'utf8' });
+  expect(r2.status).toBe(0);
+  expect(r2.stdout.trim()).toBe('42');
+
+  cleanup(snap);
+});
