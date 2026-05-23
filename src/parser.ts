@@ -221,6 +221,10 @@ function parsePrimary(c: Cursor, b: Builder): ASTNode {
       c.eat('INT');
       return b.addNode(id => ({ id, kind: 'IntLit', value: t.value! }));
     }
+    case 'STRING': {
+      c.eat('STRING');
+      return b.addNode(id => ({ id, kind: 'StringLit', value: t.text! }));
+    }
     case 'TRUE':
       c.eat('TRUE');
       return b.addNode(id => ({ id, kind: 'BoolLit', value: true }));
