@@ -82,3 +82,23 @@ test('does not treat / not followed by / as a comment', () => {
 test('throws on unexpected characters', () => {
   expect(() => tokenize('@')).toThrow(/unexpected character/);
 });
+
+test('tokenizes a simple string literal', () => {
+  const tokens = tokenize('"hello"');
+  expect(tokens[0]).toMatchObject({ kind: 'STRING', text: 'hello' });
+  expect(tokens[1].kind).toBe('EOF');
+});
+
+test('handles string escape sequences', () => {
+  expect(tokenize('"a\\nb"')[0]).toMatchObject({ kind: 'STRING', text: 'a\nb' });
+  expect(tokenize('"a\\\\b"')[0]).toMatchObject({ kind: 'STRING', text: 'a\\b' });
+  expect(tokenize('"a\\"b"')[0]).toMatchObject({ kind: 'STRING', text: 'a"b' });
+});
+
+test('empty string literal', () => {
+  expect(tokenize('""')[0]).toMatchObject({ kind: 'STRING', text: '' });
+});
+
+test('unterminated string throws', () => {
+  expect(() => tokenize('"hello')).toThrow(/unterminated string/);
+});
