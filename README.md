@@ -311,6 +311,46 @@ Phase 2 (effect system — correctness for impure pause/resume) and Phase 3 (byt
 
 ---
 
+## Phase 2 Status
+
+**Status:** ✅ Complete (2026-05-23)
+
+Phase 2 turns Penelope into a **real agent runtime**. It adds:
+
+- **Strings**: literals (`"hello"`), `+`/`==`/`!=` overloads, `str_length`, `str_slice`, `to_str` builtins
+- **8 effect primitives**:
+  - **Write** (skip on replay): `print` (now logged), `write_file(path, body)`
+  - **Read** (record once, replay logged): `net_fetch(url)`, `now()`, `random_int(lo, hi)`, `read_file(path)`
+  - **Wait** (pause cycle): `wait_until(ms)`, `wait_for(name)`
+- **Effect log** in snapshot v2 (breaking change from v1)
+- **CLI**: `pen resume --event NAME=VALUE`, `--time MS`, `--no-replay`; `pen inspect` shows the effect log
+
+**107 tests passing** — Phase 1 baseline preserved + Phase 2 unit (string + effect) + Phase 2 cross-process integration (crash + recover scenarios).
+
+### The Phase 2 acceptance demo
+
+A 24-hour HITL approval agent that **crashes twice mid-flight and still completes correctly**:
+
+```bash
+./bin/penelope run examples/08-24h-agent.pen
+# → "Approval request for $5000", pauses on wait_for
+# (process can die here — snapshot on disk)
+
+./bin/penelope resume examples/08-24h-agent.penz --event approval=true
+# → "Decision received: true", "LLM processed", pauses again at internal pause
+# (process can die again — snapshot updated)
+
+./bin/penelope resume examples/08-24h-agent.penz true
+# → "Audit logged" (writes /tmp/penelope-audit.log with the originally-fetched LLM body)
+# Earlier prints are NOT repeated; the net_fetch is NOT re-called.
+```
+
+### What's next
+
+Phase 3 is bytecode VM, live editing (`pause` → patch AST → resume), time-travel debugger, distributed snapshot migration. See `docs/superpowers/specs/2026-05-22-penelope-phase-1-design.md` §17 for the forward-compatibility notes Phase 2 built upon.
+
+---
+
 ## License
 
 TBD.
