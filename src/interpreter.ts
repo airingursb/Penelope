@@ -94,6 +94,8 @@ export function step(state: State, ast: ASTBundle): StepResult {
   switch (instr.op) {
     case 'eval':
       return stepEval(state, rest, ast.nodes[instr.nodeId], ast);
+    case 'applyBin':
+      return applyBinOp(state, rest, instr.binOp);
     default:
       return { kind: 'error', message: `unimplemented op: ${(instr as ControlInstr).op}` };
   }
@@ -107,6 +109,20 @@ function stepEval(state: State, rest: ControlInstr[], node: ASTNode, _ast: ASTBu
     case 'BoolLit':
       return cont({ ...state, control: rest,
         valueStack: [...state.valueStack, { tag: 'bool', v: node.value }] });
+    case 'Var': {
+      const v = lookup(state.scopes, state.currentScopeId, node.name);
+      if (v === undefined)
+        return { kind: 'error', message: `undefined variable '${node.name}'`, atNode: node.id };
+      return cont({ ...state, control: rest,
+        valueStack: [...state.valueStack, v] });
+    }
+    case 'BinOp':
+      return cont({ ...state, control: [
+        ...rest,
+        { op: 'applyBin', binOp: node.op },
+        { op: 'eval', nodeId: node.rightId },
+        { op: 'eval', nodeId: node.leftId },
+      ]});
     default:
       return { kind: 'error', message: `unimplemented eval kind: ${(node as ASTNode).kind}`, atNode: node.id };
   }
@@ -114,4 +130,62 @@ function stepEval(state: State, rest: ControlInstr[], node: ASTNode, _ast: ASTBu
 
 function cont(state: State): StepResult {
   return { kind: 'continue' as const, state };
+}
+
+function lookup(scopes: Record<ScopeId, Scope>, scopeId: ScopeId, name: string): Value | undefined {
+  let cur: ScopeId | null = scopeId;
+  while (cur !== null) {
+    const sc: Scope = scopes[cur];
+    if (name in sc.bindings) return sc.bindings[name];
+    cur = sc.parentId;
+  }
+  return undefined;
+}
+
+function applyBinOp(state: State, rest: ControlInstr[], op: BinOp): StepResult {
+  const stack = state.valueStack;
+  const right = stack[stack.length - 1];
+  const left  = stack[stack.length - 2];
+  const newStack = stack.slice(0, -2);
+
+  if (op === '+' || op === '-' || op === '*' || op === '/') {
+    if (left.tag !== 'int' || right.tag !== 'int')
+      return { kind: 'error', message: `cannot apply '${op}' to ${left.tag} and ${right.tag}` };
+    let result: number;
+    if (op === '+') result = left.v + right.v;
+    else if (op === '-') result = left.v - right.v;
+    else if (op === '*') result = left.v * right.v;
+    else {
+      if (right.v === 0) return { kind: 'error', message: 'division by zero' };
+      result = Math.trunc(left.v / right.v);
+    }
+    return cont({ ...state, control: rest,
+      valueStack: [...newStack, { tag: 'int', v: result }] });
+  }
+
+  if (op === '<' || op === '<=' || op === '>' || op === '>=') {
+    if (left.tag !== 'int' || right.tag !== 'int')
+      return { kind: 'error', message: `cannot apply '${op}' to ${left.tag} and ${right.tag}` };
+    let result: boolean;
+    if (op === '<') result = left.v < right.v;
+    else if (op === '<=') result = left.v <= right.v;
+    else if (op === '>') result = left.v > right.v;
+    else result = left.v >= right.v;
+    return cont({ ...state, control: rest,
+      valueStack: [...newStack, { tag: 'bool', v: result }] });
+  }
+
+  if (op === '==' || op === '!=') {
+    if (left.tag !== right.tag)
+      return { kind: 'error', message: `cannot apply '${op}' to ${left.tag} and ${right.tag}` };
+    let same: boolean;
+    if (left.tag === 'int' && right.tag === 'int') same = left.v === right.v;
+    else if (left.tag === 'bool' && right.tag === 'bool') same = left.v === right.v;
+    else if (left.tag === 'unit' && right.tag === 'unit') same = true;
+    else return { kind: 'error', message: `cannot compare ${left.tag} values` };
+    return cont({ ...state, control: rest,
+      valueStack: [...newStack, { tag: 'bool', v: op === '==' ? same : !same }] });
+  }
+
+  return { kind: 'error', message: `unknown binary op: ${op}` };
 }
