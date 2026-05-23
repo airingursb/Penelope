@@ -8,9 +8,10 @@ import { tokenize } from './lexer.js';
 import { parse } from './parser.js';
 import { initialState, step } from './interpreter.js';
 import type { State, StepResult } from './interpreter.js';
-import { serialize, sha256 } from './snapshot.js';
+import { serialize, sha256, deserialize } from './snapshot.js';
 import type { Snapshot } from './snapshot.js';
 import type { ASTBundle } from './ast.js';
+import type { Value } from './ast.js';
 
 // ============================================================
 // Argv parsing
@@ -59,6 +60,13 @@ function loop(state: State, ast: ASTBundle): StepResult {
     if (r.kind === 'continue') { s = r.state; continue; }
     return r;
   }
+}
+
+function parseResumeValue(text: string): Value | { error: string } {
+  if (/^-?\d+$/.test(text))   return { tag: 'int', v: Number(text) };
+  if (text === 'true')        return { tag: 'bool', v: true };
+  if (text === 'false')       return { tag: 'bool', v: false };
+  return { error: `cannot parse '${text}' as int or bool` };
 }
 
 // ============================================================
@@ -122,6 +130,82 @@ function cmdRun(args: ParsedArgs): number {
 }
 
 // ============================================================
+// resume subcommand
+// ============================================================
+
+function cmdResume(args: ParsedArgs): number {
+  const snapPath = args.positional[1];
+  const valueText = args.positional[2];
+  if (!snapPath || valueText === undefined) {
+    process.stderr.write('usage: penelope resume <file.penz> <value> [--source <path>] [--force] [--out <path>]\n');
+    return 2;
+  }
+
+  const absSnapPath = resolve(snapPath);
+  let snapJson: string;
+  try {
+    snapJson = readFileSync(absSnapPath, 'utf8');
+  } catch {
+    process.stderr.write(`cli error: cannot read snapshot: ${snapPath}\n`);
+    return 3;
+  }
+
+  const sourceOverride = typeof args.flags.source === 'string' ? args.flags.source : null;
+  const resolveSource = (programPath: string): string => {
+    const sourcePath = sourceOverride
+      ? resolve(sourceOverride)
+      : resolve(dirname(absSnapPath), programPath);
+    return readFileSync(sourcePath, 'utf8');
+  };
+
+  const dr = deserialize(snapJson, resolveSource, { force: !!args.flags.force });
+  if ('error' in dr) {
+    process.stderr.write(`cli error: ${dr.error}\n`);
+    return 3;
+  }
+
+  const v = parseResumeValue(valueText);
+  if ('error' in v) {
+    process.stderr.write(`cli error: ${v.error}\n`);
+    return 2;
+  }
+
+  const ast = parse(tokenize(dr.source));
+
+  // Inject resume value onto valueStack, then continue stepping.
+  const resumedState: State = {
+    ...dr.snap.state,
+    valueStack: [...dr.snap.state.valueStack, v],
+  };
+  const result = loop(resumedState, ast);
+
+  if (result.kind === 'done') return 0;
+  if (result.kind === 'error') {
+    process.stderr.write(`runtime error: ${result.message}\n`);
+    return 1;
+  }
+  if (result.kind === 'paused') {
+    const outPath = typeof args.flags.out === 'string'
+      ? args.flags.out
+      : absSnapPath;  // default: overwrite input
+    const newSnap: Snapshot = {
+      version: 1,
+      programPath: dr.snap.programPath,
+      programHash: dr.snap.programHash,
+      pausedAt: result.pausedAt,
+      pausedAtMs: Date.now(),
+      state: result.state,
+    };
+    writeFileSync(outPath, serialize(newSnap));
+    if (!args.flags.quiet) {
+      process.stderr.write(`paused again at ${result.pausedAt}; snapshot → ${outPath}\n`);
+    }
+    return 0;
+  }
+  return 1;
+}
+
+// ============================================================
 // Main
 // ============================================================
 
@@ -129,6 +213,7 @@ export function main(argv: string[]): number {
   const args = parseArgs(argv);
   const sub = args.positional[0];
   if (sub === 'run')     return cmdRun(args);
+  if (sub === 'resume')  return cmdResume(args);
   process.stderr.write(`usage: penelope <run|resume|fork|inspect> [args]\n`);
   return 2;
 }
