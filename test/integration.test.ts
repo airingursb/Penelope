@@ -382,3 +382,47 @@ test('--no-replay causes write_file to re-execute when in replay path', () => {
 
   cleanup(source); cleanup(snap);
 });
+
+test('H4: 24h HITL agent demo — crashes twice, completes correctly', () => {
+  const source = resolve('examples/08-24h-agent.pen');
+  const snap = resolve('examples/08-24h-agent.penz');
+  const auditLog = '/tmp/penelope-audit.log';
+  cleanup(snap); cleanup(auditLog);
+
+  // Run 1: prints request, pauses on wait_for.
+  const r1 = spawnSync(PEN, ['run', source], { encoding: 'utf8' });
+  expect(r1.status).toBe(0);
+  expect(r1.stdout).toMatch(/Approval request for \$5000/);
+  expect(existsSync(snap)).toBe(true);
+
+  // Crash 1 simulated. Resume 1: deliver approval → prints decision, fetches LLM, prints, pauses again.
+  const r2 = spawnSync(PEN, ['resume', snap, '--event', 'approval=true'], { encoding: 'utf8' });
+  expect(r2.status).toBe(0);
+  expect(r2.stdout).toMatch(/Decision received: true/);
+  expect(r2.stdout).toMatch(/LLM processed/);
+  expect(r2.stdout).not.toMatch(/Approval request/);  // replay-skipped
+
+  // Capture the net_fetch body that was recorded.
+  const snapAfterRun1 = JSON.parse(readFileSync(snap, 'utf8'));
+  const fetchEntry = snapAfterRun1.state.effects.find((e: any) => e.effect === 'net_fetch');
+  expect(fetchEntry).toBeDefined();
+  expect(fetchEntry.status).toBe('committed');
+  const recordedBody = fetchEntry.recordedValue.v;
+
+  // Crash 2 simulated. Make sure audit log doesn't pre-exist from a prior failed run.
+  cleanup(auditLog);
+
+  // Resume 2: no new event needed. Writes audit log (first time), prints final.
+  const r3 = spawnSync(PEN, ['resume', snap, 'true'], { encoding: 'utf8' });
+  expect(r3.status).toBe(0);
+  expect(r3.stdout).toMatch(/Audit logged/);
+  expect(r3.stdout).not.toMatch(/LLM processed/);     // replay-skipped
+  expect(r3.stdout).not.toMatch(/Decision received/); // replay-skipped
+  expect(r3.stdout).not.toMatch(/Approval request/);  // replay-skipped
+
+  // The audit log file MUST contain the recorded LLM body — fired exactly once.
+  expect(existsSync(auditLog)).toBe(true);
+  expect(readFileSync(auditLog, 'utf8')).toBe(recordedBody);
+
+  cleanup(snap); cleanup(auditLog);
+}, 20000);

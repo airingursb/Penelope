@@ -1,0 +1,13 @@
+let amount = 5000;
+print("Approval request for $" + to_str(amount));
+let decision = wait_for("approval");
+print("Decision received: " + to_str(decision));
+if (decision) {
+  let response = net_fetch("https://httpbin.org/uuid");
+  print("LLM processed");
+  let _ = pause;
+  write_file("/tmp/penelope-audit.log", response);
+  print("Audit logged");
+} else {
+  print("Denied. No action.");
+};
