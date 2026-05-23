@@ -44,6 +44,12 @@ function compileNode(node: ASTNode, ast: ASTBundle, prog: Program): void {
       emit(prog, ['LOAD_VAR', node.name, null]);  // null = ic slot, filled by VM
       return;
     }
+    case 'BinOp': {
+      compileNode(ast.nodes[node.leftId], ast, prog);
+      compileNode(ast.nodes[node.rightId], ast, prog);
+      emit(prog, ['BIN_OP', node.op]);
+      return;
+    }
     default:
       throw new Error(`compile: unhandled node kind '${(node as ASTNode).kind}'`);
   }

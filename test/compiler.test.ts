@@ -59,3 +59,28 @@ test('Var compiles to LOAD_VAR', () => {
     ['HALT'],
   ]);
 });
+
+test('1 + 2 compiles to LOAD_CONST, LOAD_CONST, BIN_OP', () => {
+  const prog = compile(parse(tokenize('1 + 2;')));
+  expect(prog.constants).toEqual([{ tag: 'int', v: 1 }, { tag: 'int', v: 2 }]);
+  expect(prog.code).toEqual([
+    ['LOAD_CONST', 0],
+    ['LOAD_CONST', 1],
+    ['BIN_OP', '+'],
+    ['POP'],
+    ['HALT'],
+  ]);
+});
+
+test('comparison op compiles', () => {
+  const prog = compile(parse(tokenize('1 < 2;')));
+  expect(prog.code).toContainEqual(['BIN_OP', '<']);
+});
+
+test('precedence: 1 + 2 * 3', () => {
+  const prog = compile(parse(tokenize('1 + 2 * 3;')));
+  // Parser already encoded precedence in AST shape — compiler just walks.
+  // Expect: LOAD 1, LOAD 2, LOAD 3, BIN_OP *, BIN_OP +, POP, HALT
+  const opNames = prog.code.map(op => op[0]);
+  expect(opNames).toEqual(['LOAD_CONST', 'LOAD_CONST', 'LOAD_CONST', 'BIN_OP', 'BIN_OP', 'POP', 'HALT']);
+});
