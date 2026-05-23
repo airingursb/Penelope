@@ -41,6 +41,15 @@ let sourcePath: string = '';
 let breakpointIps: Set<number> = new Set();
 let breakpointsBySourceLine = new Map<number, number>();  // source-line → ip
 
+// Time-travel history: stack of (preStopState, wasBreakpoint) entries.
+// Pushed BEFORE every advance (continue/step). On stepBack, pop and restore.
+type HistoryEntry = { state: VMState; reason: 'entry' | 'breakpoint' | 'step' };
+let history: HistoryEntry[] = [];
+
+function cloneState(s: VMState): VMState {
+  return JSON.parse(JSON.stringify(s)) as VMState;
+}
+
 function send(msg: object): void {
   const body = JSON.stringify(msg);
   process.stdout.write(`Content-Length: ${Buffer.byteLength(body, 'utf8')}\r\n\r\n${body}`);
@@ -98,7 +107,7 @@ export function handleMessage(msg: DapMessage): void {
         supportsBreakpointLocationsRequest: false,
         supportsStepInTargetsRequest: false,
         supportsRestartRequest: true,
-        supportsStepBack: false,
+        supportsStepBack: true,
       });
       event('initialized');
       break;
@@ -112,6 +121,7 @@ export function handleMessage(msg: DapMessage): void {
         state = freshState();
         breakpointIps = new Set();
         breakpointsBySourceLine = new Map();
+        history = [];
         buildSourceLineMap();
         reply(msg);
       } catch (e) {
@@ -140,27 +150,48 @@ export function handleMessage(msg: DapMessage): void {
     }
     case 'configurationDone': {
       reply(msg);
+      pushHistory('entry');
       runToNextStop('entry');
       break;
     }
     case 'continue': {
       reply(msg, { allThreadsContinued: true });
+      pushHistory('breakpoint');
       runToNextStop('breakpoint');
       break;
     }
     case 'next': {
       reply(msg);
+      pushHistory('step');
       runStep('over', 'step');
       break;
     }
     case 'stepIn': {
       reply(msg);
+      pushHistory('step');
       runStep('in', 'step');
       break;
     }
     case 'stepOut': {
       reply(msg);
+      pushHistory('step');
       runStep('out', 'step');
+      break;
+    }
+    case 'stepBack': {
+      reply(msg);
+      if (!stepBackOne()) {
+        event('output', { category: 'stderr', output: 'cannot step back further — at start of history\n' });
+        event('stopped', { reason: 'step', threadId: 1, allThreadsStopped: true });
+      } else {
+        event('stopped', { reason: 'step', threadId: 1, allThreadsStopped: true });
+      }
+      break;
+    }
+    case 'reverseContinue': {
+      reply(msg, { allThreadsContinued: true });
+      reverseToBreakpoint();
+      event('stopped', { reason: 'breakpoint', threadId: 1, allThreadsStopped: true });
       break;
     }
     case 'restart': {
@@ -170,8 +201,10 @@ export function handleMessage(msg: DapMessage): void {
           const source = readFileSync(resolve(sourcePath), 'utf8');
           prog = compile(parse(tokenize(source)));
           state = freshState();
+          history = [];
           buildSourceLineMap();
           reply(msg);
+          pushHistory('entry');
           runToNextStop('entry');
         } catch (e) {
           reply(msg, { error: (e as Error).message }, false);
@@ -283,6 +316,30 @@ function runToNextStop(reason: 'entry' | 'breakpoint'): void {
     event('output', { category: 'stderr', output: `runtime error: ${(e as Error).message}\n` });
     event('terminated');
   }
+}
+
+function pushHistory(reason: HistoryEntry['reason']): void {
+  if (!state) return;
+  history.push({ state: cloneState(state), reason });
+  // Cap history at 1000 entries to avoid unbounded memory growth.
+  if (history.length > 1000) history.shift();
+}
+
+function stepBackOne(): boolean {
+  const prev = history.pop();
+  if (!prev) return false;
+  state = prev.state;
+  return true;
+}
+
+function reverseToBreakpoint(): boolean {
+  // Pop history until we find one whose reason was 'breakpoint' (or hit the start).
+  while (history.length > 0) {
+    const entry = history.pop()!;
+    state = entry.state;
+    if (entry.reason === 'breakpoint' || entry.reason === 'entry') return true;
+  }
+  return false;
 }
 
 function runStep(mode: StepMode, reason: 'step' | 'breakpoint'): void {
