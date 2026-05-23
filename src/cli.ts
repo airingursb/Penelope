@@ -1,17 +1,23 @@
 // Penelope CLI.
 // Subcommands: run, resume, fork, inspect.
 // Argv parsing is hand-rolled — Phase 1 has zero dependencies.
+//
+// NOTE(T28-T30): run/resume/fork/inspect are stubbed here.
+// They will be rewired to the VM in T28-T30.
 
 import { readFileSync, writeFileSync } from 'node:fs';
 import { resolve, dirname, basename, join } from 'node:path';
 import { tokenize } from './lexer.js';
 import { parse } from './parser.js';
-import { initialState, step, formatValue } from './legacy-interpreter.js';
-import type { State, StepResult } from './legacy-interpreter.js';
 import { serialize, sha256, deserialize } from './snapshot.js';
 import type { Snapshot } from './snapshot.js';
-import type { ASTBundle } from './ast.js';
 import type { Value } from './ast.js';
+
+// Suppress unused-import warnings during migration: these will be re-used in T28-T30.
+void (serialize as unknown); void (sha256 as unknown); void (deserialize as unknown);
+void (readFileSync as unknown); void (writeFileSync as unknown);
+void (resolve as unknown); void (dirname as unknown); void (basename as unknown); void (join as unknown);
+void (tokenize as unknown); void (parse as unknown);
 
 // ============================================================
 // Argv parsing
@@ -63,14 +69,8 @@ function defaultSnapshotPath(sourcePath: string): string {
   return join(dir, `${base}.penz`);
 }
 
-function loop(state: State, ast: ASTBundle): StepResult {
-  let s = state;
-  while (true) {
-    const r = step(s, ast);
-    if (r.kind === 'continue') { s = r.state; continue; }
-    return r;
-  }
-}
+// Keep defaultSnapshotPath callable to avoid unused-function warning
+void (defaultSnapshotPath as unknown);
 
 function parseResumeValue(text: string): Value | { error: string } {
   if (/^-?\d+$/.test(text))   return { tag: 'int', v: Number(text) };
@@ -79,260 +79,46 @@ function parseResumeValue(text: string): Value | { error: string } {
   return { error: `cannot parse '${text}' as int or bool` };
 }
 
+// Keep parseResumeValue callable to avoid unused-function warning
+void (parseResumeValue as unknown);
+
 // ============================================================
 // run subcommand
+// TODO(T28-T30): rewire to VM
 // ============================================================
 
-function cmdRun(args: ParsedArgs): number {
-  const sourcePath = args.positional[1];   // [0] is "run"
-  if (!sourcePath) {
-    process.stderr.write('usage: penelope run <file.pen>\n');
-    return 2;
-  }
-
-  const absSourcePath = resolve(sourcePath);
-  let source: string;
-  try {
-    source = readFileSync(absSourcePath, 'utf8');
-  } catch {
-    process.stderr.write(`cli error: cannot read source file: ${sourcePath}\n`);
-    return 3;
-  }
-
-  let ast: ASTBundle;
-  try {
-    ast = parse(tokenize(source));
-  } catch (e) {
-    process.stderr.write(`parse error: ${(e as Error).message}\n`);
-    return 1;
-  }
-
-  let state = initialState(ast.rootId);
-  if (typeof args.flags.time === 'string') {
-    state = { ...state, timeOverride: Number(args.flags.time) };
-  }
-  const result = loop(state, ast);
-
-  if (result.kind === 'done') {
-    return 0;
-  }
-  if (result.kind === 'error') {
-    const at = result.atNode ? ` at ${result.atNode}` : '';
-    process.stderr.write(`runtime error${at}: ${result.message}\n`);
-    return 1;
-  }
-  if (result.kind === 'paused') {
-    const outPath = typeof args.flags.out === 'string'
-      ? args.flags.out
-      : defaultSnapshotPath(absSourcePath);
-
-    const snap: Snapshot = {
-      version: 2,
-      programPath: basename(absSourcePath),
-      programHash: 'sha256:' + sha256(source),
-      pausedAt: result.pausedAt,
-      pausedAtMs: Date.now(),
-      state: result.state,
-    };
-    writeFileSync(outPath, serialize(snap));
-    if (!args.flags.quiet) {
-      process.stderr.write(`paused at ${result.pausedAt}; snapshot → ${outPath}\n`);
-    }
-    return 0;
-  }
-  return 1;
+function cmdRun(_args: ParsedArgs): number {
+  process.stderr.write('pen run is being migrated to VM in T28-T30\n');
+  process.exit(1);
 }
 
 // ============================================================
 // resume subcommand
+// TODO(T28-T30): rewire to VM
 // ============================================================
 
-function cmdResume(args: ParsedArgs): number {
-  const snapPath = args.positional[1];
-  const valueText = args.positional[2];  // may be undefined now
-  if (!snapPath) {
-    process.stderr.write('usage: penelope resume <file.penz> [<value>] [--time MS] [--force] [--out <path>]\n');
-    return 2;
-  }
-
-  const absSnapPath = resolve(snapPath);
-  let snapJson: string;
-  try {
-    snapJson = readFileSync(absSnapPath, 'utf8');
-  } catch {
-    process.stderr.write(`cli error: cannot read snapshot: ${snapPath}\n`);
-    return 3;
-  }
-
-  const sourceOverride = typeof args.flags.source === 'string' ? args.flags.source : null;
-  const resolveSource = (programPath: string): string => {
-    const sourcePath = sourceOverride
-      ? resolve(sourceOverride)
-      : resolve(dirname(absSnapPath), programPath);
-    return readFileSync(sourcePath, 'utf8');
-  };
-
-  const dr = deserialize(snapJson, resolveSource, { force: !!args.flags.force });
-  if ('error' in dr) {
-    process.stderr.write(`cli error: ${dr.error}\n`);
-    return 3;
-  }
-
-  const ast = parse(tokenize(dr.source));
-
-  let resumedState: State = { ...dr.snap.state };
-
-  // Phase 1 pause value injection (only if value provided)
-  if (valueText !== undefined) {
-    const v = parseResumeValue(valueText);
-    if ('error' in v) {
-      process.stderr.write(`cli error: ${v.error}\n`);
-      return 2;
-    }
-    resumedState = { ...resumedState, valueStack: [...resumedState.valueStack, v] };
-  }
-
-  // Phase 2: time override
-  if (typeof args.flags.time === 'string') {
-    resumedState = { ...resumedState, timeOverride: Number(args.flags.time) };
-  }
-
-  // Phase 2: --no-replay flag
-  if (args.flags['no-replay'] === true) {
-    resumedState = { ...resumedState, noReplay: true };
-  }
-
-  // Phase 2 wait_for event delivery: --event NAME=VALUE → committed entry with parsed VALUE.
-  const updatedEffects = resumedState.effects.map(e => {
-    if (e.effect !== 'wait_for' || e.status !== 'pending') return e;
-    if (!e.recordedValue || e.recordedValue.tag !== 'str') return e;
-    const eventName = e.recordedValue.v;
-    const eventValueText = args.events[eventName];
-    if (eventValueText === undefined) return e;
-
-    const v = parseResumeValue(eventValueText);
-    if ('error' in v) {
-      // Not parseable as int/bool: treat as string
-      return { ...e, status: 'committed' as const, recordedValue: { tag: 'str' as const, v: eventValueText } };
-    }
-    return { ...e, status: 'committed' as const, recordedValue: v };
-  });
-  resumedState = { ...resumedState, effects: updatedEffects };
-
-  const result = loop(resumedState, ast);
-
-  if (result.kind === 'done') return 0;
-  if (result.kind === 'error') {
-    process.stderr.write(`runtime error: ${result.message}\n`);
-    return 1;
-  }
-  if (result.kind === 'paused') {
-    const outPath = typeof args.flags.out === 'string'
-      ? args.flags.out
-      : absSnapPath;  // default: overwrite input
-    const newSnap: Snapshot = {
-      version: 2,
-      programPath: dr.snap.programPath,
-      programHash: dr.snap.programHash,
-      pausedAt: result.pausedAt,
-      pausedAtMs: Date.now(),
-      state: result.state,
-    };
-    writeFileSync(outPath, serialize(newSnap));
-    if (!args.flags.quiet) {
-      process.stderr.write(`paused again at ${result.pausedAt}; snapshot → ${outPath}\n`);
-    }
-    return 0;
-  }
-  return 1;
+function cmdResume(_args: ParsedArgs): number {
+  process.stderr.write('pen resume is being migrated to VM in T28-T30\n');
+  process.exit(1);
 }
 
 // ============================================================
 // fork subcommand
+// TODO(T28-T30): rewire to VM
 // ============================================================
 
-function cmdFork(args: ParsedArgs): number {
-  const snapPath = args.positional[1];
-  const v1text = args.positional[2];
-  const v2text = args.positional[3];
-  if (!snapPath || v1text === undefined || v2text === undefined) {
-    process.stderr.write('usage: penelope fork <file.penz> <v1> <v2> [--out1 <path>] [--out2 <path>]\n');
-    return 2;
-  }
-
-  const absSnapPath = resolve(snapPath);
-  let snapJson: string;
-  try { snapJson = readFileSync(absSnapPath, 'utf8'); }
-  catch { process.stderr.write(`cli error: cannot read snapshot: ${snapPath}\n`); return 3; }
-
-  const resolveSource = (programPath: string): string =>
-    readFileSync(resolve(dirname(absSnapPath), programPath), 'utf8');
-
-  const dr = deserialize(snapJson, resolveSource, { force: !!args.flags.force });
-  if ('error' in dr) { process.stderr.write(`cli error: ${dr.error}\n`); return 3; }
-
-  const v1 = parseResumeValue(v1text);
-  if ('error' in v1) { process.stderr.write(`cli error: ${v1.error}\n`); return 2; }
-  const v2 = parseResumeValue(v2text);
-  if ('error' in v2) { process.stderr.write(`cli error: ${v2.error}\n`); return 2; }
-
-  const ast = parse(tokenize(dr.source));
-
-  const baseDir = dirname(absSnapPath);
-  const baseName = basename(absSnapPath).replace(/\.penz$/, '');
-  const out1 = typeof args.flags.out1 === 'string'
-    ? args.flags.out1
-    : join(baseDir, `${baseName}.fork0.penz`);
-  const out2 = typeof args.flags.out2 === 'string'
-    ? args.flags.out2
-    : join(baseDir, `${baseName}.fork1.penz`);
-
-  const runFork = (label: string, injected: Value, outPath: string): number => {
-    const origLog = console.log;
-    console.log = (msg: string) => origLog(`[${label}] ${msg}`);
-    try {
-      // Deep clone via JSON — the axiom in action: state is just data
-      const cloned: State = JSON.parse(JSON.stringify(dr.snap.state));
-      const state: State = {
-        ...cloned,
-        valueStack: [...cloned.valueStack, injected],
-      };
-      const result = loop(state, ast);
-      if (result.kind === 'error') {
-        process.stderr.write(`[${label}] runtime error: ${result.message}\n`);
-        return 1;
-      }
-      if (result.kind === 'paused') {
-        const newSnap: Snapshot = {
-          version: 2,
-          programPath: dr.snap.programPath,
-          programHash: dr.snap.programHash,
-          pausedAt: result.pausedAt,
-          pausedAtMs: Date.now(),
-          state: result.state,
-        };
-        writeFileSync(outPath, serialize(newSnap));
-        if (!args.flags.quiet) {
-          process.stderr.write(`[${label}] paused again; snapshot → ${outPath}\n`);
-        }
-      }
-      return 0;
-    } finally {
-      console.log = origLog;
-    }
-  };
-
-  const c1 = runFork('fork-0', v1, out1);
-  const c2 = runFork('fork-1', v2, out2);
-  return (c1 === 0 && c2 === 0) ? 0 : 1;
+function cmdFork(_args: ParsedArgs): number {
+  process.stderr.write('pen fork is being migrated to VM in T28-T30\n');
+  process.exit(1);
 }
 
 // ============================================================
 // inspect subcommand
+// TODO(T28-T30): rewire to VM
 // ============================================================
 
-function cmdInspect(args: ParsedArgs): number {
-  const snapPath = args.positional[1];
+function cmdInspect(_args: ParsedArgs): number {
+  const snapPath = _args.positional[1];
   if (!snapPath) {
     process.stderr.write('usage: penelope inspect <file.penz>\n');
     return 2;
@@ -365,21 +151,8 @@ function cmdInspect(args: ParsedArgs): number {
   out.write(`Snapshot: ${basename(absSnapPath)}\n`);
   out.write(`  Source: ${snap.programPath}  ${sourceStatus}\n`);
   out.write(`  Full path: ${resolve(dirname(absSnapPath), snap.programPath)}\n`);
-  out.write(`  Paused at: ${snap.pausedAt}\n`);
+  out.write(`  Paused at IP: ${snap.pausedAtIP}\n`);
   out.write(`  Time: ${new Date(snap.pausedAtMs).toISOString()} (${ageStr})\n`);
-  out.write(`\n`);
-  out.write(`Scopes:\n`);
-  for (const [sid, sc] of Object.entries(snap.state.scopes)) {
-    const parent = sc.parentId ? ` ← ${sc.parentId}` : '';
-    const binds = Object.entries(sc.bindings).map(([n, v]) => `${n}=${formatValue(v)}`).join(', ');
-    out.write(`  ${sid}${parent}: { ${binds} }\n`);
-  }
-  out.write(`Current scope: ${snap.state.currentScopeId}\n`);
-  out.write(`\n`);
-  out.write(`Control stack (top → bottom, ${snap.state.control.length} instr):\n`);
-  for (let i = snap.state.control.length - 1; i >= 0; i--) {
-    out.write(`  ${snap.state.control.length - i}. ${JSON.stringify(snap.state.control[i])}\n`);
-  }
   out.write(`\n`);
   out.write(`Effect log (${snap.state.effects.length} entries):\n`);
   if (snap.state.effects.length === 0) {
@@ -387,13 +160,13 @@ function cmdInspect(args: ParsedArgs): number {
   } else {
     snap.state.effects.forEach((e, idx) => {
       const status = e.status === 'committed' ? '✓' : '⏳';
-      const valueStr = e.recordedValue ? formatValue(e.recordedValue) : '(none)';
-      out.write(`  ${idx + 1}. [${status}] ${e.effect.padEnd(12)} @${e.nodeId} #${e.invocationCount}  value=${valueStr}\n`);
+      const valueStr = e.recordedValue ? JSON.stringify(e.recordedValue) : '(none)';
+      out.write(`  ${idx + 1}. [${status}] ${e.effect.padEnd(12)} @ip=${e.ip} #${e.invocationCount}  value=${valueStr}\n`);
     });
   }
   out.write(`\n`);
   out.write(`Value stack (${snap.state.valueStack.length}): `);
-  out.write(snap.state.valueStack.map(formatValue).join(', ') || '(empty)');
+  out.write(snap.state.valueStack.map(v => JSON.stringify(v)).join(', ') || '(empty)');
   out.write(`\n`);
   return 0;
 }
