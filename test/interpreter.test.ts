@@ -1,7 +1,7 @@
 import { test, expect } from 'vitest';
 import { tokenize } from '../src/lexer.js';
 import { parse } from '../src/parser.js';
-import { runToCompletion, step } from '../src/interpreter.js';
+import { runToCompletion, step } from '../src/legacy-interpreter.js';
 
 test('runs an integer literal to completion with the literal on the value stack', () => {
   const ast = parse(tokenize('42;'));

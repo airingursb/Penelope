@@ -3,7 +3,7 @@
 
 import { createHash } from 'node:crypto';
 import type { NodeId } from './ast.js';
-import type { State } from './interpreter.js';
+import type { State } from './legacy-interpreter.js';
 
 export type Snapshot = {
   version: 2;

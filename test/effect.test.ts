@@ -72,7 +72,7 @@ test('H5: hash mismatch with --force preserves effects log on deserialize', () =
 
 import { tokenize } from '../src/lexer.js';
 import { parse } from '../src/parser.js';
-import { runToCompletion } from '../src/interpreter.js';
+import { runToCompletion } from '../src/legacy-interpreter.js';
 
 test('reserved builtin name cannot be shadowed via let', () => {
   const ast = parse(tokenize('let net_fetch = 0;'));
@@ -88,7 +88,7 @@ test('reserved pure builtin name cannot be shadowed via let', () => {
   if (r.kind === 'error') expect(r.message).toMatch(/reserved/);
 });
 
-import { initialState, step } from '../src/interpreter.js';
+import { initialState, step } from '../src/legacy-interpreter.js';
 
 test('B1: print appends one effect entry', () => {
   const ast = parse(tokenize('print(1);'));

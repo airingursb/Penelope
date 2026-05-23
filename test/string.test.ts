@@ -1,7 +1,7 @@
 import { test, expect } from 'vitest';
 import { tokenize } from '../src/lexer.js';
 import { parse } from '../src/parser.js';
-import { runToCompletion } from '../src/interpreter.js';
+import { runToCompletion } from '../src/legacy-interpreter.js';
 
 test('A1: string literal parses to StringLit', () => {
   const ast = parse(tokenize('"hello";'));
