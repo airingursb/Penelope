@@ -185,6 +185,22 @@ function parseBlock(c: Cursor, b: Builder): ASTNode {
   return b.addNode(id => ({ id, kind: 'Block', stmtIds, trailingExprId }));
 }
 
+function parseIf(c: Cursor, b: Builder): ASTNode {
+  c.eat('IF');
+  c.eat('LPAREN');
+  const cond = parseExpression(c, b);
+  c.eat('RPAREN');
+  const thenBlock = parseBlock(c, b);
+  c.eat('ELSE');
+  const elseBlock = parseBlock(c, b);
+  return b.addNode(id => ({
+    id, kind: 'If',
+    condId: cond.id,
+    thenBlockId: thenBlock.id,
+    elseBlockId: elseBlock.id,
+  }));
+}
+
 function parseFn(c: Cursor, b: Builder): ASTNode {
   c.eat('FN');
   c.eat('LPAREN');
@@ -218,6 +234,8 @@ function parsePrimary(c: Cursor, b: Builder): ASTNode {
     case 'PAUSE':
       c.eat('PAUSE');
       return b.addNode(id => ({ id, kind: 'Pause' }));
+    case 'IF':
+      return parseIf(c, b);
     case 'FN':
       return parseFn(c, b);
     case 'LPAREN': {

@@ -160,3 +160,16 @@ test('parses a block with no trailing expression (unit-valued)', () => {
   expect(block.stmtIds.length).toBe(1);
   expect(block.trailingExprId).toBeNull();
 });
+
+test('parses if/else expression', () => {
+  const ast = parse(tokenize('let x = if (true) { 1 } else { 2 };'));
+  const program = ast.nodes[ast.rootId];
+  if (program.kind !== 'Program') throw new Error('expected Program');
+  const letStmt = ast.nodes[program.stmtIds[0]];
+  if (letStmt.kind !== 'Let') throw new Error('expected Let');
+  const ifExpr = ast.nodes[letStmt.valueId];
+  if (ifExpr.kind !== 'If') throw new Error('expected If');
+  expect(ast.nodes[ifExpr.condId]).toMatchObject({ kind: 'BoolLit', value: true });
+  expect(ast.nodes[ifExpr.thenBlockId].kind).toBe('Block');
+  expect(ast.nodes[ifExpr.elseBlockId].kind).toBe('Block');
+});
