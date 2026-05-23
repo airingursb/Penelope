@@ -5,11 +5,13 @@ export type NodeId = string;  // e.g., "n0", "n1", ... — assigned deterministi
 
 export type BinOp = '+' | '-' | '*' | '/' | '<' | '>' | '<=' | '>=' | '==' | '!=';
 
+export type Pos = { line: number; col: number };
+
 // ============================================================
 // AST
 // ============================================================
 
-export type ASTNode =
+export type ASTNode = (
   | { id: NodeId; kind: 'IntLit';    value: number }
   | { id: NodeId; kind: 'BoolLit';   value: boolean }
   | { id: NodeId; kind: 'StringLit'; value: string }
@@ -22,7 +24,8 @@ export type ASTNode =
   | { id: NodeId; kind: 'Pause' }
   | { id: NodeId; kind: 'ExprStmt'; exprId: NodeId }
   | { id: NodeId; kind: 'Block';    stmtIds: NodeId[]; trailingExprId: NodeId | null }
-  | { id: NodeId; kind: 'Program';  stmtIds: NodeId[] };
+  | { id: NodeId; kind: 'Program';  stmtIds: NodeId[] }
+) & { pos?: Pos };
 
 export type ASTBundle = {
   rootId: NodeId;

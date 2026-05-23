@@ -1,4 +1,4 @@
-import type { Value } from './ast.js';
+import type { Value, Pos } from './ast.js';
 
 export type ConstantPoolEntry =
   | { tag: 'int';  v: number }
@@ -33,7 +33,14 @@ export type Program = {
   sourceHash?: string;
   constants: ConstantPoolEntry[];
   code: Opcode[];
+  sourceMap?: (Pos | null)[];   // parallel to code: source position of the AST node that emitted each opcode
 };
+
+export function formatPos(prog: Program, ip: number): string {
+  const p = prog.sourceMap?.[ip];
+  if (!p) return `ip ${ip}`;
+  return `line ${p.line} col ${p.col} (ip ${ip})`;
+}
 
 export const OPCODE_NAMES: ReadonlySet<string> = new Set([
   'LOAD_CONST', 'LOAD_VAR', 'STORE_VAR', 'BIN_OP',

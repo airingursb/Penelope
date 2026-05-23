@@ -5,7 +5,7 @@ import type { Program } from './bytecode.js';
 import type { VMState, Frame } from './snapshot.js';
 import type { EffectEntry } from './snapshot.js';
 import type { Value } from './ast.js';
-import { constantToValue } from './bytecode.js';
+import { constantToValue, formatPos } from './bytecode.js';
 import { performNetFetch, performNow, performRandomInt, performReadFile, performWriteFile, categoryOf } from './effects.js';
 import type { EffectName } from './effects.js';
 
@@ -75,7 +75,7 @@ function runUntilStop(prog: Program, state: VMState): RunResult {
           if (f.parentIdx !== undefined) idx = f.parentIdx;
           else idx--;
         }
-        if (!found) throw new Error(`VM: undefined variable '${name}' at ip ${state.ip}`);
+        if (!found) throw new Error(`undefined variable '${name}' at ${formatPos(prog, state.ip)}`);
         state.ip++;
         break;
       }
@@ -93,7 +93,7 @@ function runUntilStop(prog: Program, state: VMState): RunResult {
       }
       case 'JUMP_IF_FALSE': {
         const c = pop(state);
-        if (c.tag !== 'bool') throw new Error(`JUMP_IF_FALSE: expected bool, got ${c.tag}`);
+        if (c.tag !== 'bool') throw new Error(`if condition expected bool, got ${c.tag} at ${formatPos(prog, state.ip)}`);
         state.ip = !c.v ? (op[1] as number) : state.ip + 1;
         break;
       }
@@ -110,9 +110,9 @@ function runUntilStop(prog: Program, state: VMState): RunResult {
         const args: Value[] = [];
         for (let i = 0; i < argc; i++) args.unshift(pop(state));
         const callee = pop(state);
-        if (callee.tag !== 'closure') throw new Error(`CALL: callee is ${callee.tag}, not closure`);
+        if (callee.tag !== 'closure') throw new Error(`call: callee is ${callee.tag}, not a function (at ${formatPos(prog, state.ip)})`);
         if (args.length !== callee.params.length) {
-          throw new Error(`CALL: arity mismatch (expected ${callee.params.length}, got ${args.length})`);
+          throw new Error(`call: arity mismatch — expected ${callee.params.length} args, got ${args.length} (at ${formatPos(prog, state.ip)})`);
         }
         const bindings: Record<string, Value> = {};
         for (let i = 0; i < args.length; i++) bindings[callee.params[i]] = args[i];
