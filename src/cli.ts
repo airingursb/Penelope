@@ -150,16 +150,19 @@ function cmdResume(args: ParsedArgs): number {
     return 1;
   }
 
-  // Inject any --event values into the wait_for pending entries.
+  // Inject any --event values into matching wait_for pending entries.
   const state: VMState = sr.snap.state;
   for (const [name, valText] of Object.entries(args.events)) {
     const v = parseResumeValue(valText);
     if ('error' in v) { process.stderr.write(`cli error: ${v.error}\n`); return 1; }
-    // Match by name in committed/pending wait_for entries — find pending and commit with value.
-    const entry = state.effects.find(e => e.effect === 'wait_for' && e.status === 'pending');
-    if (entry) { entry.status = 'committed'; entry.recordedValue = v; }
-    // For arg-less resumes, name is currently informational only.
-    void name;
+    const entry = state.effects.find(e =>
+      e.effect === 'wait_for' && e.status === 'pending' && e.eventName === name);
+    if (entry) {
+      // Leave status as pending; the VM will promote it to committed when it next executes this ip.
+      entry.recordedValue = v;
+    } else {
+      process.stderr.write(`cli warning: no pending wait_for("${name}") in snapshot\n`);
+    }
   }
 
   const timeFlag = args.flags['time'];

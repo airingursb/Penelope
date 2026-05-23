@@ -25,6 +25,8 @@ export type EffectEntry = {
   effect: 'print' | 'net_fetch' | 'now' | 'random_int' | 'read_file' | 'write_file' | 'wait_until' | 'wait_for';
   recordedValue: Value | null;
   status: 'pending' | 'committed';
+  eventName?: string;          // For wait_for: the name passed to wait_for("name")
+  waitUntilMs?: number;        // For wait_until: the target time (ms epoch)
 };
 
 export type Snapshot = {
