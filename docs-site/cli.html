@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Penelope — CLI reference</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <h1>CLI reference</h1>
+  <p class="tagline">Every subcommand of <code>bin/penelope</code>.</p>
+  <nav>
+    <a href="index.html">Overview</a>
+    <a href="tour.html">Tour</a>
+    <a href="stdlib.html">Stdlib</a>
+    <a href="cli.html" class="active">CLI</a>
+    <a href="snapshot.html">Snapshot v3</a>
+    <a href="https://github.com/airingursb/Penelope">GitHub →</a>
+  </nav>
+</header>
+
+<h2>Workflow</h2>
+
+<pre><code>$ pen build [-O0|-O1|-O2] foo.pen       <span class="cm"># source → foo.penc bytecode</span>
+$ pen exec foo.penc                      <span class="cm"># run pre-compiled bytecode</span>
+$ pen run [-O0|-O1|-O2] foo.pen          <span class="cm"># compile in memory + run (auto-build)</span>
+$ pen resume foo.penz [--time N] [--no-replay] [--event N=V]
+$ pen fork src.penz dst.penz             <span class="cm"># cp snapshot</span></code></pre>
+
+<h2>Inspection</h2>
+<pre><code>$ pen disasm foo.penc                    <span class="cm"># pretty-print bytecode</span>
+$ pen inspect foo.penz                   <span class="cm"># render v3 snapshot</span>
+$ pen check foo.pen                      <span class="cm"># static type check</span>
+$ pen profile [-O0|-O1|-O2] foo.pen      <span class="cm"># opcode counts + hot ips</span>
+$ pen bench foo.pen                      <span class="cm"># compare -O0/-O1/-O2 timings</span>
+$ pen repl                               <span class="cm"># interactive REPL</span></code></pre>
+
+<h2>Flags</h2>
+<table>
+<tr><th>Flag</th><th>Where</th><th>Effect</th></tr>
+<tr><td><code>-O0</code> / <code>-O1</code> / <code>-O2</code></td><td>build, run, profile</td><td>Optimization level (default <code>-O1</code>)</td></tr>
+<tr><td><code>--time N</code></td><td>run, resume</td><td>Override <code>now()</code> to N (ms since epoch)</td></tr>
+<tr><td><code>--no-replay</code></td><td>run, resume</td><td>Skip effect log; re-execute everything</td></tr>
+<tr><td><code>--event NAME=VAL</code></td><td>resume</td><td>Inject value for <code>wait_for("NAME")</code></td></tr>
+</table>
+
+<h2>Examples</h2>
+
+<pre><code><span class="cm"># Build with optimizations, then run the bytecode directly</span>
+$ pen build -O2 examples/09-fib.pen
+wrote examples/09-fib.penc (14 opcodes, 2 constants, -O2)
+$ pen exec examples/09-fib.penc
+6765
+
+<span class="cm"># Run + pause + resume cycle</span>
+$ pen run examples/07-wait-for.pen
+waiting for approval
+paused at ip 5 → examples/07-wait-for.penz
+
+$ pen resume examples/07-wait-for.penz --event approval=true
+got: true
+
+<span class="cm"># Profile a recursive program</span>
+$ pen profile examples/09-fib.pen
+profile: examples/09-fib.pen (-O1, 15.47 ms)
+opcode counts (top 20):
+  LOAD_VAR            76618   22.6%
+  BIN_OP              54726   16.1%
+  ...
+
+<span class="cm"># Static type check</span>
+$ pen check broken.pen
+type error: binop '+' requires int+int or str+str, got int+str at line 1 col 11
+1 type error
+
+<span class="cm"># Interactive</span>
+$ pen repl
+pen&gt; let x = 42
+pen&gt; x * 2
+84</code></pre>
+
+<footer>
+  © 2026 Airing · <a href="https://github.com/airingursb/Penelope">github.com/airingursb/Penelope</a>
+</footer>
+</body>
+</html>

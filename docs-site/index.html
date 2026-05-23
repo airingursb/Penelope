@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Penelope — a language that knows how to wait</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <h1>Penelope</h1>
+  <p class="tagline">A language that knows how to wait. <code>pause</code> as a first-class primitive.</p>
+  <nav>
+    <a href="index.html" class="active">Overview</a>
+    <a href="tour.html">Tour</a>
+    <a href="stdlib.html">Stdlib</a>
+    <a href="cli.html">CLI</a>
+    <a href="snapshot.html">Snapshot v3</a>
+    <a href="https://github.com/airingursb/Penelope">GitHub →</a>
+  </nav>
+</header>
+
+<h2>The thesis</h2>
+
+<p>In ordinary languages, a running program's mid-execution state is <strong>ephemeral</strong>. If the process dies, the state dies with it. You write checkpoint files, queues, retries, idempotency layers to survive failure.</p>
+
+<p>Modern durable-execution frameworks (Temporal, Inngest, Restate, DBOS) add that infrastructure on top of ordinary languages. They work — and they force you to structure programs around <code>activity</code>/<code>step</code>/<code>await</code> boundaries.</p>
+
+<p>Penelope dissolves these boundaries by making pause/resume a <strong>language primitive</strong>, not a framework feature.</p>
+
+<pre><code><span class="kw">let</span> x = <span class="num">10</span>;
+<span class="kw">let</span> y = <span class="kw">pause</span>;        <span class="cm">// process exits, state saved to disk</span>
+<span class="bi">print</span>(<span class="bi">to_str</span>(x + y));         <span class="cm">// a later process resumes, prints 15</span></code></pre>
+
+<p>The variable <code>x</code> survives across processes. The user wrote no <code>checkpoint</code>, no <code>restore</code>, no <code>await</code>. Just <code>let y = pause</code>. That is the entire ergonomic claim.</p>
+
+<h2>The foundational axiom</h2>
+
+<blockquote><strong>Execution is data. A running program is a value.</strong></blockquote>
+
+<p>If the runtime state is just JSON, it can be persisted to disk, forked, inspected, migrated, compared, transmitted, scheduled — like any other value. Everything else in Penelope follows from this axiom.</p>
+
+<h2>What ships today</h2>
+
+<table>
+<tr><th>Phase</th><th>What</th><th>Status</th></tr>
+<tr><td>Phase 1</td><td>Foundations: lexer + parser + step-machine + snapshot</td><td>✅ done</td></tr>
+<tr><td>Phase 2</td><td>Effect system: 8 effects + strings + agent runtime</td><td>✅ done</td></tr>
+<tr><td>Phase 3</td><td>Bytecode VM + 5-pass optimizer + snapshot v3</td><td>✅ done</td></tr>
+<tr><td>Polish R1</td><td>wait_for value injection · source positions · REPL · LSP</td><td>✅ done</td></tr>
+<tr><td>Polish R2</td><td>list/dict · type checker · profiler · VSCode ext · docs site</td><td>✅ done (you're reading it)</td></tr>
+<tr><td>Phase 4</td><td>Self-hosting · live editing · time-travel</td><td>future</td></tr>
+</table>
+
+<h2>Quick start</h2>
+
+<pre><code>git clone https://github.com/airingursb/Penelope
+cd Penelope
+npm install &amp;&amp; npm run build
+
+<span class="cm"># Run a program</span>
+bin/penelope run examples/01-toplevel-pause.pen
+
+<span class="cm"># Compile to bytecode</span>
+bin/penelope build -O2 examples/09-fib.pen
+
+<span class="cm"># Drop into a REPL</span>
+bin/penelope repl
+
+<span class="cm"># Type-check</span>
+bin/penelope check examples/08-24h-agent.pen</code></pre>
+
+<footer>
+  © 2026 Airing · <a href="https://github.com/airingursb/Penelope">github.com/airingursb/Penelope</a>
+</footer>
+</body>
+</html>
