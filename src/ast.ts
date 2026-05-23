@@ -36,7 +36,7 @@ export type ASTBundle = {
 export type Value =
   | { tag: 'int';     v: number }
   | { tag: 'bool';    v: boolean }
-  | { tag: 'closure'; paramNames: string[]; bodyBlockId: NodeId; capturedScopeId: ScopeId }
+  | { tag: 'closure'; params: string[]; bodyIp: number; bodyLen: number; capturedFrameIdx: number }
   | { tag: 'unit' }
   | { tag: 'str';     v: string };
 

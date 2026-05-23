@@ -82,6 +82,46 @@ function runUntilStop(prog: Program, state: VMState): RunResult {
         state.ip = !c.v ? (op[1] as number) : state.ip + 1;
         break;
       }
+      case 'MAKE_CLOSURE': {
+        const params = op[1] as string[];
+        const bodyIp = op[2] as number;
+        const bodyLen = op[3] as number;
+        push(state, { tag: 'closure', params, bodyIp, bodyLen, capturedFrameIdx: state.frames.length - 1 });
+        state.ip++;
+        break;
+      }
+      case 'CALL': {
+        const argc = op[1] as number;
+        const args: Value[] = [];
+        for (let i = 0; i < argc; i++) args.unshift(pop(state));
+        const callee = pop(state);
+        if (callee.tag !== 'closure') throw new Error(`CALL: callee is ${callee.tag}, not closure`);
+        if (args.length !== callee.params.length) {
+          throw new Error(`CALL: arity mismatch (expected ${callee.params.length}, got ${args.length})`);
+        }
+        const bindings: Record<string, Value> = {};
+        for (let i = 0; i < args.length; i++) bindings[callee.params[i]] = args[i];
+        state.frames.push({ bindings, returnIP: state.ip + 1, parentIdx: callee.capturedFrameIdx });
+        state.ip = callee.bodyIp;
+        break;
+      }
+      case 'RETURN': {
+        const f = state.frames.pop();
+        if (!f || f.returnIP === undefined) throw new Error(`RETURN: invalid return frame`);
+        state.ip = f.returnIP;
+        break;
+      }
+      case 'ENTER_BLOCK': {
+        state.frames.push({ bindings: {}, parentIdx: state.frames.length - 1 });
+        state.ip++;
+        break;
+      }
+      case 'EXIT_BLOCK': {
+        if (state.frames.length === 1) throw new Error(`EXIT_BLOCK: cannot pop root frame`);
+        state.frames.pop();
+        state.ip++;
+        break;
+      }
       default:
         throw new Error(`VM: unhandled opcode '${op[0]}' at ip ${state.ip}`);
     }

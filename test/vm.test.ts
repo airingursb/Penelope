@@ -150,3 +150,58 @@ test('JUMP_IF_FALSE on non-bool throws', () => {
   };
   expect(() => run(prog)).toThrow(/expected bool/);
 });
+
+test('MAKE_CLOSURE captures top frame index', () => {
+  const prog: Program = {
+    version: 1, constants: [],
+    code: [['MAKE_CLOSURE', ['x'], 10, 5], ['HALT']],
+  };
+  const r = run(prog);
+  expect(r.state.valueStack[0]).toEqual({
+    tag: 'closure', params: ['x'], bodyIp: 10, bodyLen: 5, capturedFrameIdx: 0,
+  });
+});
+
+test('CALL + RETURN: identity fn', () => {
+  const prog: Program = {
+    version: 1,
+    constants: [{ tag: 'int', v: 7 }],
+    code: [
+      ['MAKE_CLOSURE', ['x'], 2, 4],
+      ['JUMP', 6],
+      ['ENTER_BLOCK'],
+      ['LOAD_VAR', 'x', null],
+      ['EXIT_BLOCK'],
+      ['RETURN'],
+      ['STORE_VAR', 'id'],
+      ['LOAD_VAR', 'id', null],
+      ['LOAD_CONST', 0],
+      ['CALL', 1],
+      ['HALT'],
+    ],
+  };
+  const r = run(prog);
+  expect(r.state.valueStack).toEqual([{ tag: 'int', v: 7 }]);
+});
+
+test('closure captures outer binding via parentIdx', () => {
+  const prog: Program = {
+    version: 1,
+    constants: [{ tag: 'int', v: 10 }],
+    code: [
+      ['LOAD_CONST', 0],
+      ['STORE_VAR', 'y'],
+      ['MAKE_CLOSURE', [], 4, 4],
+      ['JUMP', 8],
+      ['ENTER_BLOCK'],
+      ['LOAD_VAR', 'y', null],
+      ['EXIT_BLOCK'],
+      ['RETURN'],
+      ['STORE_VAR', 'f'],
+      ['LOAD_VAR', 'f', null],
+      ['CALL', 0],
+      ['HALT'],
+    ],
+  };
+  expect(run(prog).state.valueStack).toEqual([{ tag: 'int', v: 10 }]);
+});
