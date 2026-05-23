@@ -8,7 +8,8 @@ import { compile } from './compiler.js';
 import { run, freshState, makeProfile } from './vm.js';
 import { writePencFile, readPencFile } from './encoder.js';
 import { runOptimizer, type OLevel } from './optimizer.js';
-import { check as typeCheck, formatErrors as formatTypeErrors } from './typecheck.js';
+import { check as typeCheck } from './typecheck.js';
+import { formatDiagnostic, diagnosticFromMessage } from './diagnostic.js';
 import { serialize, sha256, deserialize } from './snapshot.js';
 import type { Snapshot, VMState } from './snapshot.js';
 import type { Value } from './ast.js';
@@ -76,13 +77,19 @@ function cmdBuild(args: ParsedArgs): number {
   try { source = readFileSync(absSrc, 'utf8'); }
   catch { process.stderr.write(`cli error: cannot read source: ${srcPath}\n`); return 3; }
 
-  const ast = parse(tokenize(source));
-  const prog = runOptimizer(compile(ast), args.oLevel);
-  prog.sourceHash = 'sha256:' + sha256(source);
-  const pencPath = absSrc.replace(/\.pen$/, '.penc');
-  writePencFile(pencPath, prog);
-  process.stdout.write(`wrote ${pencPath} (${prog.code.length} opcodes, ${prog.constants.length} constants, -O${args.oLevel})\n`);
-  return 0;
+  try {
+    const ast = parse(tokenize(source));
+    const prog = runOptimizer(compile(ast), args.oLevel);
+    prog.sourceHash = 'sha256:' + sha256(source);
+    const pencPath = absSrc.replace(/\.pen$/, '.penc');
+    writePencFile(pencPath, prog);
+    process.stdout.write(`wrote ${pencPath} (${prog.code.length} opcodes, ${prog.constants.length} constants, -O${args.oLevel})\n`);
+    return 0;
+  } catch (e) {
+    const diag = diagnosticFromMessage((e as Error).message, source, srcPath);
+    process.stderr.write(formatDiagnostic(diag) + '\n');
+    return 1;
+  }
 }
 
 function cmdExec(args: ParsedArgs): number {
@@ -111,23 +118,29 @@ function cmdRun(args: ParsedArgs): number {
   const timeOverride = timeFlag && timeFlag !== true ? parseInt(String(timeFlag), 10) : null;
   const noReplay = args.flags['no-replay'] === true;
 
-  const ast = parse(tokenize(source));
-  const prog = runOptimizer(compile(ast), args.oLevel);
+  try {
+    const ast = parse(tokenize(source));
+    const prog = runOptimizer(compile(ast), args.oLevel);
 
-  const state = freshState();
-  state.timeOverride = timeOverride;
-  state.noReplay = noReplay;
+    const state = freshState();
+    state.timeOverride = timeOverride;
+    state.noReplay = noReplay;
 
-  const r = run(prog, state);
+    const r = run(prog, state);
 
-  if (r.status === 'paused') {
-    const pencPath = absPath.replace(/\.pen$/, '.penc');
-    prog.sourceHash = 'sha256:' + sha256(source);
-    writePencFile(pencPath, prog);
-    const snapPath = writeSnapshot(pencPath, r.state);
-    process.stdout.write(`paused at ip ${r.state.ip} → ${snapPath}\n`);
+    if (r.status === 'paused') {
+      const pencPath = absPath.replace(/\.pen$/, '.penc');
+      prog.sourceHash = 'sha256:' + sha256(source);
+      writePencFile(pencPath, prog);
+      const snapPath = writeSnapshot(pencPath, r.state);
+      process.stdout.write(`paused at ip ${r.state.ip} → ${snapPath}\n`);
+    }
+    return 0;
+  } catch (e) {
+    const diag = diagnosticFromMessage((e as Error).message, source, filePath);
+    process.stderr.write(formatDiagnostic(diag) + '\n');
+    return 1;
   }
-  return 0;
 }
 
 function cmdResume(args: ParsedArgs): number {
@@ -277,13 +290,27 @@ function cmdCheck(args: ParsedArgs): number {
   let source: string;
   try { source = readFileSync(resolve(srcPath), 'utf8'); }
   catch { process.stderr.write(`cli error: cannot read source: ${srcPath}\n`); return 3; }
-  const ast = parse(tokenize(source));
-  const errs = typeCheck(ast);
+  let errs;
+  try {
+    const ast = parse(tokenize(source));
+    errs = typeCheck(ast);
+  } catch (e) {
+    const diag = diagnosticFromMessage((e as Error).message, source, srcPath);
+    process.stderr.write(formatDiagnostic(diag) + '\n');
+    return 1;
+  }
   if (errs.length === 0) {
     process.stdout.write(`${srcPath}: ok (no type errors)\n`);
     return 0;
   }
-  process.stderr.write(formatTypeErrors(errs) + '\n');
+  for (const err of errs) {
+    process.stderr.write(formatDiagnostic({
+      message: err.message,
+      pos: err.pos,
+      source,
+      filename: srcPath,
+    }) + '\n\n');
+  }
   process.stderr.write(`${errs.length} type error${errs.length === 1 ? '' : 's'}\n`);
   return 1;
 }
