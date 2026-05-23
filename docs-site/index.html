@@ -45,25 +45,59 @@
 
 <blockquote><strong>Execution is data. A running program is a value.</strong></blockquote>
 
-<p>If the runtime state is just JSON, it can be persisted to disk, forked, inspected, migrated, compared, transmitted, scheduled — like any other value. Everything else in Penelope follows from this axiom.</p>
+<p>If runtime state is just JSON, it can be persisted, forked, inspected, migrated, compared, transmitted, scheduled — like any other value. Everything else in Penelope follows from this axiom.</p>
 
-<h2>What ships today</h2>
+<h2>Three more programs</h2>
+
+<p><strong>1. A 24-hour approval workflow.</strong> Pause until a human says yes; the process can die in between; effects are replayed on resume so audits don't double-fire.</p>
+
+<pre><code><span class="bi">print</span>(<span class="str">"Requesting $5000 approval"</span>);
+<span class="kw">let</span> ok = <span class="bi">wait_for</span>(<span class="str">"approval"</span>);     <span class="cm">// process exits here, possibly for hours</span>
+<span class="kw">if</span> (ok) {
+  <span class="kw">let</span> r = <span class="bi">net_fetch</span>(<span class="str">"https://api.bank/transfer"</span>);
+  <span class="bi">write_file</span>(<span class="str">"/var/log/audit.log"</span>, r);
+}</code></pre>
+
+<p><strong>2. Pattern matching with guards and destructuring.</strong> Match on literals, lists, dicts, or-alternatives, with optional <code>if</code> guards.</p>
+
+<pre><code><span class="kw">let</span> classify = <span class="kw">fn</span>(req) {
+  <span class="kw">match</span> req {
+    <span class="str">"GET"</span> | <span class="str">"HEAD"</span>        =&gt; <span class="str">"safe"</span>,
+    n <span class="kw">if</span> <span class="bi">str_starts_with</span>(n, <span class="str">"POST"</span>) =&gt; <span class="str">"writes"</span>,
+    _                       =&gt; <span class="str">"other"</span>,
+  }
+};</code></pre>
+
+<p><strong>3. Effect types: <code>pure fn</code> rejects accidental I/O.</strong> The type checker tracks every function's effect set; <code>pure</code> hard-fails on any non-empty set.</p>
+
+<pre><code><span class="kw">let</span> square = <span class="kw">pure</span> <span class="kw">fn</span>(n) { n * n };          <span class="cm">// OK</span>
+<span class="kw">let</span> bad    = <span class="kw">pure</span> <span class="kw">fn</span>(n) { <span class="bi">print</span>(<span class="bi">to_str</span>(n)); n };
+<span class="cm">// type error: pure fn body has effects [io] — remove 'pure' or the effectful operations</span></code></pre>
+
+<h2>What's in</h2>
+
+<p>Five phases shipped. The list below is what's <em>usable today</em>, organized by what a user actually does:</p>
 
 <table>
-<tr><th>Phase</th><th>What</th><th>Status</th></tr>
-<tr><td>Phase 1</td><td>Foundations: lexer + parser + step-machine + snapshot</td><td>✅ done</td></tr>
-<tr><td>Phase 2</td><td>Effect system: 8 effects + strings + agent runtime</td><td>✅ done</td></tr>
-<tr><td>Phase 3</td><td>Bytecode VM + 5-pass optimizer + snapshot v3</td><td>✅ done</td></tr>
-<tr><td>Polish R1</td><td>wait_for value injection · source positions · REPL · LSP</td><td>✅ done</td></tr>
-<tr><td>Polish R2</td><td>list/dict · type checker · profiler · VSCode ext · docs site</td><td>✅ done</td></tr>
-<tr><td>Polish R3</td><td>Rust-style errors · LSP hover · snippets · web playground</td><td>✅ done — try the <a href="play.html">Playground</a>
-    <a href="debugger.html">Debugger</a></td></tr>
-<tr><td>Polish R4</td><td><code>pen fmt</code> · <code>pen test</code> · LSP completions + go-to-def · <code>--watch</code> · color</td><td>✅ done</td></tr>
-<tr><td>Polish R5</td><td>Comment-preserving fmt · <code>pen doc</code> · TCO · <code>--watch</code> on test/check · <a href="debugger.html">VSCode debugger</a></td><td>✅ done</td></tr>
-<tr><td>Lang ext</td><td>String interpolation · pattern matching · module system (<code>import</code>)</td><td>✅ done</td></tr>
-<tr><td>Polish Final</td><td>Syntax niceties · or/guard/list/dict patterns · DAP step · cross-import source maps · <code>pen graph</code>/<code>new</code> · playground sharing</td><td>✅ done</td></tr>
-<tr><td>Phase 4</td><td>Live editing (<code>pen edit</code>) · time-travel debugger · <strong>full self-hosting</strong> (<code>pen self-test</code>, three-stage fixpoint proof)</td><td>✅ done — see <a href="phase4.html">Phase 4 page</a></td></tr>
+  <tr><th>Capability</th><th>What it gives you</th><th>Where</th></tr>
+  <tr><td><strong>Pause/resume</strong></td><td><code>pause</code> as a first-class expression. Snapshot is a JSON value (gzipped by default). <code>pen run / resume / fork / edit</code>.</td><td><a href="tour.html#pause">Tour</a></td></tr>
+  <tr><td><strong>Effect system</strong></td><td>8 built-in effects (<code>print</code>, <code>net_fetch</code>, <code>now</code>, <code>random_int</code>, <code>read_file</code>, <code>write_file</code>, <code>wait_until</code>, <code>wait_for</code>) with per-call replay log. Resume never double-fires.</td><td><a href="tour.html#effects">Tour</a></td></tr>
+  <tr><td><strong>Pattern matching</strong></td><td>Literal / wildcard / var / or / guard / list (incl. <code>...rest</code>) / dict patterns. Match arms inherit the enclosing tail-position flag for TCO.</td><td><a href="tour.html#patterns">Tour</a></td></tr>
+  <tr><td><strong>Effect types</strong></td><td>Every fn type carries an inferred effect set. <code>pure fn</code> enforces an empty set. <code>pen check --show-effects</code> shows every fn's signature.</td><td><a href="tour.html#effect-types">Tour</a></td></tr>
+  <tr><td><strong>Modules</strong></td><td><code>import "./path.pen";</code> — file-relative paths, dedup, cycle-safe. Cross-import source maps so diagnostics point at the original file:line.</td><td><a href="tour.html#modules">Tour</a></td></tr>
+  <tr><td><strong>String interpolation</strong></td><td><code>"hello ${name}, you are ${age + 1}"</code> — arbitrary expressions inside <code>${...}</code>, desugared to <code>+</code> chains with <code>to_str</code> wrapping.</td><td><a href="tour.html#interpolation">Tour</a></td></tr>
+  <tr><td><strong>Bytecode VM + 5-pass optimizer</strong></td><td>Stack-based, 18 opcodes, TCO. <code>-O0</code>/<code>-O1</code>/<code>-O2</code> for constant folding, DCE, inline caches, function inlining, peephole.</td><td><a href="snapshot.html">Snapshot</a></td></tr>
+  <tr><td><strong>JIT</strong></td><td>Bytecode → JS Function at runtime. Op args baked as literals, <code>BIN_OP</code> specialized per operator. ~2.4× faster than the <code>-O2</code> interpreter on fib(25).</td><td><a href="jit.html">JIT</a></td></tr>
+  <tr><td><strong>Self-hosting</strong></td><td>Lexer + parser + compiler written in Penelope (<code>std/lexer.pen</code>, <code>parser.pen</code>, <code>compiler.pen</code>). Three-stage fixpoint proof via <code>pen self-test</code>.</td><td><a href="phase4.html">Phase 4</a></td></tr>
+  <tr><td><strong>Live editing</strong></td><td><code>pen edit &lt;snap.penz&gt;</code> remaps a paused VMState onto a recompiled program via source-position lookup, with opcode-kind sanity checks.</td><td><a href="phase4.html">Phase 4</a></td></tr>
+  <tr><td><strong>Time-travel debugger</strong></td><td>DAP <code>stepBack</code> + <code>reverseContinue</code>. VMState deep-cloned before every advance into a bounded history stack.</td><td><a href="debugger.html">Debugger</a></td></tr>
+  <tr><td><strong>Distributed runtime</strong></td><td>Coordinator + workers, HTTP/JSON protocol, lease + heartbeat, dead-worker recovery via FileStore. Multi-process out of the box.</td><td><a href="distributed.html">Distributed</a></td></tr>
+  <tr><td><strong>Observability</strong></td><td>OpenTelemetry-shaped Tracer hook in the VM. <code>fn_call</code> / <code>fn_return</code> / <code>effect</code> / <code>pause</code> / <code>resume</code> / <code>error</code> events. <code>pen run --trace</code> emits JSON-lines.</td><td><a href="production.html">Production</a></td></tr>
+  <tr><td><strong>Editor integration</strong></td><td>Full VSCode extension: syntax, LSP (hover, completions, go-to-def, diagnostics), DAP debugger (breakpoints, variables, time-travel), snippets.</td><td><a href="debugger.html">Debugger</a></td></tr>
+  <tr><td><strong>Tooling</strong></td><td><code>pen fmt</code> (comment-preserving) · <code>pen test</code> (doctest) · <code>pen doc</code> (markdown from <code>///</code>) · <code>pen graph</code> (DOT) · <code>pen new</code> (scaffold) · <code>pen repl</code></td><td><a href="cli.html">CLI</a></td></tr>
 </table>
+
+<p><strong>613 tests across 55 files.</strong> Zero production dependencies (only <code>typescript</code> + <code>vitest</code> as devDeps). Hand-written everything.</p>
 
 <h2>Quick start</h2>
 
@@ -74,14 +108,28 @@ npm install &amp;&amp; npm run build
 <span class="cm"># Run a program</span>
 bin/penelope run examples/01-toplevel-pause.pen
 
-<span class="cm"># Compile to bytecode</span>
+<span class="cm"># Compile to bytecode and disassemble</span>
 bin/penelope build -O2 examples/09-fib.pen
+bin/penelope disasm examples/09-fib.penc
 
-<span class="cm"># Drop into a REPL</span>
+<span class="cm"># Type-check, show effect signatures</span>
+bin/penelope check examples/08-24h-agent.pen --show-effects
+
+<span class="cm"># Benchmark interpreter vs JIT</span>
+bin/penelope bench examples/09-fib.pen
+
+<span class="cm"># Self-hosting proof (Penelope compiles Penelope)</span>
+bin/penelope self-test
+
+<span class="cm"># REPL</span>
 bin/penelope repl
 
-<span class="cm"># Type-check</span>
-bin/penelope check examples/08-24h-agent.pen</code></pre>
+<span class="cm"># Distributed runtime (3 shells)</span>
+bin/penelope coordinator --port 7077 --store ./jobs
+bin/penelope worker --coord http://localhost:7077
+bin/penelope submit my-workflow.pen --coord http://localhost:7077 --wait</code></pre>
+
+<p>See the <a href="tour.html">Tour</a> for the language, the <a href="cli.html">CLI reference</a> for the full command surface, and the <a href="examples.html">Examples gallery</a> for runnable programs.</p>
 
 <footer>
   © 2026 Airing · <a href="https://github.com/airingursb/Penelope">github.com/airingursb/Penelope</a>

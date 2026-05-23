@@ -9,7 +9,7 @@
 <body>
 <header>
   <h1>Penelope — Tour</h1>
-  <p class="tagline">The whole language in 10 minutes.</p>
+  <p class="tagline">The whole language in 15 minutes.</p>
   <nav>
     <a href="index.html">Overview</a>
     <a href="tour.html" class="active">Tour</a>
@@ -27,38 +27,89 @@
   </nav>
 </header>
 
-<h2>Values</h2>
-<p>Penelope has seven runtime value tags: <code>int</code>, <code>bool</code>, <code>str</code>, <code>unit</code>, <code>closure</code>, <code>list</code>, <code>dict</code>.</p>
-<pre><code><span class="num">42</span>           <span class="cm">// int</span>
-<span class="kw">true</span>         <span class="cm">// bool</span>
-<span class="str">"hello"</span>      <span class="cm">// str</span>
+<h2 id="values">Values</h2>
+<p>Penelope has seven runtime value tags: <code>int</code>, <code>bool</code>, <code>str</code>, <code>unit</code>, <code>list</code>, <code>dict</code>, <code>closure</code>. Everything is one of these.</p>
+<pre><code><span class="num">42</span>                              <span class="cm">// int</span>
+<span class="kw">true</span>                            <span class="cm">// bool</span>
+<span class="str">"hello"</span>                         <span class="cm">// str</span>
+()                              <span class="cm">// unit</span>
 <span class="bi">list_new</span>(<span class="num">1</span>, <span class="num">2</span>, <span class="num">3</span>)              <span class="cm">// list</span>
-<span class="bi">dict_set</span>(<span class="bi">dict_new</span>(), <span class="str">"k"</span>, <span class="num">1</span>)  <span class="cm">// dict</span>
+<span class="bi">dict_set</span>(<span class="bi">dict_new</span>(), <span class="str">"k"</span>, <span class="num">1</span>)   <span class="cm">// dict</span>
 <span class="kw">fn</span>(x) { x + <span class="num">1</span> }                <span class="cm">// closure</span></code></pre>
 
-<h2>Let bindings</h2>
+<h2 id="numbers">Numeric literals</h2>
+<p>Decimal, hex (<code>0x</code>), binary (<code>0b</code>). Underscores anywhere as visual separators. Negative literals via leading <code>-</code>.</p>
+<pre><code><span class="num">42</span>           <span class="cm">// decimal</span>
+<span class="num">0xff</span>         <span class="cm">// hex → 255</span>
+<span class="num">0b1010</span>       <span class="cm">// binary → 10</span>
+<span class="num">1_000_000</span>    <span class="cm">// readable big number → 1000000</span>
+-<span class="num">5</span>           <span class="cm">// negative literal</span>
+<span class="num">0</span> - x        <span class="cm">// unary minus on an expr (no \! or unary -)</span></code></pre>
+
+<h2 id="strings">Strings &amp; escapes</h2>
+<p>Double-quoted strings. Escape sequences: <code>\n</code>, <code>\t</code>, <code>\r</code>, <code>\\</code>, <code>\"</code>, <code>\$</code> (escaped dollar for use next to template interpolation).</p>
+<pre><code><span class="str">"hello"</span>
+<span class="str">"line1\nline2"</span>
+<span class="str">"\$50"</span>                    <span class="cm">// literal $50 — \$ escapes interpolation</span>
+<span class="str">"path: C:\\Users\\me"</span></code></pre>
+
+<h2 id="let">Let bindings</h2>
+<p><code>let name = expr;</code>. Bindings are immutable — re-assigning isn't a thing; shadow with a new <code>let</code> instead.</p>
 <pre><code><span class="kw">let</span> x = <span class="num">10</span>;
 <span class="kw">let</span> y = x + <span class="num">5</span>;
-<span class="bi">print</span>(<span class="bi">to_str</span>(y));  <span class="cm">// 15</span></code></pre>
+<span class="kw">let</span> x = <span class="str">"now a string"</span>;   <span class="cm">// shadowing — totally fine</span>
+<span class="bi">print</span>(x);                  <span class="cm">// → now a string</span></code></pre>
 
-<h2>Functions are values</h2>
-<pre><code><span class="kw">let</span> add = <span class="kw">fn</span>(a, b) { a + b };
-<span class="bi">print</span>(<span class="bi">to_str</span>(add(<span class="num">2</span>, <span class="num">3</span>)));  <span class="cm">// 5</span>
+<p>The <code>_</code> identifier is the conventional discard name. Useful for sequencing an effectful expression you don't need the value of:</p>
+<pre><code><span class="kw">let</span> _ = <span class="bi">print</span>(<span class="str">"side effect"</span>);
+<span class="kw">let</span> _ = <span class="kw">pause</span>;</code></pre>
 
-<span class="cm">// Closures capture lexical scope</span>
-<span class="kw">let</span> mk_counter = <span class="kw">fn</span>(start) {
-  <span class="kw">fn</span>(n) { start + n }
+<h2 id="expressions-vs-statements">Expressions vs. statements</h2>
+<p>Almost everything is an expression. The two things that aren't: <code>let</code> and an expression-followed-by-<code>;</code> (an <code>ExprStmt</code>). Inside a block, the <em>last</em> expression with no trailing <code>;</code> is the block's value:</p>
+<pre><code><span class="kw">let</span> r = {
+  <span class="kw">let</span> a = <span class="num">1</span>;
+  <span class="kw">let</span> b = <span class="num">2</span>;
+  a + b               <span class="cm">// ← no semicolon: this IS the block's value</span>
 };
-<span class="kw">let</span> add10 = mk_counter(<span class="num">10</span>);
-<span class="bi">print</span>(<span class="bi">to_str</span>(add10(<span class="num">5</span>)));  <span class="cm">// 15</span></code></pre>
+<span class="bi">print</span>(<span class="bi">to_str</span>(r));         <span class="cm">// → 3</span></code></pre>
 
-<h2>Conditionals</h2>
+<p>So <code>if</code>, <code>match</code>, and block <code>{ ... }</code> all produce values:</p>
+<pre><code><span class="kw">let</span> msg = <span class="kw">if</span> (n &lt; <span class="num">0</span>) { <span class="str">"neg"</span> } <span class="kw">else</span> { <span class="str">"non-neg"</span> };
+<span class="kw">let</span> kind = <span class="kw">match</span> x { <span class="num">0</span> =&gt; <span class="str">"zero"</span>, _ =&gt; <span class="str">"other"</span> };</code></pre>
+
+<p>A <code>;</code> after a value-producing expression discards the value (the expression runs for its effects). A block with all statements ending in <code>;</code> evaluates to <code>()</code>.</p>
+
+<h2 id="functions">Functions are values</h2>
+<pre><code><span class="kw">let</span> add = <span class="kw">fn</span>(a, b) { a + b };
+<span class="bi">print</span>(<span class="bi">to_str</span>(add(<span class="num">2</span>, <span class="num">3</span>)));     <span class="cm">// → 5</span>
+
+<span class="cm">// First-class — pass fns, return fns.</span>
+<span class="kw">let</span> apply = <span class="kw">fn</span>(f, x) { f(x) };
+<span class="bi">print</span>(<span class="bi">to_str</span>(apply(<span class="kw">fn</span>(n) { n * n }, <span class="num">7</span>)));   <span class="cm">// → 49</span></code></pre>
+
+<p><strong>Closures</strong> capture the surrounding lexical scope through the frame chain. Variables looked up at call time walk up the chain.</p>
+
+<pre><code><span class="kw">let</span> x = <span class="num">5</span>;
+<span class="kw">let</span> r = (<span class="kw">fn</span>(y) { x + y })(<span class="num">7</span>);   <span class="cm">// → 12</span></code></pre>
+
+<p><strong>Tail-call optimization (TCO).</strong> A call in tail position (the last thing evaluated before returning) reuses the current frame instead of pushing a new one. Deep tail recursion is bounded by heap, not stack:</p>
+
+<pre><code><span class="kw">let</span> go = <span class="kw">fn</span>(i, acc) {
+  <span class="kw">if</span> (i &gt; <span class="num">100000</span>) { acc }
+  <span class="kw">else</span> { go(i + <span class="num">1</span>, acc + i) }    <span class="cm">// tail position — TAILCALL, no stack growth</span>
+};
+<span class="bi">print</span>(<span class="bi">to_str</span>(go(<span class="num">1</span>, <span class="num">0</span>)));</code></pre>
+
+<h2 id="conditionals">Conditionals</h2>
+<p><code>if (cond) { ... } else { ... }</code> — parens around the condition, braces around both arms. The two arms are blocks; both are mandatory.</p>
+
 <pre><code><span class="kw">let</span> abs = <span class="kw">fn</span>(n) {
   <span class="kw">if</span> (n &lt; <span class="num">0</span>) { <span class="num">0</span> - n } <span class="kw">else</span> { n }
-};
-<span class="bi">print</span>(<span class="bi">to_str</span>(abs(<span class="num">0</span> - <span class="num">7</span>)));  <span class="cm">// 7</span></code></pre>
+};</code></pre>
 
-<h2>The headline feature: pause</h2>
+<p>Penelope intentionally has no unary <code>!</code> and no <code>else if</code> sugar. Negate by comparing: <code>x == false</code>. Nest <code>else { if (...) { ... } else { ... } }</code> explicitly. This keeps the grammar uniform; the self-hosted compiler depends on it.</p>
+
+<h2 id="pause">The headline feature: <code>pause</code></h2>
 
 <p><code>pause</code> is a runtime primitive. When evaluated, it serializes the entire program state and exits the process. A later <code>pen resume</code> picks up exactly where it left off.</p>
 
@@ -76,114 +127,210 @@ $ bin/penelope resume pause.penz
 10
 <span class="cm"># x survived; bare pause returns unit; the print fires on resume</span></code></pre>
 
-<h2>Effects: I/O that survives pause</h2>
+<p>For value injection: <code>pen resume pause.penz --event y=5</code> binds <code>y = 5</code> before running.</p>
 
-<p>All side effects (print, file I/O, network, time, randomness) flow through an <strong>effect log</strong>. On resume, completed effects are <em>replayed from the log</em> — they don't re-execute. This guarantees idempotency across pause boundaries.</p>
+<h2 id="effects">Effects: I/O that survives pause</h2>
+
+<p>All side effects flow through an <strong>effect log</strong>. On resume, completed effects are <em>replayed from the log</em> — they don't re-execute. This guarantees idempotency across pause boundaries.</p>
 
 <pre><code><span class="kw">let</span> response = <span class="bi">net_fetch</span>(<span class="str">"https://example.test/decision"</span>);
-<span class="kw">let</span> ok = <span class="bi">wait_for</span>(<span class="str">"approval"</span>);
+<span class="kw">let</span> ok = <span class="bi">wait_for</span>(<span class="str">"approval"</span>);     <span class="cm">// pauses here</span>
 <span class="bi">write_file</span>(<span class="str">"/tmp/audit.log"</span>, response);
 <span class="bi">print</span>(<span class="str">"audit complete"</span>);</code></pre>
 
-<p>The 8 effects: <code>print</code>, <code>net_fetch</code>, <code>now</code>, <code>random_int</code>, <code>read_file</code>, <code>write_file</code>, <code>wait_until</code>, <code>wait_for</code>.</p>
+<p>The 8 effects:</p>
 
-<h2>wait_for: external value injection</h2>
+<table>
+  <tr><th>Effect</th><th>Signature</th><th>Effect category</th></tr>
+  <tr><td><code>print</code></td><td><code>(any) → unit</code></td><td>io</td></tr>
+  <tr><td><code>net_fetch</code></td><td><code>(str) → str</code></td><td>net</td></tr>
+  <tr><td><code>now</code></td><td><code>() → int</code></td><td>time</td></tr>
+  <tr><td><code>random_int</code></td><td><code>(int, int) → int</code></td><td>random</td></tr>
+  <tr><td><code>read_file</code></td><td><code>(str) → str</code></td><td>fs</td></tr>
+  <tr><td><code>write_file</code></td><td><code>(str, str) → unit</code></td><td>fs</td></tr>
+  <tr><td><code>wait_until</code></td><td><code>(int) → unit</code></td><td>pause + time</td></tr>
+  <tr><td><code>wait_for</code></td><td><code>(str) → any</code></td><td>pause</td></tr>
+</table>
+
+<h3 id="wait-for">wait_for: external value injection</h3>
 
 <p>When a program hits <code>wait_for(name)</code>, the runtime pauses. A later <code>pen resume --event name=value</code> injects the value and resumes.</p>
 
-<pre><code>$ pen run hitl.pen          <span class="cm"># pauses on wait_for("approval")</span>
+<pre><code>$ pen run hitl.pen                  <span class="cm"># pauses on wait_for("approval")</span>
 $ pen resume hitl.penz --event approval=true</code></pre>
 
-<h2>Forking: two futures from one snapshot</h2>
+<h3 id="forking">Forking: two futures from one snapshot</h3>
 
 <pre><code>$ pen fork pause.penz pause-copy.penz
 <span class="cm"># Now you have two snapshots. Resume each independently — they diverge.</span></code></pre>
 
-<h2>Time travel via inspect</h2>
+<h2 id="interpolation">String interpolation</h2>
 
-<pre><code>$ pen inspect pause.penz
-Snapshot: pause.penz
-  version: 3
-  pausedAtIP: 2  (line 3 col 9)
-  frames: 1
-    [0] bindings: { x }
-  effects: 0 entries
-  value stack (0): (empty)</code></pre>
-
-<h2>String interpolation</h2>
-
-<p>Strings may embed expressions with <code>${...}</code>. Each <code>${expr}</code> is desugared to <code>to_str(expr)</code> + concat.</p>
+<p>Strings may embed expressions with <code>${...}</code>. Each <code>${expr}</code> desugars to <code>to_str(expr)</code> + concat. Arbitrary expressions are allowed inside <code>${...}</code> — nested calls, arithmetic, anything.</p>
 
 <pre><code><span class="kw">let</span> name = <span class="str">"Penelope"</span>;
 <span class="kw">let</span> age = <span class="num">42</span>;
 <span class="bi">print</span>(<span class="str">"hello </span><span class="bi">${name}</span><span class="str">, you are </span><span class="bi">${age + 1}</span><span class="str">"</span>);
-<span class="cm">// → hello Penelope, you are 43</span></code></pre>
+<span class="cm">// → hello Penelope, you are 43</span>
 
-<p>Escape a literal <code>$</code> with <code>\$</code>.</p>
+<span class="kw">let</span> n = <span class="num">7</span>;
+<span class="bi">print</span>(<span class="str">"sum 1..</span><span class="bi">${n}</span><span class="str"> = </span><span class="bi">${n * (n + 1) / 2}</span><span class="str">"</span>);
+<span class="cm">// → sum 1..7 = 28</span></code></pre>
 
-<h2>Pattern matching</h2>
+<p>Escape a literal <code>$</code> with <code>\$</code>. Newlines inside <code>${...}</code> are fine; brace depth is tracked so <code>${ {dict: "literal"} }</code> works.</p>
 
-<p><code>match expr { pattern => body, ... }</code>. Patterns supported (MVP): int / bool / string literals, wildcard <code>_</code>, variable binding <code>x</code>.</p>
+<h2 id="patterns">Pattern matching</h2>
+
+<p><code>match expr { pattern => body, ... }</code>. Arms are checked top-to-bottom; the first match wins. No exhaustiveness check — a non-matching scrutinee with no wildcard arm returns <code>unit</code>.</p>
 
 <pre><code><span class="kw">let</span> describe = <span class="kw">fn</span>(n) {
   <span class="kw">match</span> n {
     <span class="num">0</span> =&gt; <span class="str">"zero"</span>,
     <span class="num">1</span> =&gt; <span class="str">"one"</span>,
-    x =&gt; <span class="str">"many: </span><span class="bi">${x}</span><span class="str">"</span>,
+    x =&gt; <span class="str">"many: </span><span class="bi">${x}</span><span class="str">"</span>,        <span class="cm">// var pattern: matches anything, binds to x</span>
+  }
+};</code></pre>
+
+<h3>Pattern catalogue</h3>
+
+<table>
+  <tr><th>Pattern</th><th>Example</th><th>Matches</th></tr>
+  <tr><td>int literal</td><td><code>42</code>, <code>-3</code></td><td>exact int</td></tr>
+  <tr><td>bool literal</td><td><code>true</code>, <code>false</code></td><td>exact bool</td></tr>
+  <tr><td>string literal</td><td><code>"hi"</code></td><td>exact string</td></tr>
+  <tr><td>unit literal</td><td><code>()</code></td><td>the unit value</td></tr>
+  <tr><td>wildcard</td><td><code>_</code></td><td>anything; no binding</td></tr>
+  <tr><td>var</td><td><code>x</code>, <code>n</code></td><td>anything; binds the scrutinee to that name</td></tr>
+  <tr><td>or</td><td><code>1 | 2 | 3</code></td><td>any alternative (no bindings inside)</td></tr>
+  <tr><td>guard</td><td><code>n if n &gt; 100</code></td><td>pattern matches AND guard expression is true (after bindings)</td></tr>
+  <tr><td>list (fixed)</td><td><code>[a, b]</code></td><td>list of length 2, binds <code>a</code> and <code>b</code></td></tr>
+  <tr><td>list (rest)</td><td><code>[h, ...t]</code></td><td>list with ≥1 elements; binds head to <code>h</code>, rest list to <code>t</code></td></tr>
+  <tr><td>dict</td><td><code>{name: n}</code></td><td>dict containing key <code>name</code>; binds value to <code>n</code></td></tr>
+</table>
+
+<p>Examples of each in combination:</p>
+
+<pre><code><span class="kw">let</span> classify_req = <span class="kw">fn</span>(method) {
+  <span class="kw">match</span> method {
+    <span class="str">"GET"</span> | <span class="str">"HEAD"</span> | <span class="str">"OPTIONS"</span> =&gt; <span class="str">"safe"</span>,
+    m <span class="kw">if</span> <span class="bi">str_starts_with</span>(m, <span class="str">"POST"</span>) =&gt; <span class="str">"writes"</span>,
+    _ =&gt; <span class="str">"other"</span>,
   }
 };
-<span class="bi">print</span>(describe(<span class="num">42</span>));   <span class="cm">// → many: 42</span></code></pre>
 
-<p>Arms are checked top-to-bottom. A variable pattern (lowercase identifier) matches anything and binds; <code>_</code> matches anything and discards. No exhaustiveness checking — a non-matching scrutinee with no wildcard returns <code>unit</code>.</p>
-
-<h3>Pattern variants</h3>
-
-<p><strong>Or-patterns</strong>: <code>1 | 2 | 3 =&gt; "small"</code> matches any alternative.</p>
-
-<p><strong>Guards</strong>: <code>n if n &gt; 100 =&gt; "huge"</code> — arm fires only if the guard expression is true (after pattern bindings).</p>
-
-<p><strong>List patterns</strong>: <code>[] =&gt; ...</code> matches empty list; <code>[h, ...t] =&gt; ...</code> binds head and rest; <code>[a, b] =&gt; ...</code> requires exactly two elements.</p>
-
-<pre><code><span class="kw">let</span> head = <span class="kw">fn</span>(xs) {
+<span class="kw">let</span> sum_list = <span class="kw">fn</span>(xs) {
   <span class="kw">match</span> xs {
-    [] =&gt; <span class="str">"empty"</span>,
-    [h, ...t] =&gt; <span class="str">"head=</span><span class="bi">${h}</span><span class="str">, len(t)=</span><span class="bi">${list_len(t)}</span><span class="str">"</span>,
+    [] =&gt; <span class="num">0</span>,
+    [h, ...t] =&gt; h + sum_list(t),
+  }
+};
+
+<span class="kw">let</span> greet_user = <span class="kw">fn</span>(u) {
+  <span class="kw">match</span> u {
+    {name: n, age: a} <span class="kw">if</span> a &gt;= <span class="num">18</span> =&gt; <span class="str">"hi </span><span class="bi">${n}</span><span class="str">"</span>,
+    {name: n} =&gt; <span class="str">"hi minor </span><span class="bi">${n}</span><span class="str">"</span>,
+    _ =&gt; <span class="str">"anonymous"</span>,
   }
 };</code></pre>
 
-<p><strong>Dict patterns</strong>: <code>{name: n} =&gt; ...</code> binds <code>n</code> to the dict's <code>name</code> field; missing key falls through.</p>
+<h2 id="effect-types">Effect types &amp; <code>pure fn</code></h2>
 
-<pre><code><span class="kw">let</span> lookup = <span class="kw">fn</span>(d) {
-  <span class="kw">match</span> d {
-    {name: n} =&gt; <span class="str">"name=</span><span class="bi">${n}</span><span class="str">"</span>,
-    _ =&gt; <span class="str">"no name"</span>,
-  }
-};</code></pre>
+<p>Every function's type carries an effect set. By default it's inferred from the body. Mark a function <code>pure</code> to enforce an empty set:</p>
 
-<h2>Syntax niceties</h2>
+<pre><code><span class="kw">let</span> square  = <span class="kw">pure</span> <span class="kw">fn</span>(n) { n * n };               <span class="cm">// OK — body is pure</span>
+<span class="kw">let</span> log_sq  = <span class="kw">pure</span> <span class="kw">fn</span>(n) { <span class="bi">print</span>(<span class="bi">to_str</span>(n * n)); n };
+<span class="cm">// type error: pure fn body has effects [io]
+//   — remove 'pure' or the effectful operations</span></code></pre>
 
-<p>Negative literals (<code>-5</code>), hex (<code>0xff</code>), binary (<code>0b1010</code>), underscore separators (<code>1_000_000</code>), block comments (<code>/* ... */</code>), and the unit literal <code>()</code>.</p>
+<p>Effect inference is transitive: a fn that calls another fn picks up the callee's effects.</p>
 
-<h2>Modules</h2>
+<p>The effect categories: <code>io</code>, <code>net</code>, <code>time</code>, <code>random</code>, <code>fs</code>, <code>pause</code>, <code>panic</code>. <code>str_*</code>, <code>list_*</code>, <code>dict_*</code>, <code>char_*</code>, <code>to_str</code>, <code>type_of</code>, <code>int_of_str</code> are all pure.</p>
 
-<p><code>import "./path.pen";</code> expands the imported file's top-level bindings into the current scope. Paths are resolved relative to the importing file. Re-imports are idempotent; cycles are safe.</p>
+<p>Inspect inferred effects from the CLI:</p>
+
+<pre><code>$ pen check my-program.pen --show-effects
+my-program.pen: ok
+
+Program effects: [io]
+
+Fn bindings:
+     1: 1  greet : fn(unknown) -&gt; unit / [io]
+     2: 1  [pure] square : fn(unknown) -&gt; int
+     3: 1  dbl : fn(unknown) -&gt; int</code></pre>
+
+<h2 id="modules">Modules</h2>
+
+<p><code>import "./path.pen";</code> expands the imported file's top-level bindings into the current scope. Paths are file-relative. Re-imports are idempotent; cycles are safe.</p>
 
 <pre><code><span class="cm">// math.pen</span>
-<span class="kw">let</span> square = <span class="kw">fn</span>(n) { n * n };</code></pre>
+<span class="kw">let</span> square = <span class="kw">fn</span>(n) { n * n };
+<span class="kw">let</span> cube   = <span class="kw">fn</span>(n) { n * n * n };</code></pre>
 
 <pre><code><span class="cm">// main.pen</span>
 <span class="kw">import</span> <span class="str">"./math.pen"</span>;
-<span class="bi">print</span>(<span class="bi">to_str</span>(square(<span class="num">7</span>)));    <span class="cm">// 49</span></code></pre>
+<span class="bi">print</span>(<span class="bi">to_str</span>(square(<span class="num">7</span>)));            <span class="cm">// 49</span></code></pre>
 
-<p>The loader expands imports before tokenization. Source positions in errors refer to the inlined source — preserving original file:line is a future improvement.</p>
+<p>The loader expands imports before tokenization. Diagnostics use a cross-import source map so errors point at the <em>original</em> file:line, not the inlined offset.</p>
 
-<h2>Optimizations</h2>
+<h2 id="comments">Comments</h2>
 
-<p>Compile with <code>-O2</code> to enable all 5 passes (constant folding, dead-code elimination, inline caches, function inlining, peephole):</p>
+<p>Three flavors:</p>
+
+<pre><code><span class="cm">// line comment</span>
+
+<span class="cm">/* block comment
+   spanning lines */</span>
+
+<span class="cm">/// doc comment — collected by `pen doc` into Markdown</span>
+<span class="cm">/// Use on the line directly above a `let` binding.</span>
+<span class="kw">let</span> noteworthy = <span class="kw">fn</span>() { ... };</code></pre>
+
+<h2 id="lists-and-dicts">Lists and dicts</h2>
+
+<p>Lists and dicts are constructed and manipulated through builtins (no literal syntax — that ambiguity with blocks and patterns isn't worth it).</p>
+
+<pre><code><span class="kw">let</span> xs = <span class="bi">list_new</span>(<span class="num">1</span>, <span class="num">2</span>, <span class="num">3</span>);
+<span class="kw">let</span> ys = <span class="bi">list_push</span>(xs, <span class="num">4</span>);          <span class="cm">// → [1, 2, 3, 4]</span>
+<span class="kw">let</span> n  = <span class="bi">list_len</span>(ys);              <span class="cm">// → 4</span>
+<span class="kw">let</span> x  = <span class="bi">list_get</span>(ys, <span class="num">2</span>);            <span class="cm">// → 3</span>
+<span class="kw">let</span> zs = <span class="bi">list_slice</span>(ys, <span class="num">1</span>, <span class="num">3</span>);       <span class="cm">// → [2, 3]</span>
+
+<span class="kw">let</span> d  = <span class="bi">dict_set</span>(<span class="bi">dict_new</span>(), <span class="str">"a"</span>, <span class="num">1</span>);
+<span class="kw">let</span> d2 = <span class="bi">dict_set</span>(d, <span class="str">"b"</span>, <span class="num">2</span>);
+<span class="kw">let</span> v  = <span class="bi">dict_get</span>(d2, <span class="str">"a"</span>);           <span class="cm">// → 1</span>
+<span class="kw">let</span> ok = <span class="bi">dict_has</span>(d2, <span class="str">"c"</span>);           <span class="cm">// → false</span>
+<span class="kw">let</span> ks = <span class="bi">dict_keys</span>(d2);             <span class="cm">// → ["a", "b"]</span></code></pre>
+
+<p>Both are immutable: <code>list_push</code> / <code>dict_set</code> return new values. The VM shares structure where it can.</p>
+
+<h2 id="optimizations">Optimizations</h2>
+
+<p>Compile with <code>-O2</code> to enable all five passes:</p>
+
+<ul>
+  <li><strong>constant folding</strong> — <code>1 + 2</code> collapses to <code>3</code> at compile time</li>
+  <li><strong>dead code elimination</strong> — unreachable branches and unused bindings stripped</li>
+  <li><strong>inline caches</strong> — <code>LOAD_VAR</code> gets an IC slot for the resolved frame-up count</li>
+  <li><strong>function inlining</strong> — small pure fns inlined at the call site</li>
+  <li><strong>peephole</strong> — opcode-pair shortcuts (e.g., redundant <code>POP</code>+<code>PUSH</code>)</li>
+</ul>
 
 <pre><code>$ pen build -O2 fib.pen
 wrote fib.penc (14 opcodes, 2 constants, -O2)
 $ pen disasm fib.penc</code></pre>
+
+<p>For an additional speedup beyond the optimizer, switch to the <a href="jit.html">JIT</a>: <code>pen exec --jit fib.penc</code> runs the bytecode through a generated JS function (~2.4× faster than the <code>-O2</code> interpreter on fib(25)).</p>
+
+<h2 id="next">What's next</h2>
+
+<ul>
+  <li><a href="examples.html">Examples gallery</a> — all 16 example programs, organized by feature.</li>
+  <li><a href="stdlib.html">Standard library</a> — every builtin with its signature.</li>
+  <li><a href="cli.html">CLI reference</a> — every <code>pen</code> subcommand and flag.</li>
+  <li><a href="snapshot.html">Snapshot v3</a> — what's in a <code>.penz</code> file.</li>
+  <li><a href="distributed.html">Distributed runtime</a> — coordinator + workers + HA.</li>
+  <li><a href="phase4.html">Self-hosting + live editing + time travel</a> — Phase 4 deep dive.</li>
+</ul>
 
 <footer>
   © 2026 Airing · <a href="https://github.com/airingursb/Penelope">github.com/airingursb/Penelope</a>
