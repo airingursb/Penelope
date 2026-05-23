@@ -119,6 +119,8 @@ let OP_I32_ADD = 106;
 let OP_I32_SUB = 107;
 let OP_I32_MUL = 108;
 let OP_I32_DIV_S = 109;
+let OP_I32_REM_S = 111;     // 0x6F
+let OP_LOOP_BR = 12;        // br (already OP_BR but keep alias for clarity in loops)
 
 let TYPE_I32 = 127;
 let BLOCKTYPE_I32 = 127;
@@ -141,13 +143,25 @@ let EXPORT_KIND_FUNC = 0;
 //   3  make_unit() -> i32
 //   4  unwrap_int(ptr: i32) -> i32
 //   5  unwrap_bool(ptr: i32) -> i32
-let HELPER_FN_COUNT = 6;
+//   6  make_str_from_data(block_ptr: i32) -> i32    // wraps a {len,bytes} block into a STR Value
+//   7  str_concat(s1: i32, s2: i32) -> i32          // concat two STR Values
+//   8  str_length(s: i32) -> i32                    // returns int Value
+//   9  int_to_str(v: i32) -> i32                    // converts int Value to STR Value
+//   10 to_str(v: i32) -> i32                        // dispatches on tag
+//   11 plus_dispatch(l: i32, r: i32) -> i32         // BIN_OP + dispatch (int add or str concat)
+let HELPER_FN_COUNT = 12;
 let H_ALLOC = 0;
 let H_MAKE_INT = 1;
 let H_MAKE_BOOL = 2;
 let H_MAKE_UNIT = 3;
 let H_UNWRAP_INT = 4;
 let H_UNWRAP_BOOL = 5;
+let H_MAKE_STR_FROM_DATA = 6;
+let H_STR_CONCAT = 7;
+let H_STR_LENGTH = 8;
+let H_INT_TO_STR = 9;
+let H_TO_STR = 10;
+let H_PLUS_DISPATCH = 11;
 
 // Type indices we reserve up front (one per distinct helper signature).
 //   type 0: () -> i32
@@ -164,20 +178,27 @@ let TYPE_IDX_2_TO_I32 = 2;
 
 let ascii_byte = fn(c) {
   match c {
-    "a" => 97, "b" => 98, "c" => 99, "d" => 100, "e" => 101, "f" => 102,
+    " " => 32,  "!" => 33,  "\"" => 34, "#" => 35,  "$" => 36,  "%" => 37,
+    "&" => 38,  "'" => 39,  "(" => 40,  ")" => 41,  "*" => 42,  "+" => 43,
+    "," => 44,  "-" => 45,  "." => 46,  "/" => 47,
+    "0" => 48,  "1" => 49,  "2" => 50,  "3" => 51,  "4" => 52,
+    "5" => 53,  "6" => 54,  "7" => 55,  "8" => 56,  "9" => 57,
+    ":" => 58,  ";" => 59,  "<" => 60,  "=" => 61,  ">" => 62,  "?" => 63,
+    "@" => 64,
+    "A" => 65,  "B" => 66,  "C" => 67,  "D" => 68,  "E" => 69,  "F" => 70,
+    "G" => 71,  "H" => 72,  "I" => 73,  "J" => 74,  "K" => 75,  "L" => 76,
+    "M" => 77,  "N" => 78,  "O" => 79,  "P" => 80,  "Q" => 81,  "R" => 82,
+    "S" => 83,  "T" => 84,  "U" => 85,  "V" => 86,  "W" => 87,  "X" => 88,
+    "Y" => 89,  "Z" => 90,
+    "[" => 91,  "\\" => 92, "]" => 93,  "^" => 94,  "_" => 95,  "`" => 96,
+    "a" => 97,  "b" => 98,  "c" => 99,  "d" => 100, "e" => 101, "f" => 102,
     "g" => 103, "h" => 104, "i" => 105, "j" => 106, "k" => 107, "l" => 108,
     "m" => 109, "n" => 110, "o" => 111, "p" => 112, "q" => 113, "r" => 114,
     "s" => 115, "t" => 116, "u" => 117, "v" => 118, "w" => 119, "x" => 120,
     "y" => 121, "z" => 122,
-    "A" => 65, "B" => 66, "C" => 67, "D" => 68, "E" => 69, "F" => 70,
-    "G" => 71, "H" => 72, "I" => 73, "J" => 74, "K" => 75, "L" => 76,
-    "M" => 77, "N" => 78, "O" => 79, "P" => 80, "Q" => 81, "R" => 82,
-    "S" => 83, "T" => 84, "U" => 85, "V" => 86, "W" => 87, "X" => 88,
-    "Y" => 89, "Z" => 90,
-    "0" => 48, "1" => 49, "2" => 50, "3" => 51, "4" => 52,
-    "5" => 53, "6" => 54, "7" => 55, "8" => 56, "9" => 57,
-    "_" => 95,
-    _ => panic("ascii_byte: unsupported char in wasm name"),
+    "{" => 123, "|" => 124, "}" => 125, "~" => 126,
+    "\n" => 10, "\t" => 9,  "\r" => 13,
+    _ => panic("wasm: non-ASCII char in string literal not supported yet"),
   }
 };
 
@@ -276,6 +297,53 @@ let bin_cmp_op = fn(op) {
   }
 };
 
+/// Map a builtin name to its WASM helper fn index, or -1 if not yet supported.
+/// Each new str_* / list_* / dict_* builtin we add to the runtime gets a row.
+let builtin_helper_for = fn(name) {
+  match name {
+    "to_str" => H_TO_STR,
+    "str_length" => H_STR_LENGTH,
+    _ => 0 - 1,
+  }
+};
+
+/// emit_string_literal(s, env): emits WASM bytes that allocate a string Value
+/// at runtime: alloc(4+len) for the {len, bytes} block, store length + each
+/// char byte, then call make_str_from_data to wrap into a STR Value cell.
+/// Uses the env's __scratch__ slot to hold the block pointer between stores.
+let emit_string_literal = fn(s, env) {
+  let chars = str_chars(s);
+  let len = list_len(chars);
+  let scratch = dict_get(env, "__scratch__");
+  // alloc(4 + len)
+  let body = list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(4 + len));
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_CALL), leb128_u(H_ALLOC)));
+  // local.set scratch (saves block_ptr)
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_LOCAL_SET), leb128_u(scratch)));
+  // store length at block_ptr + 0
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_LOCAL_GET), leb128_u(scratch)));
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(len)));
+  let body = list_push(body, OP_I32_STORE);
+  let body = list_concat(body, memarg(2, 0));
+  // For each char i, emit: local.get scratch; i32.const byte; i32.store8 offset=4+i
+  let store_chars = fn(i, acc) {
+    if (i >= len) { acc }
+    else {
+      let ch = list_get(chars, i);
+      let cb = ascii_byte(ch);
+      let one = list_concat(list_push(list_new(), OP_LOCAL_GET), leb128_u(scratch));
+      let one = list_concat(one, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(cb)));
+      let one = list_push(one, OP_I32_STORE8);
+      let one = list_concat(one, memarg(0, 4 + i));
+      store_chars(i + 1, list_concat(acc, one))
+    }
+  };
+  let body = store_chars(0, body);
+  // local.get scratch (block_ptr) + call make_str_from_data
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_LOCAL_GET), leb128_u(scratch)));
+  list_concat(body, list_concat(list_push(list_new(), OP_CALL), leb128_u(H_MAKE_STR_FROM_DATA)))
+};
+
 let compile_expr = fn(node, ast, env, fn_table) {
   let kind = dict_get(node, "kind");
   match kind {
@@ -312,6 +380,13 @@ let compile_expr = fn(node, ast, env, fn_table) {
       let op = dict_get(node, "op");
       let l_id = dict_get(node, "leftId");
       let r_id = dict_get(node, "rightId");
+      // `+` needs runtime dispatch (int+int vs str+str). Route through plus_dispatch.
+      if (op == "+") {
+        let l = compile_expr(ast_get(ast, l_id), ast, env, fn_table);
+        let r = compile_expr(ast_get(ast, r_id), ast, env, fn_table);
+        list_concat(list_concat(l, r),
+          list_concat(list_push(list_new(), OP_CALL), leb128_u(H_PLUS_DISPATCH)))
+      } else {
       let arith = bin_arith_op(op);
       if (arith != 0 - 1) {
         // Arith: unwrap both operands, do raw op, wrap as int.
@@ -326,6 +401,7 @@ let compile_expr = fn(node, ast, env, fn_table) {
           let r = emit_raw_int(ast_get(ast, r_id), ast, env, fn_table);
           list_concat(list_push(list_concat(l, r), cmp), wrap_bool())
         } else { panic("wasm: unsupported binop '" + op + "'") }
+      }
       }
     },
     "If" => {
@@ -346,6 +422,21 @@ let compile_expr = fn(node, ast, env, fn_table) {
         panic("wasm: only direct calls to top-level fns are supported")
       } else {
         let name = dict_get(callee, "name");
+        // Intercept supported builtins and route to their WASM helpers.
+        let builtin_helper = builtin_helper_for(name);
+        if (builtin_helper != 0 - 1) {
+          let arg_ids = dict_get(node, "argIds");
+          let emit_args = fn(i, acc) {
+            if (i >= list_len(arg_ids)) { acc }
+            else {
+              let one = compile_expr(ast_get(ast, list_get(arg_ids, i)), ast, env, fn_table);
+              emit_args(i + 1, list_concat(acc, one))
+            }
+          };
+          let args_bytes = emit_args(0, list_new());
+          let call_bytes = list_concat(list_push(list_new(), OP_CALL), leb128_u(builtin_helper));
+          list_concat(args_bytes, call_bytes)
+        } else {
         if (dict_has(fn_table, name) == false) {
           panic("wasm: call to unknown fn '" + name + "'")
         } else {
@@ -367,9 +458,10 @@ let compile_expr = fn(node, ast, env, fn_table) {
             leb128_u(dict_get(fn_table, name)));
           list_concat(args_bytes, call_bytes)
         }
+        }
       }
     },
-    "StringLit" => panic("wasm: strings not yet implemented (Phase 6.C)"),
+    "StringLit" => emit_string_literal(dict_get(node, "value"), env),
     "Pause" => panic("wasm: pause not yet implemented (Phase 6.H)"),
     "Fn" => panic("wasm: nested fn definitions not yet implemented (Phase 6.E)"),
     "Match" => panic("wasm: match not yet implemented (Phase 6.F)"),
@@ -498,9 +590,12 @@ let compile_fn = fn(fn_node, ast, fn_table) {
   let env_after_params = dict_get(param_env, "env");
   let body_block = ast_get(ast, dict_get(fn_node, "bodyBlockId"));
   let env_result = prebuild_env(body_block, ast, env_after_params, list_len(params));
-  let env = dict_get(env_result, "env");
-  let total_locals = dict_get(env_result, "next");
-  let local_count = total_locals - list_len(params);
+  let env_named = dict_get(env_result, "env");
+  let total_named_locals = dict_get(env_result, "next");
+  // Add one i32 scratch local that StringLit uses for the block_ptr.
+  let scratch_idx = total_named_locals;
+  let env = dict_set(env_named, "__scratch__", scratch_idx);
+  let local_count = total_named_locals - list_len(params) + 1;   // +1 for scratch
   let body_bytes = compile_block_expr(body_block, ast, env, fn_table);
   make_code_entry(local_count, body_bytes)
 };
@@ -531,8 +626,11 @@ let compile_main = fn(ast, fn_table) {
         else { acc }
       }
     });
-  let env = dict_get(env_acc, "env");
-  let local_count = dict_get(env_acc, "next");
+  let env_named = dict_get(env_acc, "env");
+  let total_named_locals = dict_get(env_acc, "next");
+  let scratch_idx = total_named_locals;
+  let env = dict_set(env_named, "__scratch__", scratch_idx);
+  let local_count = total_named_locals + 1;   // +1 for scratch
   let result_id = dict_get(env_acc, "result_id");
   if (result_id == "") { panic("wasm: main has no return value") }
   else {
@@ -675,6 +773,405 @@ let helper_unwrap_bool_body = fn() {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
+// String helpers (Phase 6.C).
+//
+// A STR Value cell looks like:
+//   byte 0       : tag = TAG_STR (3)
+//   bytes 4-7    : pointer to a {len:i32, bytes:[u8]} block
+//
+// String literals are emitted inline at use site: emit alloc(4+len) for the
+// data block, store length + bytes, then alloc(8) for the Value cell, store
+// tag + ptr-to-block. This avoids needing a data section but trades perf
+// (each evaluation re-allocates).
+// ─────────────────────────────────────────────────────────────────────────────
+
+let WASM_MEMORY_COPY = fn() {
+  // 0xFC 0x0A 0x00 0x00 — prefix, opcode, dst memidx, src memidx
+  list_push(list_push(list_push(list_push(list_new(), 252), 10), 0), 0)
+};
+
+/// make_str_from_data(block_ptr: i32) -> i32
+/// Allocates an 8-byte STR Value cell pointing at the given {len, bytes} block.
+let helper_make_str_from_data_body = fn() {
+  let body = list_new();
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(8)));
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_CALL), leb128_u(H_ALLOC)));
+  let body = list_push(body, OP_LOCAL_SET);
+  let body = list_push(body, 1);
+  // store tag at byte 0
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 1);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(TAG_STR)));
+  let body = list_push(body, OP_I32_STORE8);
+  let body = list_concat(body, memarg(0, 0));
+  // store block_ptr at byte 4
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 1);
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 0);
+  let body = list_push(body, OP_I32_STORE);
+  let body = list_concat(body, memarg(2, 4));
+  // return cell ptr
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 1);
+  make_code_entry(1, body)
+};
+
+/// str_concat(s1: i32, s2: i32) -> i32
+/// Allocates a new {len1+len2, bytes1++bytes2} block and wraps it as a STR Value.
+/// Locals beyond params (s1=0, s2=1): d1=2, d2=3, l1=4, newblock=5, l2=6.
+let helper_str_concat_body = fn() {
+  let body = list_new();
+  // d1 = load(s1 + 4)
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 0);
+  let body = list_push(body, OP_I32_LOAD);
+  let body = list_concat(body, memarg(2, 4));
+  let body = list_push(body, OP_LOCAL_SET);
+  let body = list_push(body, 2);
+  // d2 = load(s2 + 4)
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 1);
+  let body = list_push(body, OP_I32_LOAD);
+  let body = list_concat(body, memarg(2, 4));
+  let body = list_push(body, OP_LOCAL_SET);
+  let body = list_push(body, 3);
+  // l1 = load(d1 + 0)
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 2);
+  let body = list_push(body, OP_I32_LOAD);
+  let body = list_concat(body, memarg(2, 0));
+  let body = list_push(body, OP_LOCAL_SET);
+  let body = list_push(body, 4);
+  // l2 = load(d2 + 0)
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 3);
+  let body = list_push(body, OP_I32_LOAD);
+  let body = list_concat(body, memarg(2, 0));
+  let body = list_push(body, OP_LOCAL_SET);
+  let body = list_push(body, 6);
+  // newblock = alloc(4 + l1 + l2)
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(4)));
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 4);
+  let body = list_push(body, OP_I32_ADD);
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 6);
+  let body = list_push(body, OP_I32_ADD);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_CALL), leb128_u(H_ALLOC)));
+  let body = list_push(body, OP_LOCAL_SET);
+  let body = list_push(body, 5);
+  // store(newblock + 0, l1 + l2)
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 5);
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 4);
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 6);
+  let body = list_push(body, OP_I32_ADD);
+  let body = list_push(body, OP_I32_STORE);
+  let body = list_concat(body, memarg(2, 0));
+  // memory.copy(newblock + 4, d1 + 4, l1)
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 5);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(4)));
+  let body = list_push(body, OP_I32_ADD);
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 2);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(4)));
+  let body = list_push(body, OP_I32_ADD);
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 4);
+  let body = list_concat(body, WASM_MEMORY_COPY());
+  // memory.copy(newblock + 4 + l1, d2 + 4, l2)
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 5);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(4)));
+  let body = list_push(body, OP_I32_ADD);
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 4);
+  let body = list_push(body, OP_I32_ADD);
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 3);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(4)));
+  let body = list_push(body, OP_I32_ADD);
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 6);
+  let body = list_concat(body, WASM_MEMORY_COPY());
+  // return make_str_from_data(newblock)
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 5);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_CALL), leb128_u(H_MAKE_STR_FROM_DATA)));
+  make_code_entry(5, body)
+};
+
+/// str_length(s: i32) -> i32   (returns int Value with len)
+/// Local 1 = the i32 length we'll wrap.
+let helper_str_length_body = fn() {
+  let body = list_new();
+  // load(load(s + 4) + 0)
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 0);
+  let body = list_push(body, OP_I32_LOAD);
+  let body = list_concat(body, memarg(2, 4));
+  let body = list_push(body, OP_I32_LOAD);
+  let body = list_concat(body, memarg(2, 0));
+  // wrap as int
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_CALL), leb128_u(H_MAKE_INT)));
+  make_code_entry(0, body)
+};
+
+/// int_to_str(v: i32) -> i32   (v is an int Value pointer)
+/// Strategy: extract raw int, allocate a temporary 12-byte buffer for digits
+/// (max int32 = -2147483648 = 11 chars), fill digits from end, then build
+/// a STR Value with the resulting bytes. Handles negative via leading '-'.
+///
+/// Locals beyond param (v=0):
+///   1 = raw_v (i32)
+///   2 = neg flag (1 if negative)
+///   3 = buf_ptr (alloc'd 12 bytes)
+///   4 = write_idx (starts at 11, decreases)
+///   5 = block_ptr (final allocated block)
+///   6 = total_len
+let helper_int_to_str_body = fn() {
+  let body = list_new();
+  // raw_v = unwrap_int(v)
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 0);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_CALL), leb128_u(H_UNWRAP_INT)));
+  let body = list_push(body, OP_LOCAL_SET);
+  let body = list_push(body, 1);
+  // Special case: if raw_v == 0, return a 1-char "0" string.
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 1);
+  let body = list_push(body, OP_I32_EQZ);
+  // if (raw_v == 0)
+  let body = list_push(body, OP_IF);
+  let body = list_push(body, BLOCKTYPE_I32);
+  //   block = alloc(5); store(block, 1); store8(block+4, '0'); return make_str_from_data(block)
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(5)));
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_CALL), leb128_u(H_ALLOC)));
+  let body = list_push(body, OP_LOCAL_TEE);
+  let body = list_push(body, 5);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(1)));
+  let body = list_push(body, OP_I32_STORE);
+  let body = list_concat(body, memarg(2, 0));
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 5);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(48)));   // '0'
+  let body = list_push(body, OP_I32_STORE8);
+  let body = list_concat(body, memarg(0, 4));
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 5);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_CALL), leb128_u(H_MAKE_STR_FROM_DATA)));
+  // else branch
+  let body = list_push(body, OP_ELSE);
+  // neg = raw_v < 0 ? 1 : 0
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 1);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(0)));
+  let body = list_push(body, OP_I32_LT_S);
+  let body = list_push(body, OP_LOCAL_SET);
+  let body = list_push(body, 2);
+  // if neg, raw_v = -raw_v
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 2);
+  let body = list_push(body, OP_IF);
+  let body = list_push(body, BLOCKTYPE_VOID);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(0)));
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 1);
+  let body = list_push(body, OP_I32_SUB);
+  let body = list_push(body, OP_LOCAL_SET);
+  let body = list_push(body, 1);
+  let body = list_push(body, OP_END);
+  // buf_ptr = alloc(12)
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(12)));
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_CALL), leb128_u(H_ALLOC)));
+  let body = list_push(body, OP_LOCAL_SET);
+  let body = list_push(body, 3);
+  // write_idx = 12
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(12)));
+  let body = list_push(body, OP_LOCAL_SET);
+  let body = list_push(body, 4);
+  // loop: while (raw_v > 0) { write_idx--; store8(buf_ptr + write_idx, '0' + (raw_v % 10)); raw_v /= 10; }
+  let body = list_push(body, OP_BLOCK);
+  let body = list_push(body, BLOCKTYPE_VOID);
+  let body = list_push(body, OP_LOOP);
+  let body = list_push(body, BLOCKTYPE_VOID);
+  // if raw_v == 0, br 1 (exit block)
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 1);
+  let body = list_push(body, OP_I32_EQZ);
+  let body = list_push(body, OP_BR_IF);
+  let body = list_concat(body, leb128_u(1));
+  // write_idx = write_idx - 1
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 4);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(1)));
+  let body = list_push(body, OP_I32_SUB);
+  let body = list_push(body, OP_LOCAL_SET);
+  let body = list_push(body, 4);
+  // buf_ptr + write_idx ... '0' + raw_v % 10
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 3);
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 4);
+  let body = list_push(body, OP_I32_ADD);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(48)));   // '0'
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 1);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(10)));
+  let body = list_push(body, OP_I32_REM_S);
+  let body = list_push(body, OP_I32_ADD);
+  let body = list_push(body, OP_I32_STORE8);
+  let body = list_concat(body, memarg(0, 0));
+  // raw_v = raw_v / 10
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 1);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(10)));
+  let body = list_push(body, OP_I32_DIV_S);
+  let body = list_push(body, OP_LOCAL_SET);
+  let body = list_push(body, 1);
+  // br 0 (loop)
+  let body = list_push(body, OP_BR);
+  let body = list_concat(body, leb128_u(0));
+  let body = list_push(body, OP_END);   // end loop
+  let body = list_push(body, OP_END);   // end block
+  // If neg, write_idx-- and store '-'
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 2);
+  let body = list_push(body, OP_IF);
+  let body = list_push(body, BLOCKTYPE_VOID);
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 4);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(1)));
+  let body = list_push(body, OP_I32_SUB);
+  let body = list_push(body, OP_LOCAL_SET);
+  let body = list_push(body, 4);
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 3);
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 4);
+  let body = list_push(body, OP_I32_ADD);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(45)));   // '-'
+  let body = list_push(body, OP_I32_STORE8);
+  let body = list_concat(body, memarg(0, 0));
+  let body = list_push(body, OP_END);
+  // total_len = 12 - write_idx
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(12)));
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 4);
+  let body = list_push(body, OP_I32_SUB);
+  let body = list_push(body, OP_LOCAL_SET);
+  let body = list_push(body, 6);
+  // block_ptr = alloc(4 + total_len)
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(4)));
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 6);
+  let body = list_push(body, OP_I32_ADD);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_CALL), leb128_u(H_ALLOC)));
+  let body = list_push(body, OP_LOCAL_SET);
+  let body = list_push(body, 5);
+  // store(block_ptr + 0, total_len)
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 5);
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 6);
+  let body = list_push(body, OP_I32_STORE);
+  let body = list_concat(body, memarg(2, 0));
+  // memory.copy(block_ptr + 4, buf_ptr + write_idx, total_len)
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 5);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(4)));
+  let body = list_push(body, OP_I32_ADD);
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 3);
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 4);
+  let body = list_push(body, OP_I32_ADD);
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 6);
+  let body = list_concat(body, WASM_MEMORY_COPY());
+  // return make_str_from_data(block_ptr)
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 5);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_CALL), leb128_u(H_MAKE_STR_FROM_DATA)));
+  let body = list_push(body, OP_END);   // end if-else
+  make_code_entry(6, body)
+};
+
+/// to_str(v: i32) -> i32
+/// Dispatch on tag: STR → return v; INT → int_to_str(v); else panic via unreachable.
+let helper_to_str_body = fn() {
+  let body = list_new();
+  // tag = load8u(v + 0)
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 0);
+  let body = list_push(body, OP_I32_LOAD8_U);
+  let body = list_concat(body, memarg(0, 0));
+  let body = list_push(body, OP_LOCAL_TEE);
+  let body = list_push(body, 1);
+  // if tag == TAG_STR → return v
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(TAG_STR)));
+  let body = list_push(body, OP_I32_EQ);
+  let body = list_push(body, OP_IF);
+  let body = list_push(body, BLOCKTYPE_I32);
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 0);
+  let body = list_push(body, OP_ELSE);
+  // if tag == TAG_INT → int_to_str(v)
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 1);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(TAG_INT)));
+  let body = list_push(body, OP_I32_EQ);
+  let body = list_push(body, OP_IF);
+  let body = list_push(body, BLOCKTYPE_I32);
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 0);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_CALL), leb128_u(H_INT_TO_STR)));
+  let body = list_push(body, OP_ELSE);
+  // else: unreachable for now (bool/unit/list/dict/closure not supported)
+  let body = list_push(body, OP_UNREACHABLE);
+  let body = list_push(body, OP_END);
+  let body = list_push(body, OP_END);
+  make_code_entry(1, body)
+};
+
+/// plus_dispatch(l: i32, r: i32) -> i32
+/// Used by BIN_OP +: if l's tag is STR, return str_concat(l, r); else int add.
+let helper_plus_dispatch_body = fn() {
+  let body = list_new();
+  // tag = load8u(l + 0)
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 0);
+  let body = list_push(body, OP_I32_LOAD8_U);
+  let body = list_concat(body, memarg(0, 0));
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(TAG_STR)));
+  let body = list_push(body, OP_I32_EQ);
+  let body = list_push(body, OP_IF);
+  let body = list_push(body, BLOCKTYPE_I32);
+  // str_concat(l, r)
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 0);
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 1);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_CALL), leb128_u(H_STR_CONCAT)));
+  let body = list_push(body, OP_ELSE);
+  // make_int(unwrap_int(l) + unwrap_int(r))
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 0);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_CALL), leb128_u(H_UNWRAP_INT)));
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 1);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_CALL), leb128_u(H_UNWRAP_INT)));
+  let body = list_push(body, OP_I32_ADD);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_CALL), leb128_u(H_MAKE_INT)));
+  let body = list_push(body, OP_END);
+  make_code_entry(0, body)
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Module sections.
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -742,6 +1239,12 @@ let function_section = fn(ast, fn_count) {
   let helper_indexes = list_push(helper_indexes, TYPE_IDX_0_TO_I32);   // make_unit
   let helper_indexes = list_push(helper_indexes, TYPE_IDX_1_TO_I32);   // unwrap_int
   let helper_indexes = list_push(helper_indexes, TYPE_IDX_1_TO_I32);   // unwrap_bool
+  let helper_indexes = list_push(helper_indexes, TYPE_IDX_1_TO_I32);   // make_str_from_data
+  let helper_indexes = list_push(helper_indexes, TYPE_IDX_2_TO_I32);   // str_concat
+  let helper_indexes = list_push(helper_indexes, TYPE_IDX_1_TO_I32);   // str_length
+  let helper_indexes = list_push(helper_indexes, TYPE_IDX_1_TO_I32);   // int_to_str
+  let helper_indexes = list_push(helper_indexes, TYPE_IDX_1_TO_I32);   // to_str
+  let helper_indexes = list_push(helper_indexes, TYPE_IDX_2_TO_I32);   // plus_dispatch
   // User fns, in source order — track how many high-arity extras we've used.
   let user_acc = list_reduce(stmts, dict_set(dict_set(dict_new(),
     "indexes", list_new()), "extras_used", 0), fn(acc, id) {
@@ -786,12 +1289,15 @@ let global_section = fn() {
   wrap_section(SECTION_GLOBAL, payload)
 };
 
-/// Export section: export "main" as the last function.
+/// Export section: export "main" (last fn) AND "memory" (for the host to read
+/// strings/lists back out of linear memory).
 let export_section = fn(fn_count) {
   let main_idx = fn_count - 1;
-  let entry = list_concat(name_bytes("main"),
+  let main_entry = list_concat(name_bytes("main"),
     list_concat(list_push(list_new(), EXPORT_KIND_FUNC), leb128_u(main_idx)));
-  let payload = list_concat(leb128_u(1), entry);
+  let mem_entry = list_concat(name_bytes("memory"),
+    list_concat(list_push(list_new(), 2), leb128_u(0)));   // kind 2 = memory, index 0
+  let payload = list_concat(leb128_u(2), list_concat(main_entry, mem_entry));
   wrap_section(SECTION_EXPORT, payload)
 };
 
@@ -804,6 +1310,12 @@ let code_section = fn(ast, fn_table) {
   let helpers = list_concat(helpers, helper_make_unit_body());
   let helpers = list_concat(helpers, helper_unwrap_int_body());
   let helpers = list_concat(helpers, helper_unwrap_bool_body());
+  let helpers = list_concat(helpers, helper_make_str_from_data_body());
+  let helpers = list_concat(helpers, helper_str_concat_body());
+  let helpers = list_concat(helpers, helper_str_length_body());
+  let helpers = list_concat(helpers, helper_int_to_str_body());
+  let helpers = list_concat(helpers, helper_to_str_body());
+  let helpers = list_concat(helpers, helper_plus_dispatch_body());
 
   let root = ast_get(ast, dict_get(ast, "rootId"));
   let stmts = dict_get(root, "stmtIds");
