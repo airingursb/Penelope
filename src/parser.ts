@@ -321,7 +321,7 @@ function parseAtomPattern(c: Cursor): import('./ast.js').Pattern {
   throw new Error(`parser: unexpected pattern token ${t.kind} at line ${t.line} col ${t.col}`);
 }
 
-function parseFn(c: Cursor, b: Builder): ASTNode {
+function parseFn(c: Cursor, b: Builder, isPure: boolean = false): ASTNode {
   const startTok = c.peek();
   const pos = { line: startTok.line, col: startTok.col };
   c.eat('FN');
@@ -333,7 +333,9 @@ function parseFn(c: Cursor, b: Builder): ASTNode {
   }
   c.eat('RPAREN');
   const body = parseBlock(c, b);
-  return b.addNode(id => ({ id, kind: 'Fn', params, bodyBlockId: body.id }), pos);
+  return b.addNode(id => isPure
+    ? ({ id, kind: 'Fn', params, bodyBlockId: body.id, isPure: true })
+    : ({ id, kind: 'Fn', params, bodyBlockId: body.id }), pos);
 }
 
 function parsePrimary(c: Cursor, b: Builder): ASTNode {
@@ -369,6 +371,14 @@ function parsePrimary(c: Cursor, b: Builder): ASTNode {
       return parseIf(c, b);
     case 'FN':
       return parseFn(c, b);
+    case 'PURE': {
+      // `pure fn(...) {...}` — declares fn must be effect-free; checker errors otherwise.
+      c.eat('PURE');
+      if (c.peekKind() !== 'FN') {
+        throw new Error(`parser: expected 'fn' after 'pure' at line ${t.line} col ${t.col}`);
+      }
+      return parseFn(c, b, true);
+    }
     case 'MATCH':
       return parseMatch(c, b);
     case 'LBRACE':

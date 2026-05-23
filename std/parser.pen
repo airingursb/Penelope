@@ -115,7 +115,13 @@ let parse_primary = fn(st) {
       }
     },
     "IF" => parse_if(st),
-    "FN" => parse_fn(st),
+    "FN" => parse_fn(st, false),
+    "PURE" => {
+      // `pure fn(...) {...}` — effect-typed declaration; checker enforces purity.
+      let s1 = p_advance(st);
+      if (p_peek_kind(s1) != "FN") { panic("parser: expected 'fn' after 'pure'") }
+      else { parse_fn(s1, true) }
+    },
     "MATCH" => parse_match(st),
     "LBRACE" => parse_block(st),
     _ => panic("parser: unexpected token " + kind),
@@ -297,8 +303,9 @@ let parse_if = fn(st) {
     "elseBlockId", dict_get(else_block, "id")))
 };
 
-/// Parse a fn(params) { body } expression.
-let parse_fn = fn(st) {
+/// Parse a fn(params) { body } expression. `is_pure` marks the Fn node so the
+/// downstream type checker enforces an empty effect set.
+let parse_fn = fn(st, is_pure) {
   let s1 = p_eat(st, "FN");
   let s2 = p_eat(s1, "LPAREN");
   let collect_params = fn(s, acc) {
@@ -318,10 +325,19 @@ let parse_fn = fn(st) {
   let p = collect_params(s2, list_new());
   let s3 = p_eat(dict_get(p, "state"), "RPAREN");
   let body = parse_block(s3);
-  add_node(dict_get(body, "state"), dict_set(dict_set(dict_set(dict_new(),
-    "kind", "Fn"),
-    "params", dict_get(p, "params")),
-    "bodyBlockId", dict_get(body, "id")))
+  let fn_node = if (is_pure) {
+    dict_set(dict_set(dict_set(dict_set(dict_new(),
+      "kind", "Fn"),
+      "params", dict_get(p, "params")),
+      "bodyBlockId", dict_get(body, "id")),
+      "isPure", true)
+  } else {
+    dict_set(dict_set(dict_set(dict_new(),
+      "kind", "Fn"),
+      "params", dict_get(p, "params")),
+      "bodyBlockId", dict_get(body, "id"))
+  };
+  add_node(dict_get(body, "state"), fn_node)
 };
 
 /// Parse an "atom" pattern (one alternative; or-patterns are built from these).

@@ -8,7 +8,7 @@ import { compile } from './compiler.js';
 import { run, freshState, makeProfile } from './vm.js';
 import { writePencFile, readPencFile } from './encoder.js';
 import { runOptimizer, type OLevel } from './optimizer.js';
-import { check as typeCheck } from './typecheck.js';
+import { check as typeCheck, checkWithEffects, typeStr, effectsStr } from './typecheck.js';
 import { format as fmtSource } from './format.js';
 import { extractDocs, renderMarkdown } from './doc-gen.js';
 import { loadSource, loadSourceWithMap } from './loader.js';
@@ -662,11 +662,54 @@ function checkOnce(srcPath: string): number {
 
 function cmdCheck(args: ParsedArgs): number {
   const srcPath = args.positional[1];
-  if (!srcPath) { process.stderr.write('usage: pen check [--watch] <file.pen>\n'); return 2; }
+  if (!srcPath) { process.stderr.write('usage: pen check [--watch] [--show-effects] <file.pen>\n'); return 2; }
+  if (args.flags['show-effects']) {
+    return showEffects(srcPath);
+  }
   if (args.flags['watch'] === true) {
     return watchLoop(resolve(srcPath), srcPath, () => checkOnce(srcPath));
   }
   return checkOnce(srcPath);
+}
+
+// `pen check --show-effects <file>`: type-check the file, then print every
+// fn binding with its inferred type + effect set. Useful for spotting which
+// helpers are accidentally impure.
+function showEffects(srcPath: string): number {
+  let source: string;
+  try { source = loadSource(resolve(srcPath)); }
+  catch { process.stderr.write(`cli error: cannot read source: ${srcPath}\n`); return 3; }
+  const ast = parse(tokenize(source));
+  const { errors, types, effects } = checkWithEffects(ast);
+  if (errors.length > 0) {
+    for (const err of errors) {
+      process.stderr.write(formatDiagnostic({
+        message: err.message,
+        pos: err.pos,
+        source,
+        filename: srcPath,
+      }) + '\n\n');
+    }
+    return 1;
+  }
+  // Walk Let bindings whose value is a Fn — those are the fns the user named.
+  const lines: string[] = [];
+  for (const node of Object.values(ast.nodes)) {
+    if (node.kind !== 'Let') continue;
+    const val = ast.nodes[node.valueId];
+    if (val.kind !== 'Fn') continue;
+    const t = types.get(node.valueId);
+    if (!t || t.kind !== 'fn') continue;
+    const lineCol = node.pos ? `${node.pos.line.toString().padStart(4)}:${node.pos.col.toString().padStart(2)}` : '   ?: ?';
+    const pure = (val as any).isPure ? '[pure] ' : '';
+    lines.push(`  ${lineCol}  ${pure}${node.name} : ${typeStr(t)}`);
+  }
+  // Program-level effects (the whole file's net effect).
+  const rootEff = effects.get(ast.rootId);
+  process.stdout.write(`${srcPath}: ok\n\nProgram effects: ${rootEff ? effectsStr(rootEff) : 'pure'}\n\nFn bindings:\n`);
+  for (const l of lines) process.stdout.write(l + '\n');
+  if (lines.length === 0) process.stdout.write('  (no fn bindings)\n');
+  return 0;
 }
 
 async function cmdRepl(_args: ParsedArgs): Promise<number> {

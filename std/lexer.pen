@@ -26,6 +26,7 @@ let keyword_kind = fn(text) {
     "pause" => "PAUSE",
     "match" => "MATCH",
     "import" => "IMPORT",
+    "pure" => "PURE",
     _ => "",
   }
 };
