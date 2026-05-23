@@ -33,3 +33,20 @@ test('"false;" compiles', () => {
   const prog = compile(parse(tokenize('false;')));
   expect(prog.constants).toEqual([{ tag: 'bool', v: false }]);
 });
+
+test('StringLit compiles', () => {
+  const prog = compile(parse(tokenize('"hello";')));
+  expect(prog.constants).toEqual([{ tag: 'str', v: 'hello' }]);
+  expect(prog.code).toEqual([['LOAD_CONST', 0], ['POP'], ['HALT']]);
+});
+
+test('repeated string literals share one constant pool entry', () => {
+  const prog = compile(parse(tokenize('"x"; "x"; "y";')));
+  expect(prog.constants).toEqual([
+    { tag: 'str', v: 'x' },
+    { tag: 'str', v: 'y' },
+  ]);
+  // Three LOAD_CONST opcodes; first two index 0, third index 1.
+  const loads = prog.code.filter(op => op[0] === 'LOAD_CONST');
+  expect(loads).toEqual([['LOAD_CONST', 0], ['LOAD_CONST', 0], ['LOAD_CONST', 1]]);
+});

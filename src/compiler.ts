@@ -35,6 +35,11 @@ function compileNode(node: ASTNode, ast: ASTBundle, prog: Program): void {
       emit(prog, ['LOAD_CONST', idx]);
       return;
     }
+    case 'StringLit': {
+      const idx = internConstant(prog.constants, { tag: 'str', v: node.value });
+      emit(prog, ['LOAD_CONST', idx]);
+      return;
+    }
     default:
       throw new Error(`compile: unhandled node kind '${(node as ASTNode).kind}'`);
   }
