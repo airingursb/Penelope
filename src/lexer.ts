@@ -3,7 +3,7 @@
 
 export type TokenKind =
   | 'INT' | 'IDENT' | 'STRING' | 'TEMPLATE_STRING'
-  | 'LET' | 'FN' | 'IF' | 'ELSE' | 'TRUE' | 'FALSE' | 'PAUSE' | 'PRINT' | 'MATCH' | 'IMPORT'
+  | 'LET' | 'FN' | 'IF' | 'ELSE' | 'TRUE' | 'FALSE' | 'PAUSE' | 'PRINT' | 'MATCH' | 'IMPORT' | 'PURE'
   | 'PLUS' | 'MINUS' | 'STAR' | 'SLASH'
   | 'LT' | 'GT' | 'LE' | 'GE' | 'EQ_EQ' | 'BANG_EQ'
   | 'EQ' | 'FAT_ARROW'
@@ -31,6 +31,7 @@ const KEYWORDS: Record<string, TokenKind> = {
   pause:  'PAUSE',
   match:  'MATCH',
   import: 'IMPORT',
+  pure:   'PURE',
 };
 
 function isDigit(c: string): boolean { return c >= '0' && c <= '9'; }

@@ -33,7 +33,7 @@ export type ASTNode = (
   | { id: NodeId; kind: 'BinOp';    op: BinOp; leftId: NodeId; rightId: NodeId }
   | { id: NodeId; kind: 'Let';      name: string; valueId: NodeId }
   | { id: NodeId; kind: 'If';       condId: NodeId; thenBlockId: NodeId; elseBlockId: NodeId }
-  | { id: NodeId; kind: 'Fn';       params: string[]; bodyBlockId: NodeId }
+  | { id: NodeId; kind: 'Fn';       params: string[]; bodyBlockId: NodeId; isPure?: boolean }
   | { id: NodeId; kind: 'Call';     calleeId: NodeId; argIds: NodeId[] }
   | { id: NodeId; kind: 'Pause' }
   | { id: NodeId; kind: 'ExprStmt'; exprId: NodeId }
