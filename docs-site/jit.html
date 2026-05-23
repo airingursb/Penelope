@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Penelope — JIT (Phase 5.C)</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <h1>Penelope</h1>
+  <p class="tagline">Bytecode → JS Function. Same semantics, ~2× the speed.</p>
+  <nav>
+    <a href="index.html">Overview</a>
+    <a href="tour.html">Tour</a>
+    <a href="stdlib.html">Stdlib</a>
+    <a href="cli.html">CLI</a>
+    <a href="snapshot.html">Snapshot v3</a>
+    <a href="play.html">Playground</a>
+    <a href="debugger.html">Debugger</a>
+    <a href="phase4.html">Phase 4</a>
+    <a href="distributed.html">Distributed</a>
+    <a href="jit.html" class="active">JIT</a>
+    <a href="https://github.com/airingursb/peneope">GitHub →</a>
+  </nav>
+</header>
+
+<h2>What "JIT" means here</h2>
+
+<p>Penelope's bytecode interpreter (<code>src/vm.ts</code>) is a textbook switch-dispatch loop: read <code>code[ip]</code>, unpack the op tuple, switch on the opcode kind, do the work, advance <code>ip</code>. Two overheads dominate:</p>
+
+<ul>
+  <li>Tuple unpacking: every op accesses <code>op[0]</code>, <code>op[1] as string</code>, etc.</li>
+  <li>Generic dispatch: <code>BIN_OP</code> calls <code>applyBinOp(op, l, r)</code> which switches on the operator string.</li>
+</ul>
+
+<p>The JIT (<code>src/jit.ts</code>) eliminates both by generating a JS function at compile time. Each opcode becomes a labeled <code>case</code> with op arguments baked in as JS literals; <code>BIN_OP</code> is specialized per operator (<code>l.v + r.v</code> for int add, etc.); constants are inlined.</p>
+
+<h2>How it works</h2>
+
+<p>For the program <code>let x = 1 + 2;</code>, the JIT generates roughly:</p>
+
+<pre><code>function jitRun(state) {
+  let stack = state.valueStack;
+  let frames = state.frames;
+  let ip = state.ip;
+  outer: while (true) {
+    switch (ip) {
+      case 0:   // LOAD_CONST 1
+        stack.push({tag:'int', v:1});
+        ip = 1; continue outer;
+      case 1:   // LOAD_CONST 2
+        stack.push({tag:'int', v:2});
+        ip = 2; continue outer;
+      case 2: { // BIN_OP +
+        const r = stack.pop(), l = stack.pop();
+        stack.push(l.tag==='int'&&r.tag==='int'
+          ? {tag:'int', v: l.v + r.v}
+          : H.applyBinOp('+', l, r));
+        ip = 3; continue outer;
+      }
+      case 3:   // STORE_VAR "x"
+        frames[frames.length-1].bindings["x"] = stack.pop();
+        ip = 4; continue outer;
+      case 4:   // HALT
+        state.ip = 4; return {status:'halted', state};
+    }
+  }
+}
+</code></pre>
+
+<p>Pause and effects route through the interpreter's helpers (<code>executeEffect</code>) so snapshot/effect-replay semantics are preserved byte-for-byte. Closures, tail calls, and the block-scope frame stack work identically to the interpreter — only the dispatch overhead is gone.</p>
+
+<h2>Measured speedup</h2>
+
+<pre><code>$ bin/penelope bench examples/09-fib.pen
+benchmark: examples/09-fib.pen (3 reps)
+  VM (-O0)                  avg 136.18 ms
+  VM (-O1)                  avg 161.14 ms
+  VM (-O2)                  avg 200.89 ms
+  JIT compile (-O2)         avg 0.06 ms
+  JIT run   (-O2)           avg 82.81 ms
+</code></pre>
+
+<p>On <code>fib(25)</code>, the JIT is ~2.4× faster than the <code>-O2</code> interpreter at steady state. Compile cost (60µs) is negligible — a single rep amortizes it.</p>
+
+<p>Bigger speedups are possible (basic-block scheduling, register allocation, type-stable arithmetic specialization) but require a real CFG pass; this JIT keeps the per-opcode shape and just removes the dispatch tax.</p>
+
+<h2>Using it</h2>
+
+<pre><code><span class="cm"># Run via JIT instead of interpreter:</span>
+$ bin/penelope exec --jit my-program.penc
+
+<span class="cm"># Compare timings on a hot loop:</span>
+$ bin/penelope bench my-program.pen
+</code></pre>
+
+<h2>Correctness</h2>
+
+<p>The JIT's 14 tests (<code>test/jit.test.ts</code>) run the same program through both the interpreter and the JIT and assert byte-identical outcomes: bindings, effect log, printed output, pause state, ip-on-pause. Match expressions (or-patterns, guards, list/dict patterns), template strings, recursive fns, tail-calls, and closures are all covered.</p>
+
+<h2>What's out of scope</h2>
+
+<p>This isn't an LLVM-grade native JIT. It doesn't do: basic-block scheduling, register allocation, escape analysis, monomorphization beyond what the operator switch gives us, deoptimization, native code emission. Those are months of work. Within a session, eliminating dispatch overhead and baking constants is the right thing to ship.</p>
+
+</body>
+</html>

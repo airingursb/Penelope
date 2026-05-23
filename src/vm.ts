@@ -310,7 +310,7 @@ function pop(state: VMState): Value {
 function push(state: VMState, v: Value): void { state.valueStack.push(v); }
 function topFrame(state: VMState): Frame { return state.frames[state.frames.length - 1]; }
 
-function applyBinOp(o: string, l: Value, r: Value): Value {
+export function applyBinOp(o: string, l: Value, r: Value): Value {
   if (o === '+') {
     if (l.tag === 'int' && r.tag === 'int') return { tag: 'int', v: l.v + r.v };
     if (l.tag === 'str' && r.tag === 'str') return { tag: 'str', v: l.v + r.v };
@@ -361,7 +361,7 @@ function valueEquals(a: Value, b: Value): boolean {
   throw new Error(`equality on ${a.tag} not supported`);
 }
 
-function applyBuiltin(name: string, args: Value[]): Value {
+export function applyBuiltin(name: string, args: Value[]): Value {
   if (name === 'str_length') {
     if (args.length !== 1 || args[0].tag !== 'str') throw new Error(`str_length(s: str)`);
     return { tag: 'int', v: args[0].v.length };
@@ -507,7 +507,7 @@ function applyBuiltin(name: string, args: Value[]): Value {
 
 type EffectStep = { kind: 'value'; v: Value } | { kind: 'pause' };
 
-function executeEffect(
+export function executeEffect(
   state: VMState,
   name: EffectName,
   args: Value[],

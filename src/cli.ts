@@ -6,6 +6,7 @@ import { tokenize, tokenizeWithComments } from './lexer.js';
 import { parse } from './parser.js';
 import { compile } from './compiler.js';
 import { run, freshState, makeProfile } from './vm.js';
+import { jitCompile } from './jit.js';
 import { writePencFile, readPencFile } from './encoder.js';
 import { runOptimizer, type OLevel } from './optimizer.js';
 import { check as typeCheck, checkWithEffects, typeStr, effectsStr } from './typecheck.js';
@@ -106,11 +107,12 @@ function cmdBuild(args: ParsedArgs): number {
 
 function cmdExec(args: ParsedArgs): number {
   const pencPath = args.positional[1];
-  if (!pencPath) { process.stderr.write('usage: pen exec <file.penc>\n'); return 2; }
+  if (!pencPath) { process.stderr.write('usage: pen exec [--jit] <file.penc>\n'); return 2; }
   const absPenc = resolve(pencPath);
   const r = readPencFile(absPenc);
   if ('error' in r) { process.stderr.write(`cli error: ${r.error}\n`); return 1; }
-  const result = run(r.prog);
+  const useJit = args.flags['jit'] === true || args.flags['jit'] === 'true';
+  const result = useJit ? jitCompile(r.prog)(freshState()) : run(r.prog);
   if (result.status === 'paused') {
     const snapPath = writeSnapshot(absPenc, result.state);
     process.stdout.write(`paused at ip ${result.state.ip} → ${snapPath}\n`);
@@ -298,6 +300,13 @@ function cmdBench(args: ParsedArgs): number {
   time('VM (-O0)',  () => { run(runOptimizer(prog, 0)); });
   time('VM (-O1)',  () => { run(runOptimizer(prog, 1)); });
   time('VM (-O2)',  () => { run(runOptimizer(prog, 2)); });
+  // JIT: separate "compile" and "run" timings. The run number reuses the
+  // compiled fn across reps — steady-state speed once compilation cost is
+  // amortized away. Both compare against the -O2 interpreter above.
+  const compiledO2 = runOptimizer(prog, 2);
+  const jitFn = jitCompile(compiledO2);   // compile once, time below
+  time('JIT compile (-O2)', () => { jitCompile(compiledO2); });
+  time('JIT run   (-O2)', () => { jitFn(freshState()); });
   return 0;
 }
 
