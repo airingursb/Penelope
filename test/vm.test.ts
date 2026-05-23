@@ -351,3 +351,61 @@ test('inner block can read outer binding', () => {
   };
   expect(run(prog).state.valueStack).toEqual([{ tag: 'int', v: 5 }]);
 });
+
+test('PAUSE pushes unit, advances IP, returns paused', () => {
+  const prog: Program = {
+    version: 1, constants: [],
+    code: [['PAUSE'], ['STORE_VAR', 'x'], ['HALT']],
+  };
+  const r = run(prog);
+  expect(r.status).toBe('paused');
+  expect(r.state.ip).toBe(1);
+  expect(r.state.valueStack).toEqual([{ tag: 'unit' }]);
+});
+
+test('PAUSE then resume completes', () => {
+  const prog: Program = {
+    version: 1, constants: [],
+    code: [['PAUSE'], ['STORE_VAR', 'x'], ['HALT']],
+  };
+  const first = run(prog);
+  const second = run(prog, first.state);
+  expect(second.status).toBe('halted');
+  expect(second.state.frames[0].bindings.x).toEqual({ tag: 'unit' });
+});
+
+import { tokenize } from '../src/lexer.js';
+import { parse } from '../src/parser.js';
+import { compile } from '../src/compiler.js';
+
+test('SMOKE: compile + run identity application', () => {
+  const ast = parse(tokenize('let f = fn(x) { x + 1 }; f(10);'));
+  const prog = compile(ast);
+  const r = run(prog);
+  expect(r.status).toBe('halted');
+  expect(r.state.frames[0].bindings.f.tag).toBe('closure');
+});
+
+test('SMOKE: compile + run if/else', () => {
+  const ast = parse(tokenize('if (1 < 2) { 100 } else { 200 };'));
+  const prog = compile(ast);
+  expect(run(prog).status).toBe('halted');
+});
+
+test('SMOKE: compile + run print effect', () => {
+  const ast = parse(tokenize('print("hello");'));
+  const prog = compile(ast);
+  const r = run(prog);
+  expect(r.status).toBe('halted');
+  expect(r.state.effects.length).toBe(1);
+  expect(r.state.effects[0].effect).toBe('print');
+});
+
+test('SMOKE: compile + run wait_for then resume', () => {
+  const ast = parse(tokenize('let x = pause;'));
+  const prog = compile(ast);
+  const first = run(prog);
+  expect(first.status).toBe('paused');
+  const second = run(prog, first.state);
+  expect(second.status).toBe('halted');
+});

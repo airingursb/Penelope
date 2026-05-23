@@ -145,6 +145,11 @@ function runUntilStop(prog: Program, state: VMState): RunResult {
         state.ip++;
         break;
       }
+      case 'PAUSE': {
+        push(state, { tag: 'unit' });
+        state.ip++;
+        return { status: 'paused', state };
+      }
       default:
         throw new Error(`VM: unhandled opcode '${op[0]}' at ip ${state.ip}`);
     }
