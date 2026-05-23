@@ -467,3 +467,15 @@ test('pen build foo.pen creates foo.penc', () => {
   expect(r.stdout).toMatch(/wrote/);
   fs.unlinkSync(srcPath); fs.unlinkSync(pencPath);
 });
+
+test('pen exec runs a .penc file', () => {
+  const srcPath = path.join(os.tmpdir(), `e-${Date.now()}.pen`);
+  fs.writeFileSync(srcPath, 'print("hello vm");');
+  const rb = spawnSync(PEN, ['build', srcPath], { encoding: 'utf8' });
+  expect(rb.status).toBe(0);
+  const pencPath = srcPath.replace(/\.pen$/, '.penc');
+  const r = spawnSync(PEN, ['exec', pencPath], { encoding: 'utf8' });
+  expect(r.status).toBe(0);
+  expect(r.stdout).toContain('hello vm');
+  fs.unlinkSync(srcPath); fs.unlinkSync(pencPath);
+});

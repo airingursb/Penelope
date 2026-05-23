@@ -16,12 +16,9 @@ import { serialize, sha256, deserialize } from './snapshot.js';
 import type { Snapshot } from './snapshot.js';
 import type { Value } from './ast.js';
 
-// Suppress unused-import warnings during migration (T29, T30 will use these).
+// Suppress unused-import warnings during migration (T30 will use these).
 void (deserialize as unknown);
-void (writeFileSync as unknown);
-void (readPencFile as unknown);
-void (serialize as unknown);
-void (run as unknown); void (freshState as unknown);
+void (freshState as unknown);
 void (resolve as unknown); void (dirname as unknown); void (basename as unknown); void (join as unknown);
 
 // ============================================================
@@ -109,6 +106,39 @@ function cmdBuild(args: ParsedArgs): number {
   const pencPath = absSrc.replace(/\.pen$/, '.penc');
   writePencFile(pencPath, prog);
   process.stdout.write(`wrote ${pencPath} (${prog.code.length} opcodes, ${prog.constants.length} constants)\n`);
+  return 0;
+}
+
+// ============================================================
+// exec subcommand (T29) — run a .penc file directly
+// ============================================================
+
+function cmdExec(args: ParsedArgs): number {
+  const pencPath = args.positional[1];
+  if (!pencPath) {
+    process.stderr.write('usage: pen exec <file.penc>\n');
+    return 2;
+  }
+  const absPenc = resolve(pencPath);
+  const r = readPencFile(absPenc);
+  if ('error' in r) {
+    process.stderr.write(`cli error: ${r.error}\n`);
+    return 1;
+  }
+  const result = run(r.prog);
+  if (result.status === 'paused') {
+    const snapPath = absPenc.replace(/\.penc$/, '.penz');
+    const snap = {
+      version: 3 as const,
+      programPath: absPenc,
+      programHash: 'sha256:' + sha256(readFileSync(absPenc, 'utf8')),
+      pausedAtIP: result.state.ip,
+      pausedAtMs: Date.now(),
+      state: result.state,
+    };
+    writeFileSync(snapPath, serialize(snap));
+    process.stdout.write(`paused at ip ${result.state.ip} → ${snapPath}\n`);
+  }
   return 0;
 }
 
@@ -209,11 +239,12 @@ export function main(argv: string[]): number {
   const args = parseArgs(argv);
   const sub = args.positional[0];
   if (sub === 'build')   return cmdBuild(args);
+  if (sub === 'exec')    return cmdExec(args);
   if (sub === 'run')     return cmdRun(args);
   if (sub === 'resume')  return cmdResume(args);
   if (sub === 'fork')    return cmdFork(args);
   if (sub === 'inspect') return cmdInspect(args);
-  process.stderr.write(`usage: penelope <build|run|exec|resume|fork|inspect> [args]\n`);
+  process.stderr.write(`usage: penelope <build|exec|run|resume|fork|inspect> [args]\n`);
   return 2;
 }
 
