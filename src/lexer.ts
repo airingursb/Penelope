@@ -56,6 +56,12 @@ export function tokenize(source: string): Token[] {
       continue;
     }
 
+    // line comment
+    if (c === '/' && source[i + 1] === '/') {
+      while (i < source.length && source[i] !== '\n') advance();
+      continue;
+    }
+
     // integer literal
     if (isDigit(c)) {
       let text = '';

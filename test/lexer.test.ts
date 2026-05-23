@@ -60,3 +60,25 @@ test('disambiguates < from <=', () => {
   const kinds = tokenize('< <=').map(t => t.kind);
   expect(kinds).toEqual(['LT','LE','EOF']);
 });
+
+test('skips line comments', () => {
+  const src = `// this is a comment
+let x = 1;`;
+  const kinds = tokenize(src).map(t => t.kind);
+  expect(kinds).toEqual(['LET','IDENT','EQ','INT','SEMI','EOF']);
+});
+
+test('comment to end of file is OK', () => {
+  const src = '42 // trailing comment, no newline';
+  const tokens = tokenize(src);
+  expect(tokens[0]).toMatchObject({ kind: 'INT', value: 42 });
+  expect(tokens[1].kind).toBe('EOF');
+});
+
+test('does not treat / not followed by / as a comment', () => {
+  expect(tokenize('1 / 2')[1].kind).toBe('SLASH');
+});
+
+test('throws on unexpected characters', () => {
+  expect(() => tokenize('@')).toThrow(/unexpected character/);
+});
