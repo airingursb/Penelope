@@ -34,3 +34,32 @@ test('PUSH_UNIT pushes unit', () => {
   const prog: Program = { version: 1, constants: [], code: [['PUSH_UNIT'], ['HALT']] };
   expect(run(prog).state.valueStack).toEqual([{ tag: 'unit' }]);
 });
+
+test('STORE_VAR writes to top frame; LOAD_VAR reads it', () => {
+  const prog: Program = {
+    version: 1,
+    constants: [{ tag: 'int', v: 10 }],
+    code: [
+      ['LOAD_CONST', 0],
+      ['STORE_VAR', 'x'],
+      ['LOAD_VAR', 'x', null],
+      ['HALT'],
+    ],
+  };
+  const r = run(prog);
+  expect(r.state.valueStack).toEqual([{ tag: 'int', v: 10 }]);
+  expect(r.state.frames[0].bindings.x).toEqual({ tag: 'int', v: 10 });
+});
+
+test('LOAD_VAR walks frame chain (linear)', () => {
+  const prog: Program = { version: 1, constants: [], code: [['LOAD_VAR', 'x', null], ['HALT']] };
+  const initial = freshState();
+  initial.frames[0].bindings.x = { tag: 'int', v: 5 };
+  initial.frames.push({ bindings: {} });
+  expect(run(prog, initial).state.valueStack).toEqual([{ tag: 'int', v: 5 }]);
+});
+
+test('LOAD_VAR undefined throws', () => {
+  const prog: Program = { version: 1, constants: [], code: [['LOAD_VAR', 'oops', null], ['HALT']] };
+  expect(() => run(prog)).toThrow(/undefined variable 'oops'/);
+});

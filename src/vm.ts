@@ -39,6 +39,31 @@ function runUntilStop(prog: Program, state: VMState): RunResult {
       }
       case 'POP':       { pop(state); state.ip++; break; }
       case 'PUSH_UNIT': { push(state, { tag: 'unit' }); state.ip++; break; }
+      case 'STORE_VAR': {
+        const name = op[1] as string;
+        const v = pop(state);
+        topFrame(state).bindings[name] = v;
+        state.ip++;
+        break;
+      }
+      case 'LOAD_VAR': {
+        const name = op[1] as string;
+        let idx = state.frames.length - 1;
+        let found = false;
+        while (idx >= 0) {
+          const f = state.frames[idx];
+          if (Object.prototype.hasOwnProperty.call(f.bindings, name)) {
+            push(state, f.bindings[name]);
+            found = true;
+            break;
+          }
+          if (f.parentIdx !== undefined) idx = f.parentIdx;
+          else idx--;
+        }
+        if (!found) throw new Error(`VM: undefined variable '${name}' at ip ${state.ip}`);
+        state.ip++;
+        break;
+      }
       default:
         throw new Error(`VM: unhandled opcode '${op[0]}' at ip ${state.ip}`);
     }
