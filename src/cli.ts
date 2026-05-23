@@ -10,6 +10,8 @@ import { writePencFile, readPencFile } from './encoder.js';
 import { runOptimizer, type OLevel } from './optimizer.js';
 import { check as typeCheck } from './typecheck.js';
 import { format as fmtSource } from './format.js';
+import { extractExpectations, checkExpectations } from './test-runner.js';
+import { spawnSync } from 'node:child_process';
 import { formatDiagnostic, diagnosticFromMessage } from './diagnostic.js';
 import { serialize, sha256, deserialize } from './snapshot.js';
 import type { Snapshot, VMState } from './snapshot.js';
@@ -250,6 +252,36 @@ function cmdBench(args: ParsedArgs): number {
   return 0;
 }
 
+function cmdTest(args: ParsedArgs): number {
+  const srcPath = args.positional[1];
+  if (!srcPath) { process.stderr.write('usage: pen test <file.pen>\n'); return 2; }
+  let source: string;
+  try { source = readFileSync(resolve(srcPath), 'utf8'); }
+  catch { process.stderr.write(`cli error: cannot read source: ${srcPath}\n`); return 3; }
+  const expects = extractExpectations(source);
+  if (expects.length === 0) {
+    process.stderr.write(`${srcPath}: no // EXPECT: lines found\n`);
+    return 4;
+  }
+  // Spawn `pen run` to capture stdout exactly as it would appear to a user.
+  const penBin = process.argv[1].replace(/[/\\]dist[/\\]cli\.js$/, '/bin/penelope');
+  const r = spawnSync(penBin, ['run', srcPath], { encoding: 'utf8' });
+  if (r.status !== 0) {
+    process.stderr.write(`${srcPath}: program exited ${r.status}\n${r.stderr}`);
+    return 1;
+  }
+  const res = checkExpectations(expects, r.stdout);
+  if (res.pass) {
+    process.stdout.write(`✓ ${srcPath}  (${res.total} expectation${res.total === 1 ? '' : 's'})\n`);
+    return 0;
+  }
+  process.stderr.write(`✗ ${srcPath}  (${res.failed.length}/${res.total} failed)\n`);
+  for (const f of res.failed) {
+    process.stderr.write(`  line ${f.exp.line}: expected ${f.exp.kind === 'eq' ? '"' + f.exp.text + '"' : 'starts with "' + f.exp.text + '"'}, got ${f.got === undefined ? '<no output>' : '"' + f.got + '"'}\n`);
+  }
+  return 1;
+}
+
 function cmdFmt(args: ParsedArgs): number {
   const srcPath = args.positional[1];
   if (!srcPath) { process.stderr.write('usage: pen fmt [--write] <file.pen>\n'); return 2; }
@@ -463,7 +495,8 @@ export async function main(argv: string[]): Promise<number> {
   if (sub === 'check')   return cmdCheck(args);
   if (sub === 'profile') return cmdProfile(args);
   if (sub === 'fmt')     return cmdFmt(args);
-  process.stderr.write(`usage: penelope <build|exec|run|resume|fork|disasm|bench|inspect|repl|check|profile|fmt> [-O0|-O1|-O2] [args]\n`);
+  if (sub === 'test')    return cmdTest(args);
+  process.stderr.write(`usage: penelope <build|exec|run|resume|fork|disasm|bench|inspect|repl|check|profile|fmt|test> [-O0|-O1|-O2] [args]\n`);
   return 2;
 }
 
