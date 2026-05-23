@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/airingursb/Penelope/actions"><img alt="tests" src="https://img.shields.io/badge/tests-613%20passing-brightgreen"></a>
+  <a href="https://github.com/airingursb/Penelope/actions"><img alt="tests" src="https://img.shields.io/badge/tests-622%20passing-brightgreen"></a>
   <a href="https://airingursb.github.io/Penelope/"><img alt="docs" src="https://img.shields.io/badge/docs-live-blue"></a>
   <a href="https://airingursb.github.io/Penelope/play.html"><img alt="playground" src="https://img.shields.io/badge/playground-browser-purple"></a>
   <a href="./LICENSE"><img alt="license" src="https://img.shields.io/badge/license-MIT-lightgrey"></a>
@@ -131,6 +131,7 @@ The CLI also supports `exec`, `resume`, `fork`, `disasm`, `profile`, `doc`, plus
 - **Bytecode VM** — stack-based, 18 opcodes, frame chain, ip-keyed effect log. Snapshot format v3 (gzipped JSON).
 - **5-pass optimizer** — constant folding, dead-code elimination, inline caches, function inlining, peephole. `-O0` / `-O1` / `-O2`.
 - **JIT** — bytecode → JS Function at runtime. Op args baked as literals, `BIN_OP` specialized per operator. ~2.4× faster than the `-O2` interpreter on `fib(25)`. Snapshot semantics + effect replay + TCO preserved byte-for-byte.
+- **WASM backend** — Penelope-implemented WASM emitter (`std/wasm.pen`, ~360 lines of pen) compiles the int subset to a valid WebAssembly module. `pen wasm <file.pen> --out file.wasm` produces a `.wasm` loadable by Node / browsers / Cloudflare Workers / Wasmtime. The TS host stops being load-bearing for int-only programs.
 - **Distributed runtime** — single-coordinator + multiple workers, HTTP/JSON protocol, lease + heartbeat for dead-worker recovery, `FileStore` for persistence across restarts.
 - **Observability** — OpenTelemetry-shaped `Tracer` hook (`fn_call`, `fn_return`, `effect`, `pause`, `resume`, `error`). `pen run --trace` emits JSON-lines.
 
@@ -139,7 +140,7 @@ The CLI also supports `exec`, `resume`, `fork`, `disasm`, `profile`, `doc`, plus
 - **Self-hosting** — `std/lexer.pen` + `std/parser.pen` + `std/compiler.pen`. Verified by three-stage `pen self-test`: (1) pen-built ≡ ts-built bytecode on samples; (2) the pen frontend's own source round-trips; (3) the pen-built pen-frontend, when run, correctly compiles new programs.
 - **Live editing** — `pen edit <snap.penz>` recompiles edited source and remaps the paused VMState via source-position lookup with opcode-kind sanity checks.
 - **Time-travel debugger** — DAP `stepBack` + `reverseContinue` — VMState deep-cloned before every advance into a bounded history stack.
-- **CLI** — `pen run / build / exec / resume / fork / edit / inspect / disasm / bench / profile / check / fmt / test / doc / graph / new / repl / coordinator / worker / submit / self-test`.
+- **CLI** — `pen run / build / exec / resume / fork / edit / inspect / disasm / bench / profile / check / fmt / test / doc / graph / new / repl / coordinator / worker / submit / wasm / self-test`.
 - **Editor integration** — full VSCode extension: syntax, LSP (hover, completions, go-to-def, diagnostics), DAP debugger (breakpoints, variables, time-travel), snippets.
 
 ---
@@ -259,6 +260,8 @@ Penelope's thesis is "a paused program is just a value." To prove that, what mat
 **What TypeScript costs**: ~2-3× slower than what a Rust interpreter would do; no AOT-to-native target; the JIT tops out at "as fast as V8 can JIT my JS source," which is good but not Rust+LLVM good. For a durable-execution language whose hot path is `wait_for("approval")` followed by a 24-hour sleep, that doesn't matter.
 
 **When it would matter, and what we'd do**: if Penelope ever needs sub-microsecond pause/resume (high-frequency trading workflow? offline AI inference loop?), the right move is to compile the pen frontend's bytecode output to a target with a real native runtime — WASM via a hand-written Rust VM, or LLVM IR. The TS implementation stays as the reference; the self-hosted frontend ports unchanged because it doesn't care what executes its bytecode.
+
+**Phase 6 starts this**: `std/wasm.pen` is a Penelope-implemented WASM backend. It handles the int subset of the language (no strings/lists/dicts/effects/snapshot/pause yet — each is a separate substantial design). `pen wasm <file.pen>` emits a real `.wasm` file that runs on any WASM runtime, with no TS code on the execution path. That's the first concrete step of getting Penelope out of the TS host.
 
 ### Why JSON snapshots, not a binary format?
 

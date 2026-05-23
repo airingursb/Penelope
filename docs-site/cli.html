@@ -21,6 +21,7 @@
     <a href="phase4.html">Phase 4</a>
     <a href="distributed.html">Distributed</a>
     <a href="jit.html">JIT</a>
+    <a href="wasm.html">WASM</a>
     <a href="examples.html">Examples</a>
     <a href="production.html">Production</a>
     <a href="https://github.com/airingursb/Penelope">GitHub →</a>
@@ -144,22 +145,28 @@ next:
 
 <h2>pen edit</h2>
 
-<p>Resume a paused snapshot against an edited source file. The old <code>VMState</code> is remapped onto the recompiled program by source position, with opcode-kind sanity checks to reject semantic drift. See <a href="phase4.html">Phase 4</a>
-    <a href="distributed.html">Distributed</a>
-    <a href="jit.html">JIT</a>
-    <a href="examples.html">Examples</a>
-    <a href="production.html">Production</a> for the model.</p>
+<p>Resume a paused snapshot against an edited source file. The old <code>VMState</code> is remapped onto the recompiled program by source position, with opcode-kind sanity checks to reject semantic drift. See <a href="phase4.html">Phase 4</a> for the model.</p>
 
 <pre><code>$ pen edit snapshot.penz
 resumed (frame@line 14) — printing: 42</code></pre>
 
+<h2>pen wasm</h2>
+
+<p>Compile a <code>.pen</code> source to a WebAssembly module via the Penelope-implemented backend (<code>std/wasm.pen</code>). Handles the int-only subset of Penelope — see the <a href="wasm.html">WASM page</a> for the precise scope. Output is a standard <code>.wasm</code> file loadable by any WASM runtime (Node, browsers, Cloudflare Workers, Wasmtime).</p>
+
+<pre><code>$ pen wasm examples/09-fib.pen --out fib.wasm
+wrote fib.wasm (80 bytes)
+
+$ node -e "
+  const m = await WebAssembly.compile(require('fs').readFileSync('fib.wasm'));
+  const i = await WebAssembly.instantiate(m);
+  console.log('fib(20) =', i.exports.main());
+"
+fib(20) = 6765</code></pre>
+
 <h2>pen self-test</h2>
 
-<p>Three-stage self-hosting verification: (1) pen-built bytecode is byte-identical to ts-built on samples and on all <code>std/*.pen</code> files (self-bootstrap), and (2) the pen-built pen-frontend, when run, correctly compiles new programs (fixpoint). See <a href="phase4.html">Phase 4</a>
-    <a href="distributed.html">Distributed</a>
-    <a href="jit.html">JIT</a>
-    <a href="examples.html">Examples</a>
-    <a href="production.html">Production</a> for the diagram.</p>
+<p>Three-stage self-hosting verification: (1) pen-built bytecode is byte-identical to ts-built on samples and on all <code>std/*.pen</code> files (self-bootstrap); (2) all four <code>std/*.pen</code> files round-trip; (3) the pen-built pen-frontend, when run, correctly compiles new programs (fixpoint). See <a href="phase4.html">Phase 4</a> for the diagram.</p>
 
 <pre><code>$ pen self-test
 Stage 1: round-trip on inline samples

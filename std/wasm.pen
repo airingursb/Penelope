@@ -1,0 +1,640 @@
+/// WASM backend — written in Penelope.
+///
+/// Takes an AST bundle (the kind std/parser.pen produces) and emits a complete
+/// WebAssembly module as a list of bytes. The output can be loaded directly by
+/// Node's `WebAssembly.instantiate` or any other WASM runtime.
+///
+/// === Scope (intentionally narrow, documented honestly) ===
+///
+/// Supported:
+///   - int and bool values (both represented as i32 in WASM; bool is 0/1)
+///   - arithmetic:  + - * /
+///   - comparison:  < > <= >= == !=
+///   - let bindings (translated to WASM local slots)
+///   - if/else expressions
+///   - top-level fn declarations (each becomes a WASM function)
+///   - calls to top-level fns (including recursion and mutual recursion)
+///
+/// NOT supported, by design (each is a substantial separate project):
+///   - strings / lists / dicts        — need WASM linear-memory layout + GC
+///   - closures with captured vars     — need closure conversion + heap
+///   - first-class function values     — WASM funcs aren't first-class
+///   - effects (print/net_fetch/...)   — need host imports + side-table
+///   - snapshot / pause / resume       — need CPS transform
+///   - match expressions               — needs structured-CFG recovery
+///
+/// When the emitter sees something it doesn't support, it panics with a clear
+/// message so the user knows to switch to the regular interpreter for that fn.
+
+import "./iter.pen";
+
+// ─────────────────────────────────────────────────────────────────────────────
+// LEB128 — variable-length integer encoding used everywhere in WASM binaries.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Unsigned LEB128. Used for sizes, indexes, lengths.
+/// Returns a list of bytes (each int 0..255).
+let leb128_u = fn(v) {
+  let go = fn(n, acc) {
+    let byte = n - (n / 128) * 128;
+    let next = n / 128;
+    if (next == 0) {
+      list_push(acc, byte)
+    } else {
+      // continuation bit set: byte | 0x80 = byte + 128
+      go(next, list_push(acc, byte + 128))
+    }
+  };
+  go(v, list_new())
+};
+
+/// Signed LEB128 for non-negative values that fit in 31 bits. Sign extension
+/// to negative values is intentionally omitted — this backend doesn't emit
+/// negative literals (the parser desugars `-N` as `0 - N`).
+let leb128_s_nonneg = fn(v) {
+  if (v < 0) { panic("leb128_s_nonneg: negative value not supported") }
+  else {
+    let go = fn(n, acc) {
+      let byte = n - (n / 128) * 128;
+      let next = n / 128;
+      // Termination: next is 0 AND the high bit of byte is 0 (so it won't be
+      // sign-extended to negative when decoded).
+      if (next == 0) {
+        if (byte < 64) {
+          list_push(acc, byte)
+        } else {
+          // High bit of byte is 1; emit it with continuation, then a 0 byte
+          // to signal sign-extend-as-zero.
+          list_push(list_push(acc, byte + 128), 0)
+        }
+      } else {
+        go(next, list_push(acc, byte + 128))
+      }
+    };
+    go(v, list_new())
+  }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// WASM opcode constants — keep names mirroring the WebAssembly Specification.
+// ─────────────────────────────────────────────────────────────────────────────
+
+let OP_END = 11;          // 0x0B
+let OP_BR = 12;           // 0x0C
+let OP_BR_IF = 13;        // 0x0D
+let OP_RETURN = 15;       // 0x0F
+let OP_CALL = 16;         // 0x10
+let OP_LOCAL_GET = 32;    // 0x20
+let OP_LOCAL_SET = 33;    // 0x21
+let OP_LOCAL_TEE = 34;    // 0x22
+let OP_I32_CONST = 65;    // 0x41
+let OP_I32_EQZ = 69;      // 0x45
+let OP_I32_EQ = 70;       // 0x46
+let OP_I32_NE = 71;       // 0x47
+let OP_I32_LT_S = 72;     // 0x48
+let OP_I32_GT_S = 74;     // 0x4A
+let OP_I32_LE_S = 76;     // 0x4C
+let OP_I32_GE_S = 78;     // 0x4E
+let OP_I32_ADD = 106;     // 0x6A
+let OP_I32_SUB = 107;     // 0x6B
+let OP_I32_MUL = 108;     // 0x6C
+let OP_I32_DIV_S = 109;   // 0x6D
+let OP_IF = 4;            // 0x04
+let OP_ELSE = 5;          // 0x05
+let OP_BLOCK = 2;         // 0x02
+let OP_LOOP = 3;          // 0x03
+
+let TYPE_I32 = 127;       // 0x7F
+let BLOCKTYPE_I32 = 127;  // 0x7F  (block returns i32)
+let BLOCKTYPE_VOID = 64;  // 0x40  (block returns nothing)
+
+let SECTION_TYPE = 1;
+let SECTION_FUNCTION = 3;
+let SECTION_EXPORT = 7;
+let SECTION_CODE = 10;
+
+let EXPORT_KIND_FUNC = 0;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Byte-buffer helpers — buffers are plain lists of ints.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Encode a string as bytes (one byte per char, ASCII-only — enough for
+/// WASM identifiers like "main").
+let str_to_bytes = fn(s) {
+  let chars = str_chars(s);
+  let go = fn(i, acc) {
+    if (i >= list_len(chars)) { acc }
+    else {
+      // Use a tiny lookup table for the ASCII chars we actually emit. For
+      // names we control (function exports), we always use lowercase ASCII.
+      let c = list_get(chars, i);
+      let b = ascii_byte(c);
+      go(i + 1, list_push(acc, b))
+    }
+  };
+  go(0, list_new())
+};
+
+/// Map a single ASCII char to its byte. Penelope has no `char_code` builtin,
+/// so we hardcode the ranges we need (lowercase letters, digits, underscore).
+let ascii_byte = fn(c) {
+  // Lowercase a-z = 97..122. We build a lookup via match.
+  match c {
+    "a" => 97, "b" => 98, "c" => 99, "d" => 100, "e" => 101, "f" => 102,
+    "g" => 103, "h" => 104, "i" => 105, "j" => 106, "k" => 107, "l" => 108,
+    "m" => 109, "n" => 110, "o" => 111, "p" => 112, "q" => 113, "r" => 114,
+    "s" => 115, "t" => 116, "u" => 117, "v" => 118, "w" => 119, "x" => 120,
+    "y" => 121, "z" => 122,
+    "A" => 65, "B" => 66, "C" => 67, "D" => 68, "E" => 69, "F" => 70,
+    "G" => 71, "H" => 72, "I" => 73, "J" => 74, "K" => 75, "L" => 76,
+    "M" => 77, "N" => 78, "O" => 79, "P" => 80, "Q" => 81, "R" => 82,
+    "S" => 83, "T" => 84, "U" => 85, "V" => 86, "W" => 87, "X" => 88,
+    "Y" => 89, "Z" => 90,
+    "0" => 48, "1" => 49, "2" => 50, "3" => 51, "4" => 52,
+    "5" => 53, "6" => 54, "7" => 55, "8" => 56, "9" => 57,
+    "_" => 95,
+    _ => panic("ascii_byte: unsupported char in wasm name"),
+  }
+};
+
+/// Encode a "vec(...)" — LEB128 length followed by contents.
+let vec_of_bytes = fn(items) {
+  list_concat(leb128_u(list_len(items)), items)
+};
+
+/// Encode a string with a length prefix (WASM name = vec(byte)).
+let name_bytes = fn(s) {
+  let bs = str_to_bytes(s);
+  list_concat(leb128_u(list_len(bs)), bs)
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// AST helpers — match what std/parser.pen produces.
+// ─────────────────────────────────────────────────────────────────────────────
+
+let ast_get = fn(ast, id) { dict_get(dict_get(ast, "nodes"), id) };
+
+/// Is this an AST node representing a fn literal? (For top-level let-binding
+/// detection: `let foo = fn(...) { ... };` exports foo as a WASM function.)
+let is_fn_node = fn(n) { dict_get(n, "kind") == "Fn" };
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Two-pass compilation:
+//   Pass 1: scan top-level, build fn-index table (name → index).
+//   Pass 2: compile each fn body and `main` to instruction byte streams.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Collect top-level fn bindings into a dict {name: index}. main gets the
+/// final index (after all named fns).
+let collect_fns = fn(ast) {
+  let root = ast_get(ast, dict_get(ast, "rootId"));
+  let stmts = dict_get(root, "stmtIds");
+  let go = fn(i, table, count) {
+    if (i >= list_len(stmts)) {
+      // Append "main" mapping at the end.
+      dict_set(dict_set(dict_new(), "table", dict_set(table, "main", count)),
+        "fn_count", count + 1)
+    } else {
+      let stmt = ast_get(ast, list_get(stmts, i));
+      if (dict_get(stmt, "kind") == "Let") {
+        let val = ast_get(ast, dict_get(stmt, "valueId"));
+        if (is_fn_node(val)) {
+          go(i + 1, dict_set(table, dict_get(stmt, "name"), count), count + 1)
+        } else {
+          go(i + 1, table, count)
+        }
+      } else {
+        go(i + 1, table, count)
+      }
+    }
+  };
+  go(0, dict_new(), 0)
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Expression lowering — walk an expression node, emit WASM instructions, return
+// the byte list. `env` maps local names to local-slot indices; `fn_table` maps
+// callable fn names to function indices.
+// ─────────────────────────────────────────────────────────────────────────────
+
+let bin_op_to_wasm = fn(op) {
+  match op {
+    "+" => OP_I32_ADD,
+    "-" => OP_I32_SUB,
+    "*" => OP_I32_MUL,
+    "/" => OP_I32_DIV_S,
+    "<" => OP_I32_LT_S,
+    ">" => OP_I32_GT_S,
+    "<=" => OP_I32_LE_S,
+    ">=" => OP_I32_GE_S,
+    "==" => OP_I32_EQ,
+    "!=" => OP_I32_NE,
+    _ => panic("wasm: unsupported binop"),
+  }
+};
+
+/// Compile an expression. Returns a list of WASM bytes that, when executed,
+/// leaves the result on the WASM stack.
+let compile_expr = fn(node, ast, env, fn_table) {
+  let kind = dict_get(node, "kind");
+  match kind {
+    "IntLit" => {
+      let v = dict_get(node, "value");
+      if (v < 0) {
+        // Desugar -N as (0 - N) — keeps LEB128 signed-encoding constraints simple.
+        let zero = list_push(list_new(), OP_I32_CONST);
+        let zero2 = list_concat(zero, leb128_s_nonneg(0));
+        let lit = list_push(list_new(), OP_I32_CONST);
+        let lit2 = list_concat(lit, leb128_s_nonneg(0 - v));
+        list_push(list_concat(zero2, lit2), OP_I32_SUB)
+      } else {
+        list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(v))
+      }
+    },
+    "BoolLit" => {
+      let v = if (dict_get(node, "value")) { 1 } else { 0 };
+      list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(v))
+    },
+    "Var" => {
+      let name = dict_get(node, "name");
+      if (dict_has(env, name) == false) {
+        panic("wasm: undefined local '" + name + "' (top-level non-fn globals not supported)")
+      } else {
+        list_concat(list_push(list_new(), OP_LOCAL_GET), leb128_u(dict_get(env, name)))
+      }
+    },
+    "BinOp" => {
+      let l = compile_expr(ast_get(ast, dict_get(node, "leftId")), ast, env, fn_table);
+      let r = compile_expr(ast_get(ast, dict_get(node, "rightId")), ast, env, fn_table);
+      let op_byte = bin_op_to_wasm(dict_get(node, "op"));
+      list_push(list_concat(l, r), op_byte)
+    },
+    "If" => {
+      // cond ; if (blocktype i32) then_b else else_b end
+      let cond = compile_expr(ast_get(ast, dict_get(node, "condId")), ast, env, fn_table);
+      let then_b = compile_block_expr(ast_get(ast, dict_get(node, "thenBlockId")), ast, env, fn_table);
+      let else_b = compile_block_expr(ast_get(ast, dict_get(node, "elseBlockId")), ast, env, fn_table);
+      let head = list_push(list_push(cond, OP_IF), BLOCKTYPE_I32);
+      let with_then = list_concat(head, then_b);
+      let with_else_kw = list_push(with_then, OP_ELSE);
+      let with_else = list_concat(with_else_kw, else_b);
+      list_push(with_else, OP_END)
+    },
+    "Block" => compile_block_expr(node, ast, env, fn_table),
+    "Call" => {
+      let callee = ast_get(ast, dict_get(node, "calleeId"));
+      if (dict_get(callee, "kind") != "Var") {
+        panic("wasm: only direct calls to top-level fns are supported")
+      } else {
+        let name = dict_get(callee, "name");
+        if (dict_has(fn_table, name) == false) {
+          panic("wasm: call to unknown fn '" + name + "' (only top-level fns are callable)")
+        } else {
+          let arg_ids = dict_get(node, "argIds");
+          // Compile args left-to-right, leaving them on the WASM stack.
+          let args_bytes = list_reduce(arg_ids, list_new(), fn(acc, id) {
+            list_concat(acc, compile_expr(ast_get(ast, id), ast, env, fn_table))
+          });
+          let call_bytes = list_concat(list_push(list_new(), OP_CALL),
+            leb128_u(dict_get(fn_table, name)));
+          list_concat(args_bytes, call_bytes)
+        }
+      }
+    },
+    "UnitLit" => panic("wasm: unit values are not supported in the int-only backend"),
+    "StringLit" => panic("wasm: strings are not supported in the int-only backend"),
+    "Pause" => panic("wasm: pause/resume is not supported in the int-only backend"),
+    "Fn" => panic("wasm: nested fn definitions are not supported (only top-level fns)"),
+    "Match" => panic("wasm: match is not supported in the int-only backend"),
+    _ => panic("wasm: unsupported node kind '" + kind + "'"),
+  }
+};
+
+/// Compile a Block node as an expression — returns bytes that leave the
+/// block's value on the stack. let statements assign to locals (which were
+/// reserved by the surrounding fn body); the trailing expression supplies
+/// the value.
+let compile_block_expr = fn(node, ast, env, fn_table) {
+  let stmts = dict_get(node, "stmtIds");
+  // Compile each stmt for its side effects (in this subset: only let stmts
+  // emit code).
+  let stmt_bytes = list_reduce(stmts, list_new(), fn(acc, id) {
+    list_concat(acc, compile_stmt_in_fn(ast_get(ast, id), ast, env, fn_table))
+  });
+  let trailing = dict_get(node, "trailingExprId");
+  if (trailing == "") {
+    panic("wasm: block without trailing expression — unit values unsupported")
+  } else {
+    list_concat(stmt_bytes, compile_expr(ast_get(ast, trailing), ast, env, fn_table))
+  }
+};
+
+/// Compile a single statement found inside a fn body. The env was pre-built
+/// (see `prebuild_env`) so every let-name already has a local slot — the
+/// statement just emits the value-producing instructions and `local.set`.
+let compile_stmt_in_fn = fn(stmt, ast, env, fn_table) {
+  let kind = dict_get(stmt, "kind");
+  match kind {
+    "Let" => {
+      let name = dict_get(stmt, "name");
+      if (dict_has(env, name) == false) {
+        panic("wasm: internal error — let name not in env")
+      } else {
+        let val_bytes = compile_expr(ast_get(ast, dict_get(stmt, "valueId")), ast, env, fn_table);
+        list_concat(val_bytes,
+          list_concat(list_push(list_new(), OP_LOCAL_SET), leb128_u(dict_get(env, name))))
+      }
+    },
+    "ExprStmt" => {
+      // Evaluate the expression and drop its value. WASM has no "drop unused
+      // i32" without an explicit `drop` (0x1A); we emit that.
+      let val_bytes = compile_expr(ast_get(ast, dict_get(stmt, "exprId")), ast, env, fn_table);
+      list_push(val_bytes, 26)   // 0x1A = drop
+    },
+    _ => panic("wasm: unsupported statement kind '" + kind + "' inside fn body"),
+  }
+};
+
+/// Walk a block and collect every let-name into an env dict (name → next index).
+/// `start_idx` is the index after the fn's params. Recurses into nested if/
+/// else/match blocks since WASM locals are flat (one slot per name, shared).
+let prebuild_env = fn(node, ast, env, next_idx) {
+  let kind = dict_get(node, "kind");
+  if (kind == "Block") {
+    let stmts = dict_get(node, "stmtIds");
+    let go = fn(i, env, next_idx) {
+      if (i >= list_len(stmts)) {
+        let trailing = dict_get(node, "trailingExprId");
+        if (trailing == "") {
+          dict_set(dict_set(dict_new(), "env", env), "next", next_idx)
+        } else {
+          let r = prebuild_env(ast_get(ast, trailing), ast, env, next_idx);
+          r
+        }
+      } else {
+        let stmt = ast_get(ast, list_get(stmts, i));
+        if (dict_get(stmt, "kind") == "Let") {
+          let env2 = dict_set(env, dict_get(stmt, "name"), next_idx);
+          let val = ast_get(ast, dict_get(stmt, "valueId"));
+          // Recurse into the value expression for any nested blocks (e.g. if).
+          let r = prebuild_env(val, ast, env2, next_idx + 1);
+          go(i + 1, dict_get(r, "env"), dict_get(r, "next"))
+        } else {
+          if (dict_get(stmt, "kind") == "ExprStmt") {
+            let r = prebuild_env(ast_get(ast, dict_get(stmt, "exprId")), ast, env, next_idx);
+            go(i + 1, dict_get(r, "env"), dict_get(r, "next"))
+          } else {
+            go(i + 1, env, next_idx)
+          }
+        }
+      }
+    };
+    go(0, env, next_idx)
+  } else {
+    if (kind == "If") {
+      let r1 = prebuild_env(ast_get(ast, dict_get(node, "condId")), ast, env, next_idx);
+      let r2 = prebuild_env(ast_get(ast, dict_get(node, "thenBlockId")), ast, dict_get(r1, "env"), dict_get(r1, "next"));
+      prebuild_env(ast_get(ast, dict_get(node, "elseBlockId")), ast, dict_get(r2, "env"), dict_get(r2, "next"))
+    } else {
+      if (kind == "BinOp") {
+        let r1 = prebuild_env(ast_get(ast, dict_get(node, "leftId")), ast, env, next_idx);
+        prebuild_env(ast_get(ast, dict_get(node, "rightId")), ast, dict_get(r1, "env"), dict_get(r1, "next"))
+      } else {
+        if (kind == "Call") {
+          let arg_ids = dict_get(node, "argIds");
+          let result = list_reduce(arg_ids,
+            dict_set(dict_set(dict_new(), "env", env), "next", next_idx),
+            fn(acc, id) {
+              prebuild_env(ast_get(ast, id), ast, dict_get(acc, "env"), dict_get(acc, "next"))
+            });
+          result
+        } else {
+          dict_set(dict_set(dict_new(), "env", env), "next", next_idx)
+        }
+      }
+    }
+  }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Function body emission — compiles one fn (or main) into a code-section entry.
+// Layout per WASM spec: vec(locals) ++ instructions ++ END.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Compile a fn-literal AST node into its WASM code entry (locals + body + END).
+let compile_fn = fn(fn_node, ast, fn_table) {
+  let params = dict_get(fn_node, "params");
+  // Build env: params at indices [0, len(params))
+  let param_env = list_reduce(params, dict_set(dict_set(dict_new(), "env", dict_new()), "idx", 0),
+    fn(acc, p) {
+      dict_set(dict_set(dict_new(),
+        "env", dict_set(dict_get(acc, "env"), p, dict_get(acc, "idx"))),
+        "idx", dict_get(acc, "idx") + 1)
+    });
+  let env_after_params = dict_get(param_env, "env");
+  // Pre-allocate locals for any let-bindings in the body.
+  let body_block = ast_get(ast, dict_get(fn_node, "bodyBlockId"));
+  let env_result = prebuild_env(body_block, ast, env_after_params, list_len(params));
+  let env = dict_get(env_result, "env");
+  let total_locals = dict_get(env_result, "next");
+  let local_count = total_locals - list_len(params);
+  // Emit the body expression's bytes.
+  let body_bytes = compile_block_expr(body_block, ast, env, fn_table);
+  // Locals declaration: vec((count, type)) — we compress as one group of i32s.
+  let locals_decl = if (local_count == 0) {
+    list_push(list_new(), 0)   // vec length 0
+  } else {
+    let v = list_concat(leb128_u(1), list_concat(leb128_u(local_count), list_push(list_new(), TYPE_I32)));
+    v
+  };
+  // Final body: locals + instructions + END.
+  let with_body = list_concat(locals_decl, body_bytes);
+  let with_end = list_push(with_body, OP_END);
+  // Code entry is a length-prefixed body (size in LEB128 + bytes).
+  list_concat(leb128_u(list_len(with_end)), with_end)
+};
+
+/// Compile the "main" function from top-level non-let-fn statements.
+/// Strategy: every top-level let with a non-fn value becomes a main local; the
+/// final trailing expression (or last expr-stmt) supplies the return value.
+let compile_main = fn(ast, fn_table) {
+  let root = ast_get(ast, dict_get(ast, "rootId"));
+  let stmts = dict_get(root, "stmtIds");
+  // Pass 1: collect non-fn let bindings and find the result-producing stmt.
+  let env_acc = list_reduce(stmts,
+    dict_set(dict_set(dict_set(dict_new(),
+      "env", dict_new()),
+      "next", 0),
+      "result_id", ""),
+    fn(acc, id) {
+      let stmt = ast_get(ast, id);
+      let k = dict_get(stmt, "kind");
+      if (k == "Let") {
+        let val = ast_get(ast, dict_get(stmt, "valueId"));
+        if (is_fn_node(val)) { acc }
+        else {
+          let name = dict_get(stmt, "name");
+          dict_set(dict_set(dict_set(dict_new(),
+            "env", dict_set(dict_get(acc, "env"), name, dict_get(acc, "next"))),
+            "next", dict_get(acc, "next") + 1),
+            "result_id", id)
+        }
+      } else {
+        if (k == "ExprStmt") {
+          dict_set(acc, "result_id", id)
+        } else { acc }
+      }
+    });
+  let env = dict_get(env_acc, "env");
+  let local_count = dict_get(env_acc, "next");
+  let result_id = dict_get(env_acc, "result_id");
+  if (result_id == "") { panic("wasm: main has no return value") }
+  else {
+    // Now emit each let's value + local.set, then push the final return value.
+    let body_bytes = list_reduce(stmts, list_new(), fn(acc, id) {
+      let stmt = ast_get(ast, id);
+      let k = dict_get(stmt, "kind");
+      if (k == "Let") {
+        let val = ast_get(ast, dict_get(stmt, "valueId"));
+        if (is_fn_node(val)) { acc }
+        else {
+          let name = dict_get(stmt, "name");
+          let val_bytes = compile_expr(val, ast, env, fn_table);
+          let set_bytes = list_concat(list_push(list_new(), OP_LOCAL_SET),
+            leb128_u(dict_get(env, name)));
+          list_concat(acc, list_concat(val_bytes, set_bytes))
+        }
+      } else { acc }
+    });
+    // Final: push the value of result_id onto the WASM stack.
+    let result_stmt = ast_get(ast, result_id);
+    let result_bytes = if (dict_get(result_stmt, "kind") == "Let") {
+      // The result is the value of this let's name — just load it.
+      list_concat(list_push(list_new(), OP_LOCAL_GET),
+        leb128_u(dict_get(env, dict_get(result_stmt, "name"))))
+    } else {
+      // ExprStmt — emit the expression directly.
+      compile_expr(ast_get(ast, dict_get(result_stmt, "exprId")), ast, env, fn_table)
+    };
+    // Locals declaration + body + END.
+    let locals_decl = if (local_count == 0) {
+      list_push(list_new(), 0)
+    } else {
+      list_concat(leb128_u(1), list_concat(leb128_u(local_count), list_push(list_new(), TYPE_I32)))
+    };
+    let final = list_push(list_concat(locals_decl, list_concat(body_bytes, result_bytes)), OP_END);
+    list_concat(leb128_u(list_len(final)), final)
+  }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Module assembly — combine all sections into the final WASM binary.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Wrap a section payload with id + length prefix.
+let wrap_section = fn(section_id, payload) {
+  list_concat(
+    list_push(list_new(), section_id),
+    list_concat(leb128_u(list_len(payload)), payload))
+};
+
+/// Type section: one function type per fn (incl. main). For the int-only
+/// backend all fns return i32 and take i32 params, so we emit one type per fn
+/// even if they're identical — keeps the indexing trivial.
+let type_section = fn(ast, fn_table) {
+  let root = ast_get(ast, dict_get(ast, "rootId"));
+  let stmts = dict_get(root, "stmtIds");
+  // For each top-level fn, build its type signature.
+  let fn_types_acc = list_reduce(stmts,
+    dict_set(dict_new(), "items", list_new()),
+    fn(acc, id) {
+      let stmt = ast_get(ast, id);
+      if (dict_get(stmt, "kind") == "Let") {
+        let val = ast_get(ast, dict_get(stmt, "valueId"));
+        if (is_fn_node(val)) {
+          let arity = list_len(dict_get(val, "params"));
+          // Type encoding: 0x60 (func) + vec(params) + vec(results)
+          let params_vec = list_concat(leb128_u(arity),
+            // arity copies of TYPE_I32
+            list_reduce(list_range(0, arity), list_new(), fn(a, _i) { list_push(a, TYPE_I32) }));
+          let results_vec = list_concat(leb128_u(1), list_push(list_new(), TYPE_I32));
+          let type_entry = list_concat(list_push(list_new(), 96),  // 0x60 = func
+            list_concat(params_vec, results_vec));
+          dict_set(acc, "items", list_push(dict_get(acc, "items"), type_entry))
+        } else { acc }
+      } else { acc }
+    });
+  // main: () → i32
+  let main_type = list_concat(list_push(list_new(), 96),
+    list_concat(leb128_u(0), list_concat(leb128_u(1), list_push(list_new(), TYPE_I32))));
+  let all_types = list_push(dict_get(fn_types_acc, "items"), main_type);
+  // Section payload: vec(types)
+  let payload = list_concat(leb128_u(list_len(all_types)),
+    list_reduce(all_types, list_new(), fn(a, t) { list_concat(a, t) }));
+  wrap_section(SECTION_TYPE, payload)
+};
+
+/// Function section: one byte per function giving its type index. We use a
+/// 1:1 mapping (function i has type i).
+let function_section = fn(fn_count) {
+  let indices = list_reduce(list_range(0, fn_count), list_new(),
+    fn(acc, i) { list_concat(acc, leb128_u(i)) });
+  let payload = list_concat(leb128_u(fn_count), indices);
+  wrap_section(SECTION_FUNCTION, payload)
+};
+
+/// Export section: just export "main" as a function. The function index of
+/// main is `fn_count - 1` (it was assigned the last index in collect_fns).
+let export_section = fn(fn_count) {
+  let main_idx = fn_count - 1;
+  let entry = list_concat(name_bytes("main"),
+    list_concat(list_push(list_new(), EXPORT_KIND_FUNC), leb128_u(main_idx)));
+  let payload = list_concat(leb128_u(1), entry);   // vec of 1 export
+  wrap_section(SECTION_EXPORT, payload)
+};
+
+/// Code section: vec of function bodies (each is length-prefixed already).
+let code_section = fn(ast, fn_table) {
+  let root = ast_get(ast, dict_get(ast, "rootId"));
+  let stmts = dict_get(root, "stmtIds");
+  // Emit each fn body in source order.
+  let fn_bodies = list_reduce(stmts, list_new(), fn(acc, id) {
+    let stmt = ast_get(ast, id);
+    if (dict_get(stmt, "kind") == "Let") {
+      let val = ast_get(ast, dict_get(stmt, "valueId"));
+      if (is_fn_node(val)) {
+        list_concat(acc, compile_fn(val, ast, fn_table))
+      } else { acc }
+    } else { acc }
+  });
+  // Then main.
+  let main_body = compile_main(ast, fn_table);
+  let all_bodies = list_concat(fn_bodies, main_body);
+  let body_count = list_len(dict_keys(fn_table));  // fn_table includes main
+  let payload = list_concat(leb128_u(body_count), all_bodies);
+  wrap_section(SECTION_CODE, payload)
+};
+
+/// Top-level entry: build a complete WASM module from an AST bundle.
+/// Output is a list of bytes; the caller writes them to a file or hands them
+/// to WebAssembly.compile.
+let pen_to_wasm = fn(ast) {
+  let fn_info = collect_fns(ast);
+  let fn_table = dict_get(fn_info, "table");
+  let fn_count = dict_get(fn_info, "fn_count");
+
+  // Magic + version: \0asm 01000000
+  let header = list_push(list_push(list_push(list_push(list_push(list_push(list_push(list_push(list_new(),
+    0), 97), 115), 109), 1), 0), 0), 0);
+
+  let s_type = type_section(ast, fn_table);
+  let s_function = function_section(fn_count);
+  let s_export = export_section(fn_count);
+  let s_code = code_section(ast, fn_table);
+
+  list_concat(header,
+    list_concat(s_type,
+      list_concat(s_function,
+        list_concat(s_export, s_code))))
+};

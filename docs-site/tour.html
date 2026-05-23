@@ -21,6 +21,7 @@
     <a href="phase4.html">Phase 4</a>
     <a href="distributed.html">Distributed</a>
     <a href="jit.html">JIT</a>
+    <a href="wasm.html">WASM</a>
     <a href="examples.html">Examples</a>
     <a href="production.html">Production</a>
     <a href="https://github.com/airingursb/Penelope">GitHub →</a>
@@ -319,7 +320,7 @@ Fn bindings:
 wrote fib.penc (14 opcodes, 2 constants, -O2)
 $ pen disasm fib.penc</code></pre>
 
-<p>For an additional speedup beyond the optimizer, switch to the <a href="jit.html">JIT</a>: <code>pen exec --jit fib.penc</code> runs the bytecode through a generated JS function (~2.4× faster than the <code>-O2</code> interpreter on fib(25)).</p>
+<p>For an additional speedup beyond the optimizer, switch to the <a href="jit.html">JIT</a>: <code>pen exec --jit fib.penc</code> runs the bytecode through a generated JS function (~2.4× faster than the <code>-O2</code> interpreter on fib(25)). For an int-only program, <code>pen wasm</code> emits a native <a href="wasm.html">WASM module</a>.</p>
 
 <h2 id="next">What's next</h2>
 
