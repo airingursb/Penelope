@@ -415,6 +415,55 @@ async function cmdSubmit(args: ParsedArgs): Promise<number> {
   return 0;
 }
 
+// Compile a .pen source to a WASM module via the Penelope-implemented backend
+// (std/wasm.pen). The backend handles the int-only subset of Penelope — see
+// std/wasm.pen for the precise scope. Writes a .wasm file alongside the source
+// (or to -o PATH). The output can be loaded by any WebAssembly runtime.
+function cmdWasm(args: ParsedArgs): number {
+  const srcPath = args.positional[1];
+  if (!srcPath) { process.stderr.write('usage: pen wasm <file.pen> [--out FILE]\n'); return 2; }
+  const absSrc = resolve(srcPath);
+  const outPath = typeof args.flags['out'] === 'string'
+    ? resolve(args.flags['out'] as string)
+    : absSrc.replace(/\.pen$/, '.wasm');
+
+  // Driver: invoke the pen-implemented backend on the user's source. Use
+  // read_file (not source embedding) to avoid template-string parsing pitfalls.
+  const tmpDir = join(process.cwd(), `.pen-wasm-${process.pid}`);
+  mkdirSync(tmpDir, { recursive: true });
+  const driverPath = join(tmpDir, 'driver.pen');
+  try {
+    const driver =
+      `import "${resolve('std/parser.pen')}";\n` +
+      `import "${resolve('std/wasm.pen')}";\n` +
+      `let src = read_file(${JSON.stringify(absSrc)});\n` +
+      `print(to_str(pen_to_wasm(pen_parse(pen_tokenize(src)))));\n`;
+    writeFileSync(driverPath, driver);
+    const expanded = loadSource(driverPath);
+    const lines: string[] = [];
+    const origLog = console.log;
+    console.log = (...a: any[]) => { lines.push(a.join(' ')); };
+    try {
+      run(compile(parse(tokenize(expanded))));
+    } finally {
+      console.log = origLog;
+    }
+    if (lines.length === 0) {
+      process.stderr.write('cli error: pen-implemented backend produced no output\n');
+      return 1;
+    }
+    const bytes = JSON.parse(lines[lines.length - 1]) as number[];
+    writeFileSync(outPath, Buffer.from(bytes));
+    process.stdout.write(`wrote ${outPath} (${bytes.length} bytes)\n`);
+    return 0;
+  } catch (e) {
+    process.stderr.write(`cli error: ${(e as Error).message}\n`);
+    return 1;
+  } finally {
+    try { rmSync(tmpDir, { recursive: true, force: true }); } catch {}
+  }
+}
+
 function cmdSelfTest(_args: ParsedArgs): number {
   // Three-stage self-hosting verification:
   //
@@ -928,7 +977,8 @@ export async function main(argv: string[]): Promise<number> {
   if (sub === 'coordinator') return await cmdCoordinator(args);
   if (sub === 'worker') return await cmdWorker(args);
   if (sub === 'submit') return await cmdSubmit(args);
-  process.stderr.write(`usage: penelope <build|exec|run|resume|fork|disasm|bench|inspect|repl|check|profile|fmt|test|doc|graph|new|edit|self-test|coordinator|worker|submit> [-O0|-O1|-O2] [args]\n`);
+  if (sub === 'wasm') return cmdWasm(args);
+  process.stderr.write(`usage: penelope <build|exec|run|resume|fork|disasm|bench|inspect|repl|check|profile|fmt|test|doc|graph|new|edit|self-test|coordinator|worker|submit|wasm> [-O0|-O1|-O2] [args]\n`);
   return 2;
 }
 

@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Penelope — WASM backend (Phase 6.A)</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <h1>Penelope</h1>
+  <p class="tagline">A WASM backend, written in Penelope.</p>
+  <nav>
+    <a href="index.html">Overview</a>
+    <a href="tour.html">Tour</a>
+    <a href="stdlib.html">Stdlib</a>
+    <a href="cli.html">CLI</a>
+    <a href="snapshot.html">Snapshot v3</a>
+    <a href="play.html">Playground</a>
+    <a href="debugger.html">Debugger</a>
+    <a href="phase4.html">Phase 4</a>
+    <a href="distributed.html">Distributed</a>
+    <a href="jit.html">JIT</a>
+    <a href="wasm.html" class="active">WASM</a>
+    <a href="examples.html">Examples</a>
+    <a href="production.html">Production</a>
+    <a href="https://github.com/airingursb/Penelope">GitHub →</a>
+  </nav>
+</header>
+
+<h2>The promise made in Phase 5</h2>
+
+<p>The <a href="https://github.com/airingursb/Penelope#design-choices">Design choices</a> section ended with: <em>"the natural successor to the TS implementation is a Penelope-implemented runtime — not a Rust rewrite that would be obsolete the moment the self-hosted compiler can target WASM or native."</em></p>
+
+<p>Phase 6.A is the first concrete step toward that. <code>std/wasm.pen</code> is a WASM backend written in Penelope. It takes an AST bundle (the kind <code>std/parser.pen</code> produces) and emits a complete WebAssembly module as a list of bytes — valid binary, loadable by any WASM runtime, no external assembler required.</p>
+
+<pre><code>$ pen wasm examples/09-fib.pen --out fib.wasm
+wrote fib.wasm (80 bytes)
+
+$ node -e "
+  const m = await WebAssembly.compile(require('fs').readFileSync('fib.wasm'));
+  const i = await WebAssembly.instantiate(m);
+  console.log('fib(20) =', i.exports.main());
+"
+fib(20) = 6765</code></pre>
+
+<h2>What works</h2>
+
+<table>
+  <tr><th>Feature</th><th>Mapped to WASM</th></tr>
+  <tr><td><code>int</code> values</td><td><code>i32</code></td></tr>
+  <tr><td><code>bool</code> values</td><td><code>i32</code> (0 = false, 1 = true)</td></tr>
+  <tr><td><code>+ - * /</code></td><td><code>i32.add / sub / mul / div_s</code></td></tr>
+  <tr><td><code>&lt; &gt; &lt;= &gt;= == !=</code></td><td><code>i32.lt_s / gt_s / le_s / ge_s / eq / ne</code></td></tr>
+  <tr><td><code>let name = ...</code> in a fn</td><td>WASM local slot (i32)</td></tr>
+  <tr><td><code>if (cond) { ... } else { ... }</code></td><td><code>if (blocktype i32) ... else ... end</code></td></tr>
+  <tr><td>Top-level <code>let f = fn(...) { ... }</code></td><td>One WASM function per binding</td></tr>
+  <tr><td>Recursive + mutually recursive calls</td><td><code>call $fn</code> by index</td></tr>
+  <tr><td>Top-level non-fn lets</td><td>Inlined as locals of an implicit <code>main</code> export</td></tr>
+</table>
+
+<p>Nine end-to-end tests (<code>test/wasm-backend.test.ts</code>) cover trivial literals, arithmetic, if/else, fn calls, recursive fib, factorial, mutual recursion (is_even/is_odd), bool-as-return, and a <code>WebAssembly.validate</code> round-trip. Each test runs the same source through both the pen-built WASM backend and the TS interpreter and asserts the results match.</p>
+
+<h2>What's out of scope (documented honestly)</h2>
+
+<p>Each item below is genuinely a separate, substantial project. None of them are MVP cuts dressed up as "future work" — they were excluded with eyes open because doing them right means a different design conversation.</p>
+
+<table>
+  <tr><th>Excluded</th><th>What it would take</th></tr>
+  <tr><td>Strings</td><td>WASM linear-memory string layout (length-prefixed bytes), string builtins reimplemented against memory, possibly a string-interning table.</td></tr>
+  <tr><td>Lists / dicts</td><td>Heap allocator in WASM memory; layout for variable-length sequences and hash buckets; GC strategy (mark-sweep or refcount).</td></tr>
+  <tr><td>Closures with captures</td><td>Closure-conversion pass: lift captured vars into a heap-allocated environment struct; pass an env pointer alongside the call.</td></tr>
+  <tr><td>First-class fn values</td><td>WASM <code>funcref</code> + <code>table</code> + <code>call_indirect</code>; would also need type indices for every fn signature actually called indirectly.</td></tr>
+  <tr><td>Effects (print / fetch / ...)</td><td>WASM imports for each host function; effect-log side table maintained in linear memory; the host runtime needs to vend the imports.</td></tr>
+  <tr><td>Snapshot / pause / resume</td><td>CPS transform on the AST so every function returns an explicit continuation; pause becomes "save continuation + heap, exit". This is a paper-sized change.</td></tr>
+  <tr><td><code>match</code> expressions</td><td>Pattern-compile-to-WASM equivalent of the current bytecode pattern compiler; or a structured-CFG recovery pass on existing bytecode.</td></tr>
+</table>
+
+<p>If you need any of these, run the program through the regular interpreter or the JIT. The WASM backend is for the hot-path subset where you actually benefit from native execution — recursive math, bit-twiddling, decision trees over ints.</p>
+
+<h2>How it's built</h2>
+
+<p>The backend is one file, <code>std/wasm.pen</code> (~360 lines of Penelope), with no host helpers. It depends only on <code>std/iter.pen</code> (HOFs over lists). Structure:</p>
+
+<ol>
+  <li><strong>LEB128 encoders</strong> — <code>leb128_u</code> for unsigned (sizes, indexes), <code>leb128_s_nonneg</code> for signed-but-non-negative (the <code>i32.const</code> operand; negative literals are desugared to <code>0 - N</code> by the parser, so this restriction is fine).</li>
+  <li><strong>Byte-buffer helpers</strong> — buffers are plain Penelope lists of ints. <code>vec_of_bytes</code>, <code>name_bytes</code>, <code>str_to_bytes</code> + an ASCII lookup table (Penelope has no <code>char_code</code> builtin).</li>
+  <li><strong>Two-pass compilation</strong> — pass 1 collects top-level fn-binding names and assigns indexes (incl. <code>main</code>); pass 2 emits each fn body's WASM instructions.</li>
+  <li><strong>AST → instructions</strong> — <code>compile_expr</code> walks the AST, recurses through <code>BinOp</code> / <code>If</code> / <code>Block</code> / <code>Call</code> / <code>Var</code> / literal nodes, and emits the corresponding WASM opcode bytes.</li>
+  <li><strong>Local-slot allocation</strong> — <code>prebuild_env</code> walks a fn body once to assign every <code>let</code> name a WASM local index. WASM locals are flat, so even let-bindings inside nested <code>if</code> branches share the single per-fn slot pool.</li>
+  <li><strong>Module assembler</strong> — wraps each section in <code>(id, length, payload)</code>, glues them in spec order (type → function → export → code), prepends the <code>\\0asm\\01\\00\\00\\00</code> header.</li>
+</ol>
+
+<h2>Why this matters</h2>
+
+<p>Before Phase 6.A, "Penelope can compile Penelope" meant "to Penelope bytecode that the TS VM runs." That's already a real fixpoint, but the bytecode lives or dies with the TS host.</p>
+
+<p>Phase 6.A breaks the language out of the host. A Penelope program, written by a user, parsed by a Penelope-implemented parser, compiled by a Penelope-implemented WASM backend, runs in any environment that supports WebAssembly — Node, browsers, Cloudflare Workers, Wasmtime, the wasm runtime baked into your phone. The TS implementation is the bootstrap stage; once you have a WASM-targetable self-hosted frontend, the TS code becomes optional, not load-bearing.</p>
+
+<p>The int-only subset is intentionally where the WASM story is cleanest: no GC, no host imports, no continuation transforms. Each excluded feature in the table above is a known path to extend, and each one is its own design conversation that deserves its own pass. The current ~360-line backend is the seed crystal that makes those next steps concrete instead of speculative.</p>
+
+<h2>What's next</h2>
+
+<ul>
+  <li><strong>Phase 6.B (potential)</strong>: WASM target for strings + lists via a small allocator in linear memory. Would let the self-hosted parser/compiler itself emit to WASM and self-host on the WASM runtime.</li>
+  <li><strong>Phase 6.C (potential)</strong>: CPS transform → snapshot/pause in WASM, so the durable-execution model works in WASM environments (Cloudflare Workers being the obvious target).</li>
+</ul>
+
+<footer>
+  © 2026 Airing · <a href="https://github.com/airingursb/Penelope">github.com/airingursb/Penelope</a>
+</footer>
+</body>
+</html>

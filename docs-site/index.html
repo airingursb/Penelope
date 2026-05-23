@@ -21,6 +21,7 @@
     <a href="phase4.html">Phase 4</a>
     <a href="distributed.html">Distributed</a>
     <a href="jit.html">JIT</a>
+    <a href="wasm.html">WASM</a>
     <a href="examples.html">Examples</a>
     <a href="production.html">Production</a>
     <a href="https://github.com/airingursb/Penelope">GitHub →</a>
@@ -88,6 +89,7 @@
   <tr><td><strong>String interpolation</strong></td><td><code>"hello ${name}, you are ${age + 1}"</code> — arbitrary expressions inside <code>${...}</code>, desugared to <code>+</code> chains with <code>to_str</code> wrapping.</td><td><a href="tour.html#interpolation">Tour</a></td></tr>
   <tr><td><strong>Bytecode VM + 5-pass optimizer</strong></td><td>Stack-based, 18 opcodes, TCO. <code>-O0</code>/<code>-O1</code>/<code>-O2</code> for constant folding, DCE, inline caches, function inlining, peephole.</td><td><a href="snapshot.html">Snapshot</a></td></tr>
   <tr><td><strong>JIT</strong></td><td>Bytecode → JS Function at runtime. Op args baked as literals, <code>BIN_OP</code> specialized per operator. ~2.4× faster than the <code>-O2</code> interpreter on fib(25).</td><td><a href="jit.html">JIT</a></td></tr>
+  <tr><td><strong>WASM backend</strong></td><td>Penelope-implemented WASM emitter (<code>std/wasm.pen</code>) compiles the int subset of Penelope to a valid WebAssembly module. Runs anywhere WASM runs — Node, browsers, Cloudflare Workers, Wasmtime.</td><td><a href="wasm.html">WASM</a></td></tr>
   <tr><td><strong>Self-hosting</strong></td><td>Lexer + parser + compiler written in Penelope (<code>std/lexer.pen</code>, <code>parser.pen</code>, <code>compiler.pen</code>). Three-stage fixpoint proof via <code>pen self-test</code>.</td><td><a href="phase4.html">Phase 4</a></td></tr>
   <tr><td><strong>Live editing</strong></td><td><code>pen edit &lt;snap.penz&gt;</code> remaps a paused VMState onto a recompiled program via source-position lookup, with opcode-kind sanity checks.</td><td><a href="phase4.html">Phase 4</a></td></tr>
   <tr><td><strong>Time-travel debugger</strong></td><td>DAP <code>stepBack</code> + <code>reverseContinue</code>. VMState deep-cloned before every advance into a bounded history stack.</td><td><a href="debugger.html">Debugger</a></td></tr>
