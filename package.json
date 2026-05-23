@@ -1,0 +1,21 @@
+{
+  "name": "penelope",
+  "version": "0.0.1",
+  "description": "A language that knows how to wait.",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "penelope": "./bin/penelope",
+    "pen": "./bin/penelope"
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0",
+    "vitest": "^1.6.0",
+    "@types/node": "^20.12.0"
+  }
+}
