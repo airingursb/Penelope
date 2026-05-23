@@ -8,6 +8,7 @@ import { compile } from './compiler.js';
 import { run, freshState } from './vm.js';
 import { writePencFile, readPencFile } from './encoder.js';
 import { runOptimizer, type OLevel } from './optimizer.js';
+import { check as typeCheck, formatErrors as formatTypeErrors } from './typecheck.js';
 import { serialize, sha256, deserialize } from './snapshot.js';
 import type { Snapshot, VMState } from './snapshot.js';
 import type { Value } from './ast.js';
@@ -235,6 +236,23 @@ function cmdBench(args: ParsedArgs): number {
   return 0;
 }
 
+function cmdCheck(args: ParsedArgs): number {
+  const srcPath = args.positional[1];
+  if (!srcPath) { process.stderr.write('usage: pen check <file.pen>\n'); return 2; }
+  let source: string;
+  try { source = readFileSync(resolve(srcPath), 'utf8'); }
+  catch { process.stderr.write(`cli error: cannot read source: ${srcPath}\n`); return 3; }
+  const ast = parse(tokenize(source));
+  const errs = typeCheck(ast);
+  if (errs.length === 0) {
+    process.stdout.write(`${srcPath}: ok (no type errors)\n`);
+    return 0;
+  }
+  process.stderr.write(formatTypeErrors(errs) + '\n');
+  process.stderr.write(`${errs.length} type error${errs.length === 1 ? '' : 's'}\n`);
+  return 1;
+}
+
 async function cmdRepl(_args: ParsedArgs): Promise<number> {
   const readline = await import('node:readline');
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout, prompt: 'pen> ' });
@@ -356,7 +374,8 @@ export async function main(argv: string[]): Promise<number> {
   if (sub === 'bench')   return cmdBench(args);
   if (sub === 'inspect') return cmdInspect(args);
   if (sub === 'repl')    return await cmdRepl(args);
-  process.stderr.write(`usage: penelope <build|exec|run|resume|fork|disasm|bench|inspect|repl> [-O0|-O1|-O2] [args]\n`);
+  if (sub === 'check')   return cmdCheck(args);
+  process.stderr.write(`usage: penelope <build|exec|run|resume|fork|disasm|bench|inspect|repl|check> [-O0|-O1|-O2] [args]\n`);
   return 2;
 }
 
