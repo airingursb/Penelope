@@ -6,7 +6,7 @@
 // No closures, no Maps, no symbols, no class instances.
 
 import type { ASTBundle, ASTNode, BinOp, NodeId, ScopeId, Value } from './ast.js';
-import { EFFECT_NAMES as EFFECT_NAMES_SET, categoryOf, performWriteFile, performNetFetch } from './effects.js';
+import { EFFECT_NAMES as EFFECT_NAMES_SET, categoryOf, performWriteFile, performNetFetch, performNow } from './effects.js';
 import type { EffectName } from './effects.js';
 
 // ============================================================
@@ -50,6 +50,7 @@ export type State = {
   currentScopeId: ScopeId;
   nextScopeIdCounter: number;
   effects: EffectEntry[];  // Phase 2: effect log
+  timeOverride?: number | null;  // optional time override for now()
 };
 
 export type StepResult =
@@ -445,6 +446,21 @@ function applyEffect(
     return cont({
       ...state, control: rest,
       valueStack: [...newStack, { tag: 'str' as const, v: body }],
+      effects: [...state.effects, entry],
+    });
+  }
+
+  if (name === 'now') {
+    if (argCount !== 0) return { kind: 'error', message: `now expects 0 args, got ${argCount}` };
+    const t = performNow(state.timeOverride ?? null);
+    const entry = {
+      nodeId, invocationCount, effect: 'now' as const,
+      recordedValue: { tag: 'int' as const, v: t },
+      status: 'committed' as const,
+    };
+    return cont({
+      ...state, control: rest,
+      valueStack: [...newStack, { tag: 'int' as const, v: t }],
       effects: [...state.effects, entry],
     });
   }

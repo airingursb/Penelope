@@ -10,6 +10,10 @@ export function performWriteFile(path: string, body: string): void {
   writeFileSync(path, body, 'utf8');
 }
 
+export function performNow(timeOverride: number | null = null): number {
+  return timeOverride !== null ? timeOverride : Date.now();
+}
+
 export function performNetFetch(url: string): string {
   const r = spawnSync('curl', ['-sS', '--fail', '-A', 'Penelope/0.2', url], { encoding: 'utf8' });
   if (r.status !== 0) {

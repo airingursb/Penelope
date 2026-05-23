@@ -97,7 +97,11 @@ function cmdRun(args: ParsedArgs): number {
     return 1;
   }
 
-  const result = loop(initialState(ast.rootId), ast);
+  let state = initialState(ast.rootId);
+  if (typeof args.flags.time === 'string') {
+    state = { ...state, timeOverride: Number(args.flags.time) };
+  }
+  const result = loop(state, ast);
 
   if (result.kind === 'done') {
     return 0;
@@ -173,10 +177,13 @@ function cmdResume(args: ParsedArgs): number {
   const ast = parse(tokenize(dr.source));
 
   // Inject resume value onto valueStack, then continue stepping.
-  const resumedState: State = {
+  let resumedState: State = {
     ...dr.snap.state,
     valueStack: [...dr.snap.state.valueStack, v],
   };
+  if (typeof args.flags.time === 'string') {
+    resumedState = { ...resumedState, timeOverride: Number(args.flags.time) };
+  }
   const result = loop(resumedState, ast);
 
   if (result.kind === 'done') return 0;

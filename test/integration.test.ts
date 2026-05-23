@@ -152,3 +152,29 @@ test('D3: two distinct net_fetch call sites get separate log entries', () => {
 
   cleanup(source);
 }, 15000);
+
+test('E1: now() records first-call value and replays it', () => {
+  const source = resolve('/tmp/penelope-now.pen');
+  const snap = resolve('/tmp/penelope-now.penz');
+  cleanup(source); cleanup(snap);
+  writeFileSync(source, 'let t = now(); let _ = pause; print(to_str(t));');
+
+  spawnSync(PEN, ['run', source, '--time', '999'], { encoding: 'utf8' });
+
+  const r2 = spawnSync(PEN, ['resume', snap, 'true'], { encoding: 'utf8' });
+  expect(r2.stdout.trim()).toBe('999');
+
+  cleanup(source); cleanup(snap);
+});
+
+test('E3: --time MS overrides now() on fresh execution', () => {
+  const source = resolve('/tmp/penelope-now-mock.pen');
+  cleanup(source);
+  writeFileSync(source, 'print(to_str(now()));');
+
+  const r = spawnSync(PEN, ['run', source, '--time', '12345'], { encoding: 'utf8' });
+  expect(r.status).toBe(0);
+  expect(r.stdout.trim()).toBe('12345');
+
+  cleanup(source);
+});
