@@ -143,25 +143,33 @@ let EXPORT_KIND_FUNC = 0;
 //
 // Host imports, in order:
 //   0  js_print(ptr: i32, len: i32) -> ()
-let IMPORT_FN_COUNT = 1;
-let IMPORT_JS_PRINT = 0;
+//   1  js_now() -> i32                            (returns ms-epoch)
+//   2  js_random_int(lo: i32, hi: i32) -> i32
+let IMPORT_FN_COUNT = 3;
+let IMPORT_JS_PRINT      = 0;
+let IMPORT_JS_NOW        = 1;
+let IMPORT_JS_RANDOM_INT = 2;
 
 // Helper functions (indexes shown are ABSOLUTE — they already include the
 // IMPORT_FN_COUNT offset, since user code calls helpers via the global fn idx).
-let HELPER_FN_COUNT = 13;
-let H_ALLOC              = 1;
-let H_MAKE_INT           = 2;
-let H_MAKE_BOOL          = 3;
-let H_MAKE_UNIT          = 4;
-let H_UNWRAP_INT         = 5;
-let H_UNWRAP_BOOL        = 6;
-let H_MAKE_STR_FROM_DATA = 7;
-let H_STR_CONCAT         = 8;
-let H_STR_LENGTH         = 9;
-let H_INT_TO_STR         = 10;
-let H_TO_STR             = 11;
-let H_PLUS_DISPATCH      = 12;
-let H_PRINT              = 13;
+let HELPER_FN_COUNT = 15;
+// (Indexes 16-17 reserved for H_NOW / H_RANDOM_INT helpers; they share the
+// IMPORT_FN_COUNT+HELPER_FN_COUNT shifting too.)
+let H_ALLOC              = 3;
+let H_MAKE_INT           = 4;
+let H_MAKE_BOOL          = 5;
+let H_MAKE_UNIT          = 6;
+let H_UNWRAP_INT         = 7;
+let H_UNWRAP_BOOL        = 8;
+let H_MAKE_STR_FROM_DATA = 9;
+let H_STR_CONCAT         = 10;
+let H_STR_LENGTH         = 11;
+let H_INT_TO_STR         = 12;
+let H_TO_STR             = 13;
+let H_PLUS_DISPATCH      = 14;
+let H_PRINT              = 15;
+let H_NOW                = 16;
+let H_RANDOM_INT         = 17;
 
 // Type indices we reserve up front (one per distinct fn signature used by
 // helpers + imports).
@@ -307,6 +315,8 @@ let builtin_helper_for = fn(name) {
     "to_str" => H_TO_STR,
     "str_length" => H_STR_LENGTH,
     "print" => H_PRINT,
+    "now" => H_NOW,
+    "random_int" => H_RANDOM_INT,
     _ => 0 - 1,
   }
 };
@@ -1188,6 +1198,29 @@ let helper_plus_dispatch_body = fn() {
   make_code_entry(0, body)
 };
 
+/// now() -> i32 (int Value)  — calls js_now import, wraps result as int Value.
+let helper_now_body = fn() {
+  let body = list_new();
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_CALL), leb128_u(IMPORT_JS_NOW)));
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_CALL), leb128_u(H_MAKE_INT)));
+  make_code_entry(0, body)
+};
+
+/// random_int(lo: i32, hi: i32) -> i32 (int Value)
+/// Takes 2 int Values, unwraps both, calls js_random_int, wraps result.
+let helper_random_int_body = fn() {
+  let body = list_new();
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 0);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_CALL), leb128_u(H_UNWRAP_INT)));
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 1);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_CALL), leb128_u(H_UNWRAP_INT)));
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_CALL), leb128_u(IMPORT_JS_RANDOM_INT)));
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_CALL), leb128_u(H_MAKE_INT)));
+  make_code_entry(0, body)
+};
+
 /// print(s: i32) -> i32 (unit)
 /// Extracts ptr+len from a STR Value, calls the imported js_print, returns unit.
 let helper_print_body = fn() {
@@ -1297,6 +1330,8 @@ let function_section = fn(ast, fn_count) {
   let helper_indexes = list_push(helper_indexes, TYPE_IDX_1_TO_I32);   // to_str
   let helper_indexes = list_push(helper_indexes, TYPE_IDX_2_TO_I32);   // plus_dispatch
   let helper_indexes = list_push(helper_indexes, TYPE_IDX_1_TO_I32);   // print (returns unit Value ptr)
+  let helper_indexes = list_push(helper_indexes, TYPE_IDX_0_TO_I32);   // now (returns int Value ptr)
+  let helper_indexes = list_push(helper_indexes, TYPE_IDX_2_TO_I32);   // random_int
   // User fns, in source order — track how many high-arity extras we've used.
   let user_acc = list_reduce(stmts, dict_set(dict_set(dict_new(),
     "indexes", list_new()), "extras_used", 0), fn(acc, id) {
@@ -1324,14 +1359,22 @@ let function_section = fn(ast, fn_count) {
 };
 
 /// Import section: declare host imports (Phase 6.G effects).
-/// Currently: js_print (module "js", name "print", type 3 = (i32,i32) -> ()).
-let import_section = fn() {
+///   js.print      : (ptr:i32, len:i32) -> ()    [type 3]
+///   js.now        : () -> i32                    [type 0]
+///   js.random_int : (lo:i32, hi:i32) -> i32      [type 2]
+let make_import = fn(modname, fnname, type_idx) {
   let entry = list_new();
-  let entry = list_concat(entry, name_bytes("js"));            // module name
-  let entry = list_concat(entry, name_bytes("print"));         // import name
-  let entry = list_push(entry, 0);                              // kind 0 = func
-  let entry = list_concat(entry, leb128_u(TYPE_IDX_2_TO_VOID)); // type index
-  let payload = list_concat(leb128_u(1), entry);
+  let entry = list_concat(entry, name_bytes(modname));
+  let entry = list_concat(entry, name_bytes(fnname));
+  let entry = list_push(entry, 0);                   // kind 0 = func
+  list_concat(entry, leb128_u(type_idx))
+};
+let import_section = fn() {
+  let imports = list_new();
+  let imports = list_concat(imports, make_import("js", "print", TYPE_IDX_2_TO_VOID));
+  let imports = list_concat(imports, make_import("js", "now", TYPE_IDX_0_TO_I32));
+  let imports = list_concat(imports, make_import("js", "random_int", TYPE_IDX_2_TO_I32));
+  let payload = list_concat(leb128_u(IMPORT_FN_COUNT), imports);
   wrap_section(SECTION_IMPORT, payload)
 };
 
@@ -1383,6 +1426,8 @@ let code_section = fn(ast, fn_table) {
   let helpers = list_concat(helpers, helper_to_str_body());
   let helpers = list_concat(helpers, helper_plus_dispatch_body());
   let helpers = list_concat(helpers, helper_print_body());
+  let helpers = list_concat(helpers, helper_now_body());
+  let helpers = list_concat(helpers, helper_random_int_body());
 
   let root = ast_get(ast, dict_get(ast, "rootId"));
   let stmts = dict_get(root, "stmtIds");

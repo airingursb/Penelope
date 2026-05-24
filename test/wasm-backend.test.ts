@@ -75,9 +75,13 @@ function tsRunForBinding(source: string, bindingName: string): number {
 }
 
 // Instantiate a WASM module and call its exported "main", return the int result.
-// The host-provided js.print captures output lines for tests that exercise print().
+// Host imports provided:
+//   js.print(ptr, len)        — captures output lines if capturedPrint given
+//   js.now()                  — fixed test time (1_700_000_000_000) for determinism
+//   js.random_int(lo, hi)     — fixed seed sequence for determinism
 async function runWasmMain(bytes: Uint8Array, capturedPrint?: string[]): Promise<number> {
   const mod = await WebAssembly.compile(bytes);
+  let randomCount = 0;
   const inst: WebAssembly.Instance = await WebAssembly.instantiate(mod, {
     js: {
       print: (ptr: number, len: number): void => {
@@ -85,6 +89,11 @@ async function runWasmMain(bytes: Uint8Array, capturedPrint?: string[]): Promise
         const s = new TextDecoder('utf-8').decode(mem.slice(ptr, ptr + len));
         if (capturedPrint) capturedPrint.push(s);
         else process.stdout.write(s + '\n');
+      },
+      now: (): number => 1_700_000_000,   // a fixed seconds-epoch value for test determinism
+      random_int: (lo: number, hi: number): number => {
+        randomCount++;
+        return lo + (randomCount % Math.max(1, hi - lo + 1));
       },
     },
   });
@@ -265,11 +274,33 @@ test('wasm backend (6.G): print inside a fn', async () => {
   expect(captured).toEqual(['hello, world', 'hello, penelope']);
 });
 
+test('wasm backend (6.G): now() returns int from host', async () => {
+  const source = 'let t = now(); t;';
+  const bytes = await penEmitWasm(source);
+  expect(await runWasmMain(bytes)).toBe(1_700_000_000);
+});
+
+test('wasm backend (6.G): random_int with fixed seed', async () => {
+  const source = 'let r = random_int(10, 19); r;';
+  const bytes = await penEmitWasm(source);
+  expect(await runWasmMain(bytes)).toBe(11);   // 10 + (1 % 10) = 11
+});
+
+test('wasm backend (6.G): print + now compose', async () => {
+  const source = 'print("t=" + to_str(now())); 0;';
+  const captured: string[] = [];
+  const bytes = await penEmitWasm(source);
+  await runWasmMain(bytes, captured);
+  expect(captured).toEqual(['t=1700000000']);
+});
+
 test('wasm backend (6.C): memory export — can decode string bytes from heap', async () => {
   const source = 'let s = "hello"; let r = str_length(s); r;';
   const bytes = await penEmitWasm(source);
   const mod = await WebAssembly.compile(bytes);
-  const inst = await WebAssembly.instantiate(mod, { js: { print: () => {} } });
+  const inst = await WebAssembly.instantiate(mod, {
+    js: { print: () => {}, now: () => 0, random_int: (lo: number) => lo },
+  });
   expect(inst.exports.memory).toBeInstanceOf(WebAssembly.Memory);
   (inst.exports.main as () => number)();
   const mem = new Uint8Array((inst.exports.memory as WebAssembly.Memory).buffer);
