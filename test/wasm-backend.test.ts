@@ -686,6 +686,94 @@ test('wasm backend (6.F tier-2): or + str literals combined', async () => {
   expect(await runWasmMain(bytes)).toBe(2);
 });
 
+// ── Phase 6.C tier 2: more str_* + char_is_* ─────────────────────────────────
+
+test('wasm backend (6.C tier-2): str_at returns 1-char string', async () => {
+  const source = 'let r = str_length(str_at("hello", 1)); r;';
+  const bytes = await penEmitWasm(source);
+  expect(await runWasmMain(bytes)).toBe(1);
+});
+
+test('wasm backend (6.C tier-2): str_slice picks substring', async () => {
+  const source = 'let r = str_length(str_slice("hello, world!", 7, 12)); r;';
+  const bytes = await penEmitWasm(source);
+  // "world" = 5 chars
+  expect(await runWasmMain(bytes)).toBe(5);
+});
+
+test('wasm backend (6.C tier-2): str_starts_with true + false', async () => {
+  const source = `
+    let a = if (str_starts_with("hello", "hel")) { 100 } else { 0 };
+    let b = if (str_starts_with("hello", "xyz")) { 10 } else { 0 };
+    let c = if (str_starts_with("hi", "hello")) { 1 } else { 0 };
+    let r = a + b + c;
+    r;
+  `;
+  const bytes = await penEmitWasm(source);
+  expect(await runWasmMain(bytes)).toBe(100);   // only first matches
+});
+
+test('wasm backend (6.C tier-2): str_ends_with', async () => {
+  const source = `
+    let a = if (str_ends_with("hello", "llo")) { 100 } else { 0 };
+    let b = if (str_ends_with("hello", "world")) { 10 } else { 0 };
+    let c = if (str_ends_with("hi", "ohi")) { 1 } else { 0 };
+    let r = a + b + c;
+    r;
+  `;
+  const bytes = await penEmitWasm(source);
+  expect(await runWasmMain(bytes)).toBe(100);
+});
+
+test('wasm backend (6.C tier-2): char_is_digit', async () => {
+  const source = `
+    let a = if (char_is_digit("5")) { 100 } else { 0 };
+    let b = if (char_is_digit("a")) { 10 } else { 0 };
+    let r = a + b;
+    r;
+  `;
+  const bytes = await penEmitWasm(source);
+  expect(await runWasmMain(bytes)).toBe(100);
+});
+
+test('wasm backend (6.C tier-2): char_is_alpha', async () => {
+  const source = `
+    let a = if (char_is_alpha("z")) { 100 } else { 0 };
+    let b = if (char_is_alpha("Q")) { 200 } else { 0 };
+    let c = if (char_is_alpha("_")) { 50 } else { 0 };
+    let d = if (char_is_alpha("5")) { 1 } else { 0 };
+    let r = a + b + c + d;
+    r;
+  `;
+  const bytes = await penEmitWasm(source);
+  expect(await runWasmMain(bytes)).toBe(350);
+});
+
+test('wasm backend (6.C tier-2): char_is_alphanum', async () => {
+  const source = `
+    let r = if (char_is_alphanum("5")) { 1 } else { 0 };
+    let r2 = if (char_is_alphanum("a")) { 10 } else { 0 };
+    let r3 = if (char_is_alphanum(" ")) { 100 } else { 0 };
+    let total = r + r2 + r3;
+    total;
+  `;
+  const bytes = await penEmitWasm(source);
+  expect(await runWasmMain(bytes)).toBe(11);
+});
+
+test('wasm backend (6.C tier-2): char_is_whitespace', async () => {
+  const source = `
+    let a = if (char_is_whitespace(" ")) { 1 } else { 0 };
+    let b = if (char_is_whitespace("\\t")) { 10 } else { 0 };
+    let c = if (char_is_whitespace("\\n")) { 100 } else { 0 };
+    let d = if (char_is_whitespace("x")) { 1000 } else { 0 };
+    let r = a + b + c + d;
+    r;
+  `;
+  const bytes = await penEmitWasm(source);
+  expect(await runWasmMain(bytes)).toBe(111);
+});
+
 test('wasm backend (6.C): memory export — can decode string bytes from heap', async () => {
   const source = 'let s = "hello"; let r = str_length(s); r;';
   const bytes = await penEmitWasm(source);

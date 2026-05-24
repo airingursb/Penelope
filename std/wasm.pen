@@ -120,6 +120,8 @@ let OP_I32_SUB = 107;
 let OP_I32_MUL = 108;
 let OP_I32_DIV_S = 109;
 let OP_I32_REM_S = 111;     // 0x6F
+let OP_I32_AND = 113;       // 0x71  (bitwise; same as logical for 0/1 values)
+let OP_I32_OR = 114;        // 0x72
 let OP_LOOP_BR = 12;        // br (already OP_BR but keep alias for clarity in loops)
 
 let TYPE_I32 = 127;
@@ -152,7 +154,7 @@ let IMPORT_JS_RANDOM_INT = 2;
 
 // Helper functions (indexes shown are ABSOLUTE — they already include the
 // IMPORT_FN_COUNT offset, since user code calls helpers via the global fn idx).
-let HELPER_FN_COUNT = 30;
+let HELPER_FN_COUNT = 38;
 let H_ALLOC               = 3;
 let H_MAKE_INT            = 4;
 let H_MAKE_BOOL           = 5;
@@ -183,6 +185,14 @@ let H_DICT_GET            = 29;
 let H_DICT_HAS            = 30;
 let H_DICT_SET            = 31;
 let H_DICT_KEYS           = 32;
+let H_STR_AT              = 33;
+let H_STR_SLICE           = 34;
+let H_STR_STARTS_WITH     = 35;
+let H_STR_ENDS_WITH       = 36;
+let H_CHAR_IS_DIGIT       = 37;
+let H_CHAR_IS_ALPHA       = 38;
+let H_CHAR_IS_ALPHANUM    = 39;
+let H_CHAR_IS_WHITESPACE  = 40;
 
 // Type indices we reserve up front (one per distinct fn signature used by
 // helpers + imports).
@@ -342,6 +352,14 @@ let builtin_helper_for = fn(name) {
     "dict_has" => H_DICT_HAS,
     "dict_set" => H_DICT_SET,
     "dict_keys" => H_DICT_KEYS,
+    "str_at" => H_STR_AT,
+    "str_slice" => H_STR_SLICE,
+    "str_starts_with" => H_STR_STARTS_WITH,
+    "str_ends_with" => H_STR_ENDS_WITH,
+    "char_is_digit" => H_CHAR_IS_DIGIT,
+    "char_is_alpha" => H_CHAR_IS_ALPHA,
+    "char_is_alphanum" => H_CHAR_IS_ALPHANUM,
+    "char_is_whitespace" => H_CHAR_IS_WHITESPACE,
     _ => 0 - 1,
   }
 };
@@ -2494,6 +2512,477 @@ let helper_dict_keys_body = fn() {
   make_code_entry(5, body)
 };
 
+// ─────────────────────────────────────────────────────────────────────────────
+// More string helpers (Phase 6.C tier 2).
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// str_at(s, i_val) -> STR Value (1 character).
+/// Returns a freshly-allocated single-char string. Local 2 = new_block.
+let helper_str_at_body = fn() {
+  let body = list_new();
+  // new_block = alloc(5)
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(5)));
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_CALL), leb128_u(H_ALLOC)));
+  let body = list_push(body, OP_LOCAL_SET);
+  let body = list_push(body, 2);
+  // store(new_block, 1)
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 2);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(1)));
+  let body = list_push(body, OP_I32_STORE);
+  let body = list_concat(body, memarg(2, 0));
+  // store8(new_block+4, load8(load(s+4) + 4 + unwrap_int(i_val)))
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 2);
+  // value: load_byte
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 0);
+  let body = list_push(body, OP_I32_LOAD);
+  let body = list_concat(body, memarg(2, 4));
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(4)));
+  let body = list_push(body, OP_I32_ADD);
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 1);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_CALL), leb128_u(H_UNWRAP_INT)));
+  let body = list_push(body, OP_I32_ADD);
+  let body = list_push(body, OP_I32_LOAD8_U);
+  let body = list_concat(body, memarg(0, 0));
+  let body = list_push(body, OP_I32_STORE8);
+  let body = list_concat(body, memarg(0, 4));
+  // return make_str_from_data(new_block)
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 2);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_CALL), leb128_u(H_MAKE_STR_FROM_DATA)));
+  make_code_entry(1, body)
+};
+
+/// str_slice(s, start_val, end_val) -> STR over [start, end).
+/// Locals: d=3, start=4, new_len=5, new_block=6
+let helper_str_slice_body = fn() {
+  let body = list_new();
+  // d = load(s+4)
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 0);
+  let body = list_push(body, OP_I32_LOAD);
+  let body = list_concat(body, memarg(2, 4));
+  let body = list_push(body, OP_LOCAL_SET);
+  let body = list_push(body, 3);
+  // start = unwrap_int(start_val)
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 1);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_CALL), leb128_u(H_UNWRAP_INT)));
+  let body = list_push(body, OP_LOCAL_SET);
+  let body = list_push(body, 4);
+  // new_len = unwrap_int(end_val) - start
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 2);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_CALL), leb128_u(H_UNWRAP_INT)));
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 4);
+  let body = list_push(body, OP_I32_SUB);
+  let body = list_push(body, OP_LOCAL_SET);
+  let body = list_push(body, 5);
+  // new_block = alloc(4 + new_len)
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(4)));
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 5);
+  let body = list_push(body, OP_I32_ADD);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_CALL), leb128_u(H_ALLOC)));
+  let body = list_push(body, OP_LOCAL_SET);
+  let body = list_push(body, 6);
+  // store(new_block, new_len)
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 6);
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 5);
+  let body = list_push(body, OP_I32_STORE);
+  let body = list_concat(body, memarg(2, 0));
+  // memory.copy(new_block + 4, d + 4 + start, new_len)
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 6);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(4)));
+  let body = list_push(body, OP_I32_ADD);
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 3);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(4)));
+  let body = list_push(body, OP_I32_ADD);
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 4);
+  let body = list_push(body, OP_I32_ADD);
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 5);
+  let body = list_concat(body, WASM_MEMORY_COPY());
+  // return make_str_from_data(new_block)
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 6);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_CALL), leb128_u(H_MAKE_STR_FROM_DATA)));
+  make_code_entry(4, body)
+};
+
+/// Shared helper: str_prefix_check(s, p, offset) returns bool Value.
+/// Used by both str_starts_with (offset=0) and str_ends_with (offset=l_s - l_p).
+/// Inlined twice rather than a separate fn — keeps it simple.
+
+/// str_starts_with(s, p) -> bool Value
+/// Locals: d_s=2, d_p=3, l_s=4, l_p=5, i=6
+let helper_str_starts_with_body = fn() {
+  let body = list_new();
+  // d_s, d_p
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 0);
+  let body = list_push(body, OP_I32_LOAD);
+  let body = list_concat(body, memarg(2, 4));
+  let body = list_push(body, OP_LOCAL_SET);
+  let body = list_push(body, 2);
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 1);
+  let body = list_push(body, OP_I32_LOAD);
+  let body = list_concat(body, memarg(2, 4));
+  let body = list_push(body, OP_LOCAL_SET);
+  let body = list_push(body, 3);
+  // l_s, l_p
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 2);
+  let body = list_push(body, OP_I32_LOAD);
+  let body = list_concat(body, memarg(2, 0));
+  let body = list_push(body, OP_LOCAL_SET);
+  let body = list_push(body, 4);
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 3);
+  let body = list_push(body, OP_I32_LOAD);
+  let body = list_concat(body, memarg(2, 0));
+  let body = list_push(body, OP_LOCAL_SET);
+  let body = list_push(body, 5);
+  // if l_p > l_s: return make_bool(0)
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 5);
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 4);
+  let body = list_push(body, OP_I32_GT_S);
+  let body = list_push(body, OP_IF);
+  let body = list_push(body, BLOCKTYPE_VOID);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(0)));
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_CALL), leb128_u(H_MAKE_BOOL)));
+  let body = list_push(body, OP_RETURN);
+  let body = list_push(body, OP_END);
+  // i = 0; loop comparing bytes d_s[4+i] vs d_p[4+i]
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(0)));
+  let body = list_push(body, OP_LOCAL_SET);
+  let body = list_push(body, 6);
+  let body = list_push(body, OP_BLOCK);
+  let body = list_push(body, BLOCKTYPE_VOID);
+  let body = list_push(body, OP_LOOP);
+  let body = list_push(body, BLOCKTYPE_VOID);
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 6);
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 5);
+  let body = list_push(body, OP_I32_GE_S);
+  let body = list_push(body, OP_BR_IF);
+  let body = list_concat(body, leb128_u(1));
+  // load_byte(d_s + 4 + i)
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 2);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(4)));
+  let body = list_push(body, OP_I32_ADD);
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 6);
+  let body = list_push(body, OP_I32_ADD);
+  let body = list_push(body, OP_I32_LOAD8_U);
+  let body = list_concat(body, memarg(0, 0));
+  // load_byte(d_p + 4 + i)
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 3);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(4)));
+  let body = list_push(body, OP_I32_ADD);
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 6);
+  let body = list_push(body, OP_I32_ADD);
+  let body = list_push(body, OP_I32_LOAD8_U);
+  let body = list_concat(body, memarg(0, 0));
+  let body = list_push(body, OP_I32_NE);
+  let body = list_push(body, OP_IF);
+  let body = list_push(body, BLOCKTYPE_VOID);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(0)));
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_CALL), leb128_u(H_MAKE_BOOL)));
+  let body = list_push(body, OP_RETURN);
+  let body = list_push(body, OP_END);
+  // i++
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 6);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(1)));
+  let body = list_push(body, OP_I32_ADD);
+  let body = list_push(body, OP_LOCAL_SET);
+  let body = list_push(body, 6);
+  let body = list_push(body, OP_BR);
+  let body = list_concat(body, leb128_u(0));
+  let body = list_push(body, OP_END);
+  let body = list_push(body, OP_END);
+  // return make_bool(1)
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(1)));
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_CALL), leb128_u(H_MAKE_BOOL)));
+  make_code_entry(5, body)
+};
+
+/// str_ends_with(s, p) -> bool Value
+/// Same as starts_with but byte offsets are (l_s - l_p) into s.
+/// Locals: d_s=2, d_p=3, l_s=4, l_p=5, offset=6, i=7
+let helper_str_ends_with_body = fn() {
+  let body = list_new();
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 0);
+  let body = list_push(body, OP_I32_LOAD);
+  let body = list_concat(body, memarg(2, 4));
+  let body = list_push(body, OP_LOCAL_SET);
+  let body = list_push(body, 2);
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 1);
+  let body = list_push(body, OP_I32_LOAD);
+  let body = list_concat(body, memarg(2, 4));
+  let body = list_push(body, OP_LOCAL_SET);
+  let body = list_push(body, 3);
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 2);
+  let body = list_push(body, OP_I32_LOAD);
+  let body = list_concat(body, memarg(2, 0));
+  let body = list_push(body, OP_LOCAL_SET);
+  let body = list_push(body, 4);
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 3);
+  let body = list_push(body, OP_I32_LOAD);
+  let body = list_concat(body, memarg(2, 0));
+  let body = list_push(body, OP_LOCAL_SET);
+  let body = list_push(body, 5);
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 5);
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 4);
+  let body = list_push(body, OP_I32_GT_S);
+  let body = list_push(body, OP_IF);
+  let body = list_push(body, BLOCKTYPE_VOID);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(0)));
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_CALL), leb128_u(H_MAKE_BOOL)));
+  let body = list_push(body, OP_RETURN);
+  let body = list_push(body, OP_END);
+  // offset = l_s - l_p
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 4);
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 5);
+  let body = list_push(body, OP_I32_SUB);
+  let body = list_push(body, OP_LOCAL_SET);
+  let body = list_push(body, 6);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(0)));
+  let body = list_push(body, OP_LOCAL_SET);
+  let body = list_push(body, 7);
+  let body = list_push(body, OP_BLOCK);
+  let body = list_push(body, BLOCKTYPE_VOID);
+  let body = list_push(body, OP_LOOP);
+  let body = list_push(body, BLOCKTYPE_VOID);
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 7);
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 5);
+  let body = list_push(body, OP_I32_GE_S);
+  let body = list_push(body, OP_BR_IF);
+  let body = list_concat(body, leb128_u(1));
+  // d_s[4 + offset + i]
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 2);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(4)));
+  let body = list_push(body, OP_I32_ADD);
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 6);
+  let body = list_push(body, OP_I32_ADD);
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 7);
+  let body = list_push(body, OP_I32_ADD);
+  let body = list_push(body, OP_I32_LOAD8_U);
+  let body = list_concat(body, memarg(0, 0));
+  // d_p[4 + i]
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 3);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(4)));
+  let body = list_push(body, OP_I32_ADD);
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 7);
+  let body = list_push(body, OP_I32_ADD);
+  let body = list_push(body, OP_I32_LOAD8_U);
+  let body = list_concat(body, memarg(0, 0));
+  let body = list_push(body, OP_I32_NE);
+  let body = list_push(body, OP_IF);
+  let body = list_push(body, BLOCKTYPE_VOID);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(0)));
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_CALL), leb128_u(H_MAKE_BOOL)));
+  let body = list_push(body, OP_RETURN);
+  let body = list_push(body, OP_END);
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 7);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(1)));
+  let body = list_push(body, OP_I32_ADD);
+  let body = list_push(body, OP_LOCAL_SET);
+  let body = list_push(body, 7);
+  let body = list_push(body, OP_BR);
+  let body = list_concat(body, leb128_u(0));
+  let body = list_push(body, OP_END);
+  let body = list_push(body, OP_END);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(1)));
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_CALL), leb128_u(H_MAKE_BOOL)));
+  make_code_entry(6, body)
+};
+
+/// Shared logic: load first byte of a single-char STR Value into a local.
+/// Used by all char_is_* helpers. Result on stack.
+let load_first_char_byte = fn() {
+  let body = list_new();
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 0);
+  let body = list_push(body, OP_I32_LOAD);
+  let body = list_concat(body, memarg(2, 4));      // block_ptr
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(4)));
+  let body = list_push(body, OP_I32_ADD);          // block_ptr + 4
+  let body = list_push(body, OP_I32_LOAD8_U);
+  list_concat(body, memarg(0, 0))
+};
+
+/// char_is_digit(c) -> bool Value: byte in '0'..'9'
+let helper_char_is_digit_body = fn() {
+  let body = list_new();
+  let body = list_concat(body, load_first_char_byte());
+  let body = list_push(body, OP_LOCAL_SET);
+  let body = list_push(body, 1);
+  // (byte >= 48) AND (byte <= 57)
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 1);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(48)));
+  let body = list_push(body, OP_I32_GE_S);
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 1);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(57)));
+  let body = list_push(body, OP_I32_LE_S);
+  let body = list_push(body, OP_I32_AND);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_CALL), leb128_u(H_MAKE_BOOL)));
+  make_code_entry(1, body)
+};
+
+/// char_is_alpha(c) -> bool Value: 'a'..'z' or 'A'..'Z' or '_'
+let helper_char_is_alpha_body = fn() {
+  let body = list_new();
+  let body = list_concat(body, load_first_char_byte());
+  let body = list_push(body, OP_LOCAL_SET);
+  let body = list_push(body, 1);
+  // (b >= 97 AND b <= 122)
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 1);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(97)));
+  let body = list_push(body, OP_I32_GE_S);
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 1);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(122)));
+  let body = list_push(body, OP_I32_LE_S);
+  let body = list_push(body, OP_I32_AND);
+  // OR (b >= 65 AND b <= 90)
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 1);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(65)));
+  let body = list_push(body, OP_I32_GE_S);
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 1);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(90)));
+  let body = list_push(body, OP_I32_LE_S);
+  let body = list_push(body, OP_I32_AND);
+  let body = list_push(body, OP_I32_OR);
+  // OR (b == 95)
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 1);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(95)));
+  let body = list_push(body, OP_I32_EQ);
+  let body = list_push(body, OP_I32_OR);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_CALL), leb128_u(H_MAKE_BOOL)));
+  make_code_entry(1, body)
+};
+
+/// char_is_alphanum(c) -> bool: alpha OR digit
+let helper_char_is_alphanum_body = fn() {
+  let body = list_new();
+  let body = list_concat(body, load_first_char_byte());
+  let body = list_push(body, OP_LOCAL_SET);
+  let body = list_push(body, 1);
+  // digit range
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 1);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(48)));
+  let body = list_push(body, OP_I32_GE_S);
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 1);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(57)));
+  let body = list_push(body, OP_I32_LE_S);
+  let body = list_push(body, OP_I32_AND);
+  // OR lowercase
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 1);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(97)));
+  let body = list_push(body, OP_I32_GE_S);
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 1);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(122)));
+  let body = list_push(body, OP_I32_LE_S);
+  let body = list_push(body, OP_I32_AND);
+  let body = list_push(body, OP_I32_OR);
+  // OR uppercase
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 1);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(65)));
+  let body = list_push(body, OP_I32_GE_S);
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 1);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(90)));
+  let body = list_push(body, OP_I32_LE_S);
+  let body = list_push(body, OP_I32_AND);
+  let body = list_push(body, OP_I32_OR);
+  // OR underscore
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 1);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(95)));
+  let body = list_push(body, OP_I32_EQ);
+  let body = list_push(body, OP_I32_OR);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_CALL), leb128_u(H_MAKE_BOOL)));
+  make_code_entry(1, body)
+};
+
+/// char_is_whitespace(c) -> bool: byte in {' ', '\\t', '\\n', '\\r'}
+let helper_char_is_whitespace_body = fn() {
+  let body = list_new();
+  let body = list_concat(body, load_first_char_byte());
+  let body = list_push(body, OP_LOCAL_SET);
+  let body = list_push(body, 1);
+  // (b == 32)
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 1);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(32)));
+  let body = list_push(body, OP_I32_EQ);
+  // OR (b == 9)
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 1);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(9)));
+  let body = list_push(body, OP_I32_EQ);
+  let body = list_push(body, OP_I32_OR);
+  // OR (b == 10)
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 1);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(10)));
+  let body = list_push(body, OP_I32_EQ);
+  let body = list_push(body, OP_I32_OR);
+  // OR (b == 13)
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 1);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(13)));
+  let body = list_push(body, OP_I32_EQ);
+  let body = list_push(body, OP_I32_OR);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_CALL), leb128_u(H_MAKE_BOOL)));
+  make_code_entry(1, body)
+};
+
 /// print(s: i32) -> i32 (unit)
 /// Extracts ptr+len from a STR Value, calls the imported js_print, returns unit.
 let helper_print_body = fn() {
@@ -2554,8 +3043,9 @@ let type_section = fn(ast, fn_table) {
   let base = list_push(base, make_type(1));
   let base = list_push(base, make_type(2));
   let base = list_push(base, make_void_type_2());
-  // Reserve 3 type slots (indexes 4-6) for arity-3 helper fns
-  // (list_set, list_slice, dict_set).
+  // Reserve 4 type slots (indexes 4-7) for arity-3 helper fns
+  // (list_set, list_slice, dict_set, str_slice).
+  let base = list_push(base, make_type(3));
   let base = list_push(base, make_type(3));
   let base = list_push(base, make_type(3));
   let base = list_push(base, make_type(3));
@@ -2585,9 +3075,9 @@ let type_idx_for_arity = fn(arity, extras_offset) {
   if (arity == 0) { TYPE_IDX_0_TO_I32 }
   else { if (arity == 1) { TYPE_IDX_1_TO_I32 }
     else { if (arity == 2) { TYPE_IDX_2_TO_I32 }
-      // Base types occupy 0..3; reserved helper arity-3 types occupy 4-6;
-      // user fns with arity > 2 start at 7.
-      else { 7 + extras_offset } } }
+      // Base types occupy 0..3; reserved helper arity-3 types occupy 4-7;
+      // user fns with arity > 2 start at 8.
+      else { 8 + extras_offset } } }
 };
 
 /// Function section: list of type-indexes, one per function (helpers + user + main).
@@ -2628,6 +3118,14 @@ let function_section = fn(ast, fn_count) {
   let helper_indexes = list_push(helper_indexes, TYPE_IDX_2_TO_I32);   // dict_has
   let helper_indexes = list_push(helper_indexes, 4 + 2);                // dict_set (third arity-3 reserved slot)
   let helper_indexes = list_push(helper_indexes, TYPE_IDX_1_TO_I32);   // dict_keys
+  let helper_indexes = list_push(helper_indexes, TYPE_IDX_2_TO_I32);   // str_at
+  let helper_indexes = list_push(helper_indexes, 4 + 3);                // str_slice (4th arity-3 type — need to reserve)
+  let helper_indexes = list_push(helper_indexes, TYPE_IDX_2_TO_I32);   // str_starts_with
+  let helper_indexes = list_push(helper_indexes, TYPE_IDX_2_TO_I32);   // str_ends_with
+  let helper_indexes = list_push(helper_indexes, TYPE_IDX_1_TO_I32);   // char_is_digit
+  let helper_indexes = list_push(helper_indexes, TYPE_IDX_1_TO_I32);   // char_is_alpha
+  let helper_indexes = list_push(helper_indexes, TYPE_IDX_1_TO_I32);   // char_is_alphanum
+  let helper_indexes = list_push(helper_indexes, TYPE_IDX_1_TO_I32);   // char_is_whitespace
   // User fns, in source order — track how many high-arity extras we've used.
   let user_acc = list_reduce(stmts, dict_set(dict_set(dict_new(),
     "indexes", list_new()), "extras_used", 0), fn(acc, id) {
@@ -2739,6 +3237,14 @@ let code_section = fn(ast, fn_table) {
   let helpers = list_concat(helpers, helper_dict_has_body());
   let helpers = list_concat(helpers, helper_dict_set_body());
   let helpers = list_concat(helpers, helper_dict_keys_body());
+  let helpers = list_concat(helpers, helper_str_at_body());
+  let helpers = list_concat(helpers, helper_str_slice_body());
+  let helpers = list_concat(helpers, helper_str_starts_with_body());
+  let helpers = list_concat(helpers, helper_str_ends_with_body());
+  let helpers = list_concat(helpers, helper_char_is_digit_body());
+  let helpers = list_concat(helpers, helper_char_is_alpha_body());
+  let helpers = list_concat(helpers, helper_char_is_alphanum_body());
+  let helpers = list_concat(helpers, helper_char_is_whitespace_body());
 
   let root = ast_get(ast, dict_get(ast, "rootId"));
   let stmts = dict_get(root, "stmtIds");
