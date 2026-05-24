@@ -838,6 +838,115 @@ test('wasm backend (6.G tier-2): net_fetch + print compose', async () => {
   expect(captured).toEqual(['body: XYZ']);
 });
 
+// ── Phase 6.F tier 3: list + dict patterns ───────────────────────────────────
+
+test('wasm backend (6.F tier-3): list pattern with fixed length', async () => {
+  const source = `
+    let f = fn(xs) {
+      match xs {
+        [a, b] => a + b,
+        _ => 99,
+      }
+    };
+    let r = f(list_new(10, 20));
+    r;
+  `;
+  const bytes = await penEmitWasm(source);
+  expect(await runWasmMain(bytes)).toBe(30);
+});
+
+test('wasm backend (6.F tier-3): list pattern length mismatch falls through', async () => {
+  const source = `
+    let f = fn(xs) {
+      match xs {
+        [a, b] => 1,
+        _ => 99,
+      }
+    };
+    let r = f(list_new(10, 20, 30));
+    r;
+  `;
+  const bytes = await penEmitWasm(source);
+  expect(await runWasmMain(bytes)).toBe(99);
+});
+
+test('wasm backend (6.F tier-3): empty list pattern', async () => {
+  const source = `
+    let f = fn(xs) {
+      match xs {
+        [] => 42,
+        _ => 0,
+      }
+    };
+    let r = f(list_new());
+    r;
+  `;
+  const bytes = await penEmitWasm(source);
+  expect(await runWasmMain(bytes)).toBe(42);
+});
+
+test('wasm backend (6.F tier-3): list pattern with ...rest', async () => {
+  const source = `
+    let head = fn(xs) {
+      match xs {
+        [h, ...t] => h,
+        _ => 0,
+      }
+    };
+    let r = head(list_new(7, 1, 2, 3));
+    r;
+  `;
+  const bytes = await penEmitWasm(source);
+  expect(await runWasmMain(bytes)).toBe(7);
+});
+
+test('wasm backend (6.F tier-3): list pattern rest binding is the rest list', async () => {
+  const source = `
+    let tail_len = fn(xs) {
+      match xs {
+        [h, ...t] => list_len(t),
+        _ => 0,
+      }
+    };
+    let r = tail_len(list_new(1, 2, 3, 4));
+    r;
+  `;
+  const bytes = await penEmitWasm(source);
+  expect(await runWasmMain(bytes)).toBe(3);
+});
+
+test('wasm backend (6.F tier-3): dict pattern matches and binds value', async () => {
+  const source = `
+    let get_age = fn(u) {
+      match u {
+        {name: n, age: a} => a,
+        _ => 0,
+      }
+    };
+    let u = dict_set(dict_set(dict_new(), "name", 1), "age", 42);
+    let r = get_age(u);
+    r;
+  `;
+  const bytes = await penEmitWasm(source);
+  expect(await runWasmMain(bytes)).toBe(42);
+});
+
+test('wasm backend (6.F tier-3): dict pattern with missing key falls through', async () => {
+  const source = `
+    let f = fn(u) {
+      match u {
+        {missing: x} => 1,
+        _ => 99,
+      }
+    };
+    let d = dict_set(dict_new(), "present", 7);
+    let r = f(d);
+    r;
+  `;
+  const bytes = await penEmitWasm(source);
+  expect(await runWasmMain(bytes)).toBe(99);
+});
+
 test('wasm backend (6.C): memory export — can decode string bytes from heap', async () => {
   const source = 'let s = "hello"; let r = str_length(s); r;';
   const bytes = await penEmitWasm(source);
