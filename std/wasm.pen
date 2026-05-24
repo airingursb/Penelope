@@ -123,6 +123,7 @@ let OP_I32_REM_S = 111;     // 0x6F
 let OP_I32_AND = 113;       // 0x71  (bitwise; same as logical for 0/1 values)
 let OP_I32_OR = 114;        // 0x72
 let OP_LOOP_BR = 12;        // br (already OP_BR but keep alias for clarity in loops)
+let OP_CALL_INDIRECT = 17;  // 0x11 — call_indirect type_idx, table_idx
 
 let TYPE_I32 = 127;
 let BLOCKTYPE_I32 = 127;
@@ -131,9 +132,11 @@ let BLOCKTYPE_VOID = 64;
 let SECTION_TYPE = 1;
 let SECTION_IMPORT = 2;
 let SECTION_FUNCTION = 3;
+let SECTION_TABLE = 4;
 let SECTION_MEMORY = 5;
 let SECTION_GLOBAL = 6;
 let SECTION_EXPORT = 7;
+let SECTION_ELEMENT = 9;
 let SECTION_CODE = 10;
 
 let EXPORT_KIND_FUNC = 0;
@@ -162,7 +165,7 @@ let IMPORT_JS_WRITE_FILE = 5;
 // IMPORT_FN_COUNT offset, since user code calls helpers via the global fn idx).
 // Helpers shift up with IMPORT_FN_COUNT. Computed from IMPORT_FN_COUNT so that
 // adding more imports just bumps that constant and the rest follows.
-let HELPER_FN_COUNT = 44;
+let HELPER_FN_COUNT = 45;
 let H_ALLOC               = IMPORT_FN_COUNT + 0;
 let H_MAKE_INT            = IMPORT_FN_COUNT + 1;
 let H_MAKE_BOOL           = IMPORT_FN_COUNT + 2;
@@ -207,6 +210,7 @@ let H_WRITE_FILE          = IMPORT_FN_COUNT + 40;
 let H_STR_FIND            = IMPORT_FN_COUNT + 41;
 let H_INT_OF_STR          = IMPORT_FN_COUNT + 42;
 let H_STR_CHARS           = IMPORT_FN_COUNT + 43;
+let H_MAKE_CLOSURE        = IMPORT_FN_COUNT + 44;
 
 // Type indices we reserve up front (one per distinct fn signature used by
 // helpers + imports).
@@ -277,6 +281,219 @@ let is_fn_node = fn(n) { dict_get(n, "kind") == "Fn" };
 // Top-level fn collection. fn indexes start at IMPORT_FN_COUNT + HELPER_FN_COUNT
 // (imports + helpers occupy the low slots).
 // ─────────────────────────────────────────────────────────────────────────────
+
+/// Walk a node, find free variable names. `introduced` is a dict of names
+/// bound in the current scope (params + lets seen so far). `fn_table` holds
+/// top-level fn names (NOT considered captures — they're global). Returns
+/// the dict of captured var names (dict whose values are unused — using dict
+/// as a set).
+let find_free_vars = fn(node, ast, introduced, fn_table, acc) {
+  let kind = dict_get(node, "kind");
+  if (kind == "Var") {
+    let name = dict_get(node, "name");
+    if (dict_has(introduced, name)) { acc }
+    else { if (dict_has(fn_table, name)) { acc }
+      else { if (builtin_helper_for(name) != 0 - 1) { acc }
+        else { if (name == "list_new") { acc }
+          else { dict_set(acc, name, true) } } } }
+  } else {
+    if (kind == "BinOp") {
+      let a1 = find_free_vars(ast_get(ast, dict_get(node, "leftId")), ast, introduced, fn_table, acc);
+      find_free_vars(ast_get(ast, dict_get(node, "rightId")), ast, introduced, fn_table, a1)
+    } else {
+      if (kind == "If") {
+        let a1 = find_free_vars(ast_get(ast, dict_get(node, "condId")), ast, introduced, fn_table, acc);
+        let a2 = find_free_vars(ast_get(ast, dict_get(node, "thenBlockId")), ast, introduced, fn_table, a1);
+        find_free_vars(ast_get(ast, dict_get(node, "elseBlockId")), ast, introduced, fn_table, a2)
+      } else {
+        if (kind == "Block") {
+          let stmts = dict_get(node, "stmtIds");
+          let go = fn(i, intro, a) {
+            if (i >= list_len(stmts)) {
+              let trailing = dict_get(node, "trailingExprId");
+              if (trailing == "") { a }
+              else { find_free_vars(ast_get(ast, trailing), ast, intro, fn_table, a) }
+            } else {
+              let stmt = ast_get(ast, list_get(stmts, i));
+              let sk = dict_get(stmt, "kind");
+              if (sk == "Let") {
+                let val = ast_get(ast, dict_get(stmt, "valueId"));
+                let a2 = find_free_vars(val, ast, intro, fn_table, a);
+                let intro2 = dict_set(intro, dict_get(stmt, "name"), true);
+                go(i + 1, intro2, a2)
+              } else {
+                if (sk == "ExprStmt") {
+                  let a2 = find_free_vars(ast_get(ast, dict_get(stmt, "exprId")), ast, intro, fn_table, a);
+                  go(i + 1, intro, a2)
+                } else { go(i + 1, intro, a) }
+              }
+            }
+          };
+          go(0, introduced, acc)
+        } else {
+          if (kind == "Call") {
+            let a1 = find_free_vars(ast_get(ast, dict_get(node, "calleeId")), ast, introduced, fn_table, acc);
+            let arg_ids = dict_get(node, "argIds");
+            let go_args = fn(i, a) {
+              if (i >= list_len(arg_ids)) { a }
+              else {
+                let a2 = find_free_vars(ast_get(ast, list_get(arg_ids, i)), ast, introduced, fn_table, a);
+                go_args(i + 1, a2)
+              }
+            };
+            go_args(0, a1)
+          } else {
+            if (kind == "Fn") {
+              // Inner fn: its params are added to intro for ITS body.
+              let inner_params = dict_get(node, "params");
+              let inner_intro = list_reduce(inner_params, introduced,
+                fn(acc_intro, p) { dict_set(acc_intro, p, true) });
+              find_free_vars(ast_get(ast, dict_get(node, "bodyBlockId")), ast, inner_intro, fn_table, acc)
+            } else {
+              if (kind == "Match") {
+                let a1 = find_free_vars(ast_get(ast, dict_get(node, "scrutineeId")), ast, introduced, fn_table, acc);
+                let arms = dict_get(node, "arms");
+                let go_arms = fn(i, a) {
+                  if (i >= list_len(arms)) { a }
+                  else {
+                    let arm = list_get(arms, i);
+                    let pat = dict_get(arm, "pattern");
+                    let intro2 = if (dict_get(pat, "kind") == "var") {
+                      dict_set(introduced, dict_get(pat, "name"), true)
+                    } else { introduced };
+                    let a2 = find_free_vars(ast_get(ast, dict_get(arm, "bodyId")), ast, intro2, fn_table, a);
+                    let a3 = if (dict_has(arm, "guardId")) {
+                      find_free_vars(ast_get(ast, dict_get(arm, "guardId")), ast, intro2, fn_table, a2)
+                    } else { a2 };
+                    go_arms(i + 1, a3)
+                  }
+                };
+                go_arms(0, a1)
+              } else {
+                if (kind == "ExprStmt") {
+                  find_free_vars(ast_get(ast, dict_get(node, "exprId")), ast, introduced, fn_table, acc)
+                } else { acc }   // literals etc
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+};
+
+/// Walk a node, collect every nested Fn node that is NOT directly the value
+/// of a top-level Let. Each gets a synthetic fn_idx + its computed captures.
+/// `top_level_fn_node_ids` is a set of IDs to SKIP (those are handled by
+/// the regular top-level path).
+let collect_lifted_fns = fn(node, ast, fn_table, top_level_fn_node_ids, next_idx, acc) {
+  let kind = dict_get(node, "kind");
+  if (kind == "Fn") {
+    // Skip if it's a top-level let-fn.
+    if (dict_has(top_level_fn_node_ids, dict_get(node, "id"))) {
+      // Still recurse into its body to find nested anonymous fns.
+      collect_lifted_fns(ast_get(ast, dict_get(node, "bodyBlockId")), ast, fn_table, top_level_fn_node_ids, next_idx, acc)
+    } else {
+      // Anonymous fn: lift it.
+      let params = dict_get(node, "params");
+      let intro = list_reduce(params, dict_new(), fn(a, p) { dict_set(a, p, true) });
+      let captures_dict = find_free_vars(ast_get(ast, dict_get(node, "bodyBlockId")), ast, intro, fn_table, dict_new());
+      let cap_names = dict_keys(captures_dict);
+      let info = dict_set(dict_set(dict_set(dict_set(dict_new(),
+        "node", node),
+        "fn_idx", next_idx),
+        "captures", cap_names),
+        "arity", list_len(params));
+      // Recurse into the body to find further nested fns.
+      let new_acc = list_push(acc, info);
+      collect_lifted_fns(ast_get(ast, dict_get(node, "bodyBlockId")), ast, fn_table, top_level_fn_node_ids, next_idx + 1, new_acc)
+    }
+  } else {
+    if (kind == "Program") {
+      let stmts = dict_get(node, "stmtIds");
+      let go = fn(i, n, a) {
+        if (i >= list_len(stmts)) {
+          dict_set(dict_set(dict_new(), "lifted", a), "next", n)
+        } else {
+          let r = collect_lifted_fns(ast_get(ast, list_get(stmts, i)), ast, fn_table, top_level_fn_node_ids, n, a);
+          go(i + 1, dict_get(r, "next"), dict_get(r, "lifted"))
+        }
+      };
+      go(0, next_idx, acc)
+    } else {
+      if (kind == "Block") {
+        let stmts = dict_get(node, "stmtIds");
+        let go = fn(i, n, a) {
+          if (i >= list_len(stmts)) {
+            let trailing = dict_get(node, "trailingExprId");
+            if (trailing == "") {
+              dict_set(dict_set(dict_new(), "lifted", a), "next", n)
+            } else {
+              collect_lifted_fns(ast_get(ast, trailing), ast, fn_table, top_level_fn_node_ids, n, a)
+            }
+          } else {
+            let r = collect_lifted_fns(ast_get(ast, list_get(stmts, i)), ast, fn_table, top_level_fn_node_ids, n, a);
+            go(i + 1, dict_get(r, "next"), dict_get(r, "lifted"))
+          }
+        };
+        go(0, next_idx, acc)
+      } else {
+        if (kind == "BinOp") {
+          let r1 = collect_lifted_fns(ast_get(ast, dict_get(node, "leftId")), ast, fn_table, top_level_fn_node_ids, next_idx, acc);
+          collect_lifted_fns(ast_get(ast, dict_get(node, "rightId")), ast, fn_table, top_level_fn_node_ids, dict_get(r1, "next"), dict_get(r1, "lifted"))
+        } else {
+          if (kind == "If") {
+            let r1 = collect_lifted_fns(ast_get(ast, dict_get(node, "condId")), ast, fn_table, top_level_fn_node_ids, next_idx, acc);
+            let r2 = collect_lifted_fns(ast_get(ast, dict_get(node, "thenBlockId")), ast, fn_table, top_level_fn_node_ids, dict_get(r1, "next"), dict_get(r1, "lifted"));
+            collect_lifted_fns(ast_get(ast, dict_get(node, "elseBlockId")), ast, fn_table, top_level_fn_node_ids, dict_get(r2, "next"), dict_get(r2, "lifted"))
+          } else {
+            if (kind == "Call") {
+              let r1 = collect_lifted_fns(ast_get(ast, dict_get(node, "calleeId")), ast, fn_table, top_level_fn_node_ids, next_idx, acc);
+              let arg_ids = dict_get(node, "argIds");
+              let go_args = fn(i, n, a) {
+                if (i >= list_len(arg_ids)) {
+                  dict_set(dict_set(dict_new(), "lifted", a), "next", n)
+                } else {
+                  let r = collect_lifted_fns(ast_get(ast, list_get(arg_ids, i)), ast, fn_table, top_level_fn_node_ids, n, a);
+                  go_args(i + 1, dict_get(r, "next"), dict_get(r, "lifted"))
+                }
+              };
+              go_args(0, dict_get(r1, "next"), dict_get(r1, "lifted"))
+            } else {
+              if (kind == "Match") {
+                let r1 = collect_lifted_fns(ast_get(ast, dict_get(node, "scrutineeId")), ast, fn_table, top_level_fn_node_ids, next_idx, acc);
+                let arms = dict_get(node, "arms");
+                let go_arms = fn(i, n, a) {
+                  if (i >= list_len(arms)) {
+                    dict_set(dict_set(dict_new(), "lifted", a), "next", n)
+                  } else {
+                    let arm = list_get(arms, i);
+                    let r = collect_lifted_fns(ast_get(ast, dict_get(arm, "bodyId")), ast, fn_table, top_level_fn_node_ids, n, a);
+                    let r2 = if (dict_has(arm, "guardId")) {
+                      collect_lifted_fns(ast_get(ast, dict_get(arm, "guardId")), ast, fn_table, top_level_fn_node_ids, dict_get(r, "next"), dict_get(r, "lifted"))
+                    } else { r };
+                    go_arms(i + 1, dict_get(r2, "next"), dict_get(r2, "lifted"))
+                  }
+                };
+                go_arms(0, dict_get(r1, "next"), dict_get(r1, "lifted"))
+              } else {
+                if (kind == "Let") {
+                  collect_lifted_fns(ast_get(ast, dict_get(node, "valueId")), ast, fn_table, top_level_fn_node_ids, next_idx, acc)
+                } else {
+                  if (kind == "ExprStmt") {
+                    collect_lifted_fns(ast_get(ast, dict_get(node, "exprId")), ast, fn_table, top_level_fn_node_ids, next_idx, acc)
+                  } else {
+                    dict_set(dict_set(dict_new(), "lifted", acc), "next", next_idx)
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+};
 
 let collect_fns = fn(ast) {
   let root = ast_get(ast, dict_get(ast, "rootId"));
@@ -462,6 +679,95 @@ let emit_list_new = fn(arg_ids, ast, env, fn_table) {
   list_concat(body, list_concat(list_push(list_new(), OP_CALL), leb128_u(H_MAKE_LIST_FROM_DATA)))
 };
 
+/// emit_closure_value: a Fn-literal expression evaluates to a CLOSURE Value.
+/// Env block layout: [table_idx (4 bytes), cap_0 (4 bytes), cap_1 (4 bytes), ...].
+/// The caller does indirect-call by:
+///   1. loading env_ptr from CLOSURE.value+4
+///   2. pushing env_ptr as the first arg
+///   3. pushing the user args
+///   4. loading table_idx from env_ptr+0
+///   5. call_indirect (type_idx, table 0)
+/// Captures are read in the callee from env_ptr+(4+i*4) into local slots.
+let emit_closure_value = fn(node, env) {
+  let lifted_lookup = dict_get(env, "__lifted_lookup__");
+  let node_id = dict_get(node, "id");
+  if (dict_has(lifted_lookup, node_id) == false) {
+    panic("wasm: Fn node " + node_id + " not in lifted_lookup (internal)")
+  } else {
+    let info = dict_get(lifted_lookup, node_id);
+    let table_idx = dict_get(info, "table_idx");
+    let captures = dict_get(info, "captures");
+    let n_captures = list_len(captures);
+    let scratch = dict_get(env, "__closure_scratch__");
+    // env_block = alloc(4 + n_captures*4); store(env_block, table_idx)
+    let env_size = 4 + n_captures * 4;
+    let body = list_new();
+    let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(env_size)));
+    let body = list_concat(body, list_concat(list_push(list_new(), OP_CALL), leb128_u(H_ALLOC)));
+    let body = list_concat(body, list_concat(list_push(list_new(), OP_LOCAL_SET), leb128_u(scratch)));
+    let body = list_concat(body, list_concat(list_push(list_new(), OP_LOCAL_GET), leb128_u(scratch)));
+    let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(table_idx)));
+    let body = list_push(body, OP_I32_STORE);
+    let body = list_concat(body, memarg(2, 0));
+    // For each capture: store env's value of that name at env_block+(4+i*4)
+    let store_caps = fn(i, acc) {
+      if (i >= n_captures) { acc }
+      else {
+        let cap_name = list_get(captures, i);
+        if (dict_has(env, cap_name) == false) {
+          panic("wasm closure: capture '" + cap_name + "' not in enclosing scope")
+        } else {
+          let cap_local = dict_get(env, cap_name);
+          let one = list_concat(list_push(list_new(), OP_LOCAL_GET), leb128_u(scratch));
+          let one = list_concat(one, list_concat(list_push(list_new(), OP_LOCAL_GET), leb128_u(cap_local)));
+          let one = list_push(one, OP_I32_STORE);
+          let one = list_concat(one, memarg(2, 4 + i * 4));
+          store_caps(i + 1, list_concat(acc, one))
+        }
+      }
+    };
+    let body = store_caps(0, body);
+    // push env_block, call make_closure
+    let body = list_concat(body, list_concat(list_push(list_new(), OP_LOCAL_GET), leb128_u(scratch)));
+    list_concat(body, list_concat(list_push(list_new(), OP_CALL), leb128_u(H_MAKE_CLOSURE)))
+  }
+};
+
+/// emit_indirect_call: callee already on the stack as a CLOSURE Value cell.
+/// Pops it, loads env_ptr, pushes env_ptr + args, then call_indirect.
+/// scratch local holds the env_ptr (lasts across arg compilation).
+let emit_indirect_call = fn(callee_bytes, arg_ids, ast, env, fn_table) {
+  let argc = list_len(arg_ids);
+  let scratch = dict_get(env, "__closure_scratch__");
+  // env_ptr = load(callee_value + 4)
+  let body = list_concat(list_new(), callee_bytes);
+  let body = list_push(body, OP_I32_LOAD);
+  let body = list_concat(body, memarg(2, 4));
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_LOCAL_SET), leb128_u(scratch)));
+  // push env_ptr as first arg
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_LOCAL_GET), leb128_u(scratch)));
+  // push user args
+  let emit_args = fn(i, acc) {
+    if (i >= argc) { acc }
+    else {
+      let one = compile_expr(ast_get(ast, list_get(arg_ids, i)), ast, env, fn_table);
+      emit_args(i + 1, list_concat(acc, one))
+    }
+  };
+  let body = emit_args(0, body);
+  // push table_idx = load(env_ptr + 0)
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_LOCAL_GET), leb128_u(scratch)));
+  let body = list_push(body, OP_I32_LOAD);
+  let body = list_concat(body, memarg(2, 0));
+  // call_indirect type_idx table 0
+  let type_idx = if (argc == 0) { TYPE_IDX_1_TO_I32 }
+    else { if (argc == 1) { TYPE_IDX_2_TO_I32 }
+      else { panic("wasm closure call: arity > 1 not yet supported (tier 1)") } };
+  let body = list_push(body, OP_CALL_INDIRECT);
+  let body = list_concat(body, leb128_u(type_idx));
+  list_concat(body, leb128_u(0))
+};
+
 let compile_expr = fn(node, ast, env, fn_table) {
   let kind = dict_get(node, "kind");
   match kind {
@@ -537,7 +843,9 @@ let compile_expr = fn(node, ast, env, fn_table) {
     "Call" => {
       let callee = ast_get(ast, dict_get(node, "calleeId"));
       if (dict_get(callee, "kind") != "Var") {
-        panic("wasm: only direct calls to top-level fns are supported")
+        // Non-Var callee — compile it and treat result as a CLOSURE Value.
+        let callee_bytes = compile_expr(callee, ast, env, fn_table);
+        emit_indirect_call(callee_bytes, dict_get(node, "argIds"), ast, env, fn_table)
       } else {
         let name = dict_get(callee, "name");
         // list_new is varargs — emit inline (block-alloc + per-item store).
@@ -560,7 +868,13 @@ let compile_expr = fn(node, ast, env, fn_table) {
           list_concat(args_bytes, call_bytes)
         } else {
         if (dict_has(fn_table, name) == false) {
-          panic("wasm: call to unknown fn '" + name + "'")
+          // Not a top-level fn — must be a local holding a CLOSURE Value.
+          if (dict_has(env, name) == false) {
+            panic("wasm: call to unknown fn '" + name + "'")
+          } else {
+            let callee_bytes = list_concat(list_push(list_new(), OP_LOCAL_GET), leb128_u(dict_get(env, name)));
+            emit_indirect_call(callee_bytes, dict_get(node, "argIds"), ast, env, fn_table)
+          }
         } else {
           let arg_ids = dict_get(node, "argIds");
           // Each arg leaves a Value pointer on the stack — the callee's params
@@ -586,7 +900,7 @@ let compile_expr = fn(node, ast, env, fn_table) {
     },
     "StringLit" => emit_string_literal(dict_get(node, "value"), env),
     "Pause" => panic("wasm: pause not yet implemented (Phase 6.H)"),
-    "Fn" => panic("wasm: nested fn definitions not yet implemented (Phase 6.E)"),
+    "Fn" => emit_closure_value(node, env),
     "Match" => compile_match(node, ast, env, fn_table),
     _ => panic("wasm: unsupported node kind '" + kind + "'"),
   }
@@ -1034,7 +1348,10 @@ let make_code_entry = fn(local_count, body_bytes) {
   list_concat(leb128_u(list_len(with_end)), with_end)
 };
 
-let compile_fn = fn(fn_node, ast, fn_table) {
+/// compile_fn: top-level user fn (no env_ptr). 5th arg is the lifted-fn lookup
+/// dict (passed through env as __lifted_lookup__ so compile_expr's Fn case
+/// can resolve nested Fn nodes to their pre-assigned fn_idx + captures).
+let compile_fn = fn(fn_node, ast, fn_table, lifted_lookup, _unused) {
   let params = dict_get(fn_node, "params");
   let param_env = list_reduce(params, dict_set(dict_set(dict_new(), "env", dict_new()), "idx", 0),
     fn(acc, p) {
@@ -1047,17 +1364,69 @@ let compile_fn = fn(fn_node, ast, fn_table) {
   let env_result = prebuild_env(body_block, ast, env_after_params, list_len(params));
   let env_named = dict_get(env_result, "env");
   let total_named_locals = dict_get(env_result, "next");
-  // Two scratch locals: __scratch__ for string-literal block ptrs, __list_scratch__
-  // for list_new block ptrs (kept separate so nested str/list don't clash).
   let scratch_str = total_named_locals;
   let scratch_list = total_named_locals + 1;
+  let scratch_closure = total_named_locals + 2;
   let env = dict_set(dict_set(env_named, "__scratch__", scratch_str), "__list_scratch__", scratch_list);
-  let local_count = total_named_locals - list_len(params) + 2;
+  let env = dict_set(env, "__closure_scratch__", scratch_closure);
+  let env = dict_set(env, "__lifted_lookup__", lifted_lookup);
+  let local_count = total_named_locals - list_len(params) + 3;
   let body_bytes = compile_block_expr(body_block, ast, env, fn_table);
   make_code_entry(local_count, body_bytes)
 };
 
-let compile_main = fn(ast, fn_table) {
+/// compile_lifted_fn: anonymous fn lifted to top-level. env_ptr at local 0,
+/// original params at locals 1..N, captures at N+1..N+C, body lets after that.
+/// At entry, emit a prelude that loads each capture from env_ptr+(4+i*4) into
+/// its local slot so the body's Var refs to captured names just read locals.
+let compile_lifted_fn = fn(fn_node, ast, fn_table, lifted_lookup, captures) {
+  let params = dict_get(fn_node, "params");
+  let n_params = list_len(params);
+  let n_captures = list_len(captures);
+  // params start at local 1 (local 0 is env_ptr)
+  let param_env = list_reduce(params, dict_set(dict_set(dict_new(), "env", dict_new()), "idx", 1),
+    fn(acc, p) {
+      dict_set(dict_set(dict_new(),
+        "env", dict_set(dict_get(acc, "env"), p, dict_get(acc, "idx"))),
+        "idx", dict_get(acc, "idx") + 1)
+    });
+  // Add captures after params.
+  let cap_env_acc = list_reduce(captures, dict_set(dict_set(dict_new(),
+    "env", dict_get(param_env, "env")), "idx", dict_get(param_env, "idx")),
+    fn(acc, name) {
+      dict_set(dict_set(dict_new(),
+        "env", dict_set(dict_get(acc, "env"), name, dict_get(acc, "idx"))),
+        "idx", dict_get(acc, "idx") + 1)
+    });
+  let env_after_caps = dict_get(cap_env_acc, "env");
+  let next_local = dict_get(cap_env_acc, "idx");
+  let body_block = ast_get(ast, dict_get(fn_node, "bodyBlockId"));
+  let env_result = prebuild_env(body_block, ast, env_after_caps, next_local);
+  let env_named = dict_get(env_result, "env");
+  let total_named_locals = dict_get(env_result, "next");
+  let scratch_str = total_named_locals;
+  let scratch_list = total_named_locals + 1;
+  let scratch_closure = total_named_locals + 2;
+  let env = dict_set(dict_set(env_named, "__scratch__", scratch_str), "__list_scratch__", scratch_list);
+  let env = dict_set(env, "__closure_scratch__", scratch_closure);
+  let env = dict_set(env, "__lifted_lookup__", lifted_lookup);
+  // local_count = total - (params + env_ptr) + 3 scratches.
+  let local_count = total_named_locals - n_params - 1 + 3;
+  // Prelude: for each capture i, load env_ptr+(4+i*4) into its local.
+  let prelude = list_reduce(list_range(0, n_captures), list_new(), fn(acc, i) {
+    let cap_name = list_get(captures, i);
+    let cap_local = dict_get(env_named, cap_name);
+    let one = list_concat(list_push(list_new(), OP_LOCAL_GET), leb128_u(0));
+    let one = list_push(one, OP_I32_LOAD);
+    let one = list_concat(one, memarg(2, 4 + i * 4));
+    let one = list_concat(one, list_concat(list_push(list_new(), OP_LOCAL_SET), leb128_u(cap_local)));
+    list_concat(acc, one)
+  });
+  let body_bytes = compile_block_expr(body_block, ast, env, fn_table);
+  make_code_entry(local_count, list_concat(prelude, body_bytes))
+};
+
+let compile_main = fn(ast, fn_table, lifted_lookup) {
   let root = ast_get(ast, dict_get(ast, "rootId"));
   let stmts = dict_get(root, "stmtIds");
   let env_acc = list_reduce(stmts,
@@ -1087,8 +1456,11 @@ let compile_main = fn(ast, fn_table) {
   let total_named_locals = dict_get(env_acc, "next");
   let scratch_str = total_named_locals;
   let scratch_list = total_named_locals + 1;
+  let scratch_closure = total_named_locals + 2;
   let env = dict_set(dict_set(env_named, "__scratch__", scratch_str), "__list_scratch__", scratch_list);
-  let local_count = total_named_locals + 2;
+  let env = dict_set(env, "__closure_scratch__", scratch_closure);
+  let env = dict_set(env, "__lifted_lookup__", lifted_lookup);
+  let local_count = total_named_locals + 3;
   let result_id = dict_get(env_acc, "result_id");
   if (result_id == "") { panic("wasm: main has no return value") }
   else {
@@ -3597,6 +3969,35 @@ let helper_str_chars_body = fn() {
   make_code_entry(5, body)
 };
 
+/// make_closure(env_ptr: i32) -> i32 (CLOSURE Value cell)
+/// Wraps env_ptr as a CLOSURE-tagged 8-byte Value cell.
+/// Locals beyond params (env_ptr=0): cell=1.
+let helper_make_closure_body = fn() {
+  let body = list_new();
+  // cell = alloc(8)
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(8)));
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_CALL), leb128_u(H_ALLOC)));
+  let body = list_push(body, OP_LOCAL_SET);
+  let body = list_push(body, 1);
+  // store TAG_CLOSURE at byte 0
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 1);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(TAG_CLOSURE)));
+  let body = list_push(body, OP_I32_STORE8);
+  let body = list_concat(body, memarg(0, 0));
+  // store env_ptr at byte 4
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 1);
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 0);
+  let body = list_push(body, OP_I32_STORE);
+  let body = list_concat(body, memarg(2, 4));
+  // return cell
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 1);
+  make_code_entry(1, body)
+};
+
 /// print(s: i32) -> i32 (unit)
 /// Extracts ptr+len from a STR Value, calls the imported js_print, returns unit.
 let helper_print_body = fn() {
@@ -3772,6 +4173,90 @@ let function_section = fn(ast, fn_count) {
   wrap_section(SECTION_FUNCTION, payload)
 };
 
+/// Like function_section, but with type indexes for lifted fns appended.
+/// Each lifted fn has signature (env_ptr, ...args) → i32 so arity-N lifted
+/// uses TYPE_IDX_1_TO_I32 (N=0), TYPE_IDX_2_TO_I32 (N=1), etc.
+let function_section_with_lifted = fn(ast, fn_count, lifted_list) {
+  let root = ast_get(ast, dict_get(ast, "rootId"));
+  let stmts = dict_get(root, "stmtIds");
+  let helper_indexes = list_new();
+  let helper_indexes = list_push(helper_indexes, TYPE_IDX_1_TO_I32);   // alloc
+  let helper_indexes = list_push(helper_indexes, TYPE_IDX_1_TO_I32);   // make_int
+  let helper_indexes = list_push(helper_indexes, TYPE_IDX_1_TO_I32);   // make_bool
+  let helper_indexes = list_push(helper_indexes, TYPE_IDX_0_TO_I32);   // make_unit
+  let helper_indexes = list_push(helper_indexes, TYPE_IDX_1_TO_I32);   // unwrap_int
+  let helper_indexes = list_push(helper_indexes, TYPE_IDX_1_TO_I32);   // unwrap_bool
+  let helper_indexes = list_push(helper_indexes, TYPE_IDX_1_TO_I32);   // make_str_from_data
+  let helper_indexes = list_push(helper_indexes, TYPE_IDX_2_TO_I32);   // str_concat
+  let helper_indexes = list_push(helper_indexes, TYPE_IDX_1_TO_I32);   // str_length
+  let helper_indexes = list_push(helper_indexes, TYPE_IDX_1_TO_I32);   // int_to_str
+  let helper_indexes = list_push(helper_indexes, TYPE_IDX_1_TO_I32);   // to_str
+  let helper_indexes = list_push(helper_indexes, TYPE_IDX_2_TO_I32);   // plus_dispatch
+  let helper_indexes = list_push(helper_indexes, TYPE_IDX_1_TO_I32);   // print
+  let helper_indexes = list_push(helper_indexes, TYPE_IDX_0_TO_I32);   // now
+  let helper_indexes = list_push(helper_indexes, TYPE_IDX_2_TO_I32);   // random_int
+  let helper_indexes = list_push(helper_indexes, TYPE_IDX_1_TO_I32);   // make_list_from_data
+  let helper_indexes = list_push(helper_indexes, TYPE_IDX_1_TO_I32);   // list_len
+  let helper_indexes = list_push(helper_indexes, TYPE_IDX_2_TO_I32);   // list_get
+  let helper_indexes = list_push(helper_indexes, TYPE_IDX_2_TO_I32);   // list_push
+  let helper_indexes = list_push(helper_indexes, 5 + 0);                // list_set
+  let helper_indexes = list_push(helper_indexes, 5 + 1);                // list_slice
+  let helper_indexes = list_push(helper_indexes, TYPE_IDX_2_TO_I32);   // list_concat
+  let helper_indexes = list_push(helper_indexes, TYPE_IDX_1_TO_I32);   // list_reverse
+  let helper_indexes = list_push(helper_indexes, TYPE_IDX_2_TO_I32);   // str_eq
+  let helper_indexes = list_push(helper_indexes, TYPE_IDX_1_TO_I32);   // make_dict_from_data
+  let helper_indexes = list_push(helper_indexes, TYPE_IDX_0_TO_I32);   // dict_new
+  let helper_indexes = list_push(helper_indexes, TYPE_IDX_2_TO_I32);   // dict_get
+  let helper_indexes = list_push(helper_indexes, TYPE_IDX_2_TO_I32);   // dict_has
+  let helper_indexes = list_push(helper_indexes, 5 + 2);                // dict_set
+  let helper_indexes = list_push(helper_indexes, TYPE_IDX_1_TO_I32);   // dict_keys
+  let helper_indexes = list_push(helper_indexes, TYPE_IDX_2_TO_I32);   // str_at
+  let helper_indexes = list_push(helper_indexes, 5 + 3);                // str_slice
+  let helper_indexes = list_push(helper_indexes, TYPE_IDX_2_TO_I32);   // str_starts_with
+  let helper_indexes = list_push(helper_indexes, TYPE_IDX_2_TO_I32);   // str_ends_with
+  let helper_indexes = list_push(helper_indexes, TYPE_IDX_1_TO_I32);   // char_is_digit
+  let helper_indexes = list_push(helper_indexes, TYPE_IDX_1_TO_I32);   // char_is_alpha
+  let helper_indexes = list_push(helper_indexes, TYPE_IDX_1_TO_I32);   // char_is_alphanum
+  let helper_indexes = list_push(helper_indexes, TYPE_IDX_1_TO_I32);   // char_is_whitespace
+  let helper_indexes = list_push(helper_indexes, TYPE_IDX_1_TO_I32);   // net_fetch
+  let helper_indexes = list_push(helper_indexes, TYPE_IDX_1_TO_I32);   // read_file
+  let helper_indexes = list_push(helper_indexes, TYPE_IDX_2_TO_I32);   // write_file
+  let helper_indexes = list_push(helper_indexes, TYPE_IDX_2_TO_I32);   // str_find
+  let helper_indexes = list_push(helper_indexes, TYPE_IDX_1_TO_I32);   // int_of_str
+  let helper_indexes = list_push(helper_indexes, TYPE_IDX_1_TO_I32);   // str_chars
+  let helper_indexes = list_push(helper_indexes, TYPE_IDX_1_TO_I32);   // make_closure
+  let user_acc = list_reduce(stmts, dict_set(dict_set(dict_new(),
+    "indexes", list_new()), "extras_used", 0), fn(acc, id) {
+      let stmt = ast_get(ast, id);
+      if (dict_get(stmt, "kind") == "Let") {
+        let val = ast_get(ast, dict_get(stmt, "valueId"));
+        if (is_fn_node(val)) {
+          let arity = list_len(dict_get(val, "params"));
+          let idx = type_idx_for_arity(arity, dict_get(acc, "extras_used"));
+          let next_extras = if (arity > 2) { dict_get(acc, "extras_used") + 1 } else { dict_get(acc, "extras_used") };
+          dict_set(dict_set(dict_new(),
+            "indexes", list_push(dict_get(acc, "indexes"), idx)),
+            "extras_used", next_extras)
+        } else { acc }
+      } else { acc }
+    });
+  let user_indexes = dict_get(user_acc, "indexes");
+  let all_indexes = list_concat(helper_indexes, list_push(user_indexes, TYPE_IDX_0_TO_I32));
+  // Append lifted fn type indexes — each lifted has (env, ...args) signature.
+  let lifted_indexes = list_reduce(lifted_list, list_new(), fn(acc, info) {
+    let arity = dict_get(info, "arity");
+    let t = if (arity == 0) { TYPE_IDX_1_TO_I32 }
+      else { if (arity == 1) { TYPE_IDX_2_TO_I32 }
+        else { panic("wasm: lifted fn arity > 1 not supported in 6.E tier 1") } };
+    list_push(acc, t)
+  });
+  let combined = list_concat(all_indexes, lifted_indexes);
+  let local_fn_count = fn_count - IMPORT_FN_COUNT;
+  let payload = list_concat(leb128_u(local_fn_count),
+    list_reduce(combined, list_new(), fn(a, i) { list_concat(a, leb128_u(i)) }));
+  wrap_section(SECTION_FUNCTION, payload)
+};
+
 /// Import section: declare host imports (Phase 6.G effects).
 ///   js.print      : (ptr:i32, len:i32) -> ()    [type 3]
 ///   js.now        : () -> i32                    [type 0]
@@ -3878,6 +4363,7 @@ let code_section = fn(ast, fn_table) {
   let helpers = list_concat(helpers, helper_str_find_body());
   let helpers = list_concat(helpers, helper_int_of_str_body());
   let helpers = list_concat(helpers, helper_str_chars_body());
+  let helpers = list_concat(helpers, helper_make_closure_body());
 
   let root = ast_get(ast, dict_get(ast, "rootId"));
   let stmts = dict_get(root, "stmtIds");
@@ -3885,18 +4371,167 @@ let code_section = fn(ast, fn_table) {
     let stmt = ast_get(ast, id);
     if (dict_get(stmt, "kind") == "Let") {
       let val = ast_get(ast, dict_get(stmt, "valueId"));
-      if (is_fn_node(val)) { list_concat(acc, compile_fn(val, ast, fn_table)) }
+      if (is_fn_node(val)) { list_concat(acc, compile_fn(val, ast, fn_table, dict_new(), false)) }
       else { acc }
     } else { acc }
   });
-  let main_body = compile_main(ast, fn_table);
+  let main_body = compile_main(ast, fn_table, dict_new());
   let all_bodies = list_concat(helpers, list_concat(user_bodies, main_body));
-  let body_count = list_len(dict_keys(fn_table)) + HELPER_FN_COUNT - 1;
-  // dict_keys(fn_table) includes "main" — subtract 1 since main is its own thing... wait
-  // fn_table already includes main with index = HELPER_FN_COUNT + user_count.
-  // So len(fn_table) = user_count + 1 (for main).
-  // body_count = HELPER_FN_COUNT + user_count + 1 = HELPER_FN_COUNT + len(fn_table).
   let body_count = HELPER_FN_COUNT + list_len(dict_keys(fn_table));
+  let payload = list_concat(leb128_u(body_count), all_bodies);
+  wrap_section(SECTION_CODE, payload)
+};
+
+/// Build a set of top-level Fn node ids — the Fn nodes that ARE directly the
+/// value of a Let at the program's root. collect_lifted_fns skips these.
+let get_top_level_fn_ids = fn(ast) {
+  let root = ast_get(ast, dict_get(ast, "rootId"));
+  let stmts = dict_get(root, "stmtIds");
+  let go = fn(i, acc) {
+    if (i >= list_len(stmts)) { acc }
+    else {
+      let stmt = ast_get(ast, list_get(stmts, i));
+      if (dict_get(stmt, "kind") == "Let") {
+        let val = ast_get(ast, dict_get(stmt, "valueId"));
+        if (is_fn_node(val)) { go(i + 1, dict_set(acc, dict_get(val, "id"), true)) }
+        else { go(i + 1, acc) }
+      } else { go(i + 1, acc) }
+    }
+  };
+  go(0, dict_new())
+};
+
+/// Build a lookup dict {node_id → {fn_idx, table_idx, captures, arity}}.
+let build_lifted_lookup = fn(lifted_list, base_fn_idx) {
+  let go = fn(i, acc) {
+    if (i >= list_len(lifted_list)) { acc }
+    else {
+      let info = list_get(lifted_list, i);
+      let node_id = dict_get(dict_get(info, "node"), "id");
+      let entry = dict_set(dict_set(dict_set(dict_set(dict_new(),
+        "fn_idx", dict_get(info, "fn_idx")),
+        "table_idx", i),
+        "captures", dict_get(info, "captures")),
+        "arity", dict_get(info, "arity"));
+      go(i + 1, dict_set(acc, node_id, entry))
+    }
+  };
+  go(0, dict_new())
+};
+
+/// Table section: declare one funcref table sized for all lifted fns.
+let table_section = fn(num_lifted) {
+  if (num_lifted == 0) {
+    // No lifted fns — emit a section with 0 tables (or skip).
+    let payload = leb128_u(0);
+    wrap_section(SECTION_TABLE, payload)
+  } else {
+    let table_entry = list_new();
+    let table_entry = list_push(table_entry, 112);   // 0x70 funcref element type
+    let table_entry = list_push(table_entry, 0);     // limits: no max
+    let table_entry = list_concat(table_entry, leb128_u(num_lifted));
+    let payload = list_concat(leb128_u(1), table_entry);
+    wrap_section(SECTION_TABLE, payload)
+  }
+};
+
+/// Element section: initialize table[i] = fn_idx of lifted_list[i].
+let element_section = fn(lifted_list) {
+  let n = list_len(lifted_list);
+  if (n == 0) {
+    let payload = leb128_u(0);
+    wrap_section(SECTION_ELEMENT, payload)
+  } else {
+    // Active segment: 0x00 (active mode + table 0) + offset_expr + vec(funcidx)
+    let entry = list_new();
+    let entry = list_push(entry, 0);   // active mode, table 0
+    // offset expr: i32.const 0; end
+    let entry = list_concat(entry, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(0)));
+    let entry = list_push(entry, OP_END);
+    // vec(funcidx)
+    let entry = list_concat(entry, leb128_u(n));
+    let go = fn(i, e) {
+      if (i >= n) { e }
+      else {
+        let info = list_get(lifted_list, i);
+        let new_e = list_concat(e, leb128_u(dict_get(info, "fn_idx")));
+        go(i + 1, new_e)
+      }
+    };
+    let entry = go(0, entry);
+    let payload = list_concat(leb128_u(1), entry);
+    wrap_section(SECTION_ELEMENT, payload)
+  }
+};
+
+/// Like code_section but also emits bodies for lifted (anonymous) fns.
+/// Each lifted fn is compiled like a top-level fn but with env_ptr at local 0
+/// and original params shifted by +1.
+let code_section_with_lifted = fn(ast, fn_table, lifted_list, lifted_lookup) {
+  let helpers = list_new();
+  let helpers = list_concat(helpers, helper_alloc_body());
+  let helpers = list_concat(helpers, helper_make_int_body());
+  let helpers = list_concat(helpers, helper_make_bool_body());
+  let helpers = list_concat(helpers, helper_make_unit_body());
+  let helpers = list_concat(helpers, helper_unwrap_int_body());
+  let helpers = list_concat(helpers, helper_unwrap_bool_body());
+  let helpers = list_concat(helpers, helper_make_str_from_data_body());
+  let helpers = list_concat(helpers, helper_str_concat_body());
+  let helpers = list_concat(helpers, helper_str_length_body());
+  let helpers = list_concat(helpers, helper_int_to_str_body());
+  let helpers = list_concat(helpers, helper_to_str_body());
+  let helpers = list_concat(helpers, helper_plus_dispatch_body());
+  let helpers = list_concat(helpers, helper_print_body());
+  let helpers = list_concat(helpers, helper_now_body());
+  let helpers = list_concat(helpers, helper_random_int_body());
+  let helpers = list_concat(helpers, helper_make_list_from_data_body());
+  let helpers = list_concat(helpers, helper_list_len_body());
+  let helpers = list_concat(helpers, helper_list_get_body());
+  let helpers = list_concat(helpers, helper_list_push_body());
+  let helpers = list_concat(helpers, helper_list_set_body());
+  let helpers = list_concat(helpers, helper_list_slice_body());
+  let helpers = list_concat(helpers, helper_list_concat_body());
+  let helpers = list_concat(helpers, helper_list_reverse_body());
+  let helpers = list_concat(helpers, helper_str_eq_body());
+  let helpers = list_concat(helpers, helper_make_dict_from_data_body());
+  let helpers = list_concat(helpers, helper_dict_new_body());
+  let helpers = list_concat(helpers, helper_dict_get_body());
+  let helpers = list_concat(helpers, helper_dict_has_body());
+  let helpers = list_concat(helpers, helper_dict_set_body());
+  let helpers = list_concat(helpers, helper_dict_keys_body());
+  let helpers = list_concat(helpers, helper_str_at_body());
+  let helpers = list_concat(helpers, helper_str_slice_body());
+  let helpers = list_concat(helpers, helper_str_starts_with_body());
+  let helpers = list_concat(helpers, helper_str_ends_with_body());
+  let helpers = list_concat(helpers, helper_char_is_digit_body());
+  let helpers = list_concat(helpers, helper_char_is_alpha_body());
+  let helpers = list_concat(helpers, helper_char_is_alphanum_body());
+  let helpers = list_concat(helpers, helper_char_is_whitespace_body());
+  let helpers = list_concat(helpers, helper_net_fetch_body());
+  let helpers = list_concat(helpers, helper_read_file_body());
+  let helpers = list_concat(helpers, helper_write_file_body());
+  let helpers = list_concat(helpers, helper_str_find_body());
+  let helpers = list_concat(helpers, helper_int_of_str_body());
+  let helpers = list_concat(helpers, helper_str_chars_body());
+  let helpers = list_concat(helpers, helper_make_closure_body());
+
+  let root = ast_get(ast, dict_get(ast, "rootId"));
+  let stmts = dict_get(root, "stmtIds");
+  let user_bodies = list_reduce(stmts, list_new(), fn(acc, id) {
+    let stmt = ast_get(ast, id);
+    if (dict_get(stmt, "kind") == "Let") {
+      let val = ast_get(ast, dict_get(stmt, "valueId"));
+      if (is_fn_node(val)) { list_concat(acc, compile_fn(val, ast, fn_table, lifted_lookup, false)) }
+      else { acc }
+    } else { acc }
+  });
+  let main_body = compile_main(ast, fn_table, lifted_lookup);
+  // Lifted fn bodies — each with env_ptr at local 0.
+  let lifted_bodies = list_reduce(lifted_list, list_new(), fn(acc, info) {
+    list_concat(acc, compile_lifted_fn(dict_get(info, "node"), ast, fn_table, lifted_lookup, dict_get(info, "captures")))
+  });
+  let all_bodies = list_concat(helpers, list_concat(user_bodies, list_concat(main_body, lifted_bodies)));
+  let body_count = HELPER_FN_COUNT + list_len(dict_keys(fn_table)) + list_len(lifted_list);
   let payload = list_concat(leb128_u(body_count), all_bodies);
   wrap_section(SECTION_CODE, payload)
 };
@@ -3905,14 +4540,23 @@ let code_section = fn(ast, fn_table) {
 let pen_to_wasm = fn(ast) {
   let fn_info = collect_fns(ast);
   let fn_table = dict_get(fn_info, "table");
-  let fn_count = dict_get(fn_info, "fn_count");
+  let fn_count_no_lifted = dict_get(fn_info, "fn_count");
+
+  // Collect anonymous Fn nodes that need to be lifted to top-level WASM fns.
+  let top_ids = get_top_level_fn_ids(ast);
+  let lifted_r = collect_lifted_fns(ast_get(ast, dict_get(ast, "rootId")), ast,
+    fn_table, top_ids, fn_count_no_lifted, list_new());
+  let lifted_list = dict_get(lifted_r, "lifted");
+  let fn_count = dict_get(lifted_r, "next");
+  let num_lifted = list_len(lifted_list);
+  let lifted_lookup = build_lifted_lookup(lifted_list, fn_count_no_lifted);
 
   let header = list_new();
-  let header = list_push(header, 0);     // \0
-  let header = list_push(header, 97);    // a
-  let header = list_push(header, 115);   // s
-  let header = list_push(header, 109);   // m
-  let header = list_push(header, 1);     // version
+  let header = list_push(header, 0);
+  let header = list_push(header, 97);
+  let header = list_push(header, 115);
+  let header = list_push(header, 109);
+  let header = list_push(header, 1);
   let header = list_push(header, 0);
   let header = list_push(header, 0);
   let header = list_push(header, 0);
@@ -3920,9 +4564,11 @@ let pen_to_wasm = fn(ast) {
   list_concat(header,
     list_concat(type_section(ast, fn_table),
       list_concat(import_section(),
-        list_concat(function_section(ast, fn_count),
-          list_concat(memory_section(),
-            list_concat(global_section(),
-              list_concat(export_section(fn_count),
-                code_section(ast, fn_table))))))))
+        list_concat(function_section_with_lifted(ast, fn_count, lifted_list),
+          list_concat(table_section(num_lifted),
+            list_concat(memory_section(),
+              list_concat(global_section(),
+                list_concat(export_section(fn_count_no_lifted),
+                  list_concat(element_section(lifted_list),
+                    code_section_with_lifted(ast, fn_table, lifted_list, lifted_lookup))))))))))
 };

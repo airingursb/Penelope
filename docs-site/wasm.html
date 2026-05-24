@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Penelope — WASM backend (Phase 6.A)</title>
+<title>Penelope — WASM backend (Phase 6)</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="stylesheet" href="style.css">
 </head>
@@ -32,14 +32,18 @@
 
 <p>The <a href="https://github.com/airingursb/Penelope#design-choices">Design choices</a> section ended with: <em>"the natural successor to the TS implementation is a Penelope-implemented runtime — not a Rust rewrite that would be obsolete the moment the self-hosted compiler can target WASM or native."</em></p>
 
-<p>Phase 6.A is the first concrete step toward that. <code>std/wasm.pen</code> is a WASM backend written in Penelope. It takes an AST bundle (the kind <code>std/parser.pen</code> produces) and emits a complete WebAssembly module as a list of bytes — valid binary, loadable by any WASM runtime, no external assembler required.</p>
+<p><code>std/wasm.pen</code> is a WASM backend written in Penelope. It takes an AST bundle (the kind <code>std/parser.pen</code> produces) and emits a complete WebAssembly module as a list of bytes — valid binary, loadable by any WASM runtime, no external assembler required.</p>
 
 <pre><code>$ pen wasm examples/09-fib.pen --out fib.wasm
-wrote fib.wasm (80 bytes)
+wrote fib.wasm
 
 $ node -e "
   const m = await WebAssembly.compile(require('fs').readFileSync('fib.wasm'));
-  const i = await WebAssembly.instantiate(m);
+  const i = await WebAssembly.instantiate(m, { js: {
+    print: (p, l) =&gt; { /* ... */ }, now: () =&gt; Date.now(),
+    random_int: (lo, hi) =&gt; lo + Math.floor(Math.random() * (hi - lo)),
+    net_fetch: () =&gt; 0, read_file: () =&gt; 0, write_file: () =&gt; {}
+  }});
   console.log('fib(20) =', i.exports.main());
 "
 fib(20) = 6765</code></pre>
@@ -47,64 +51,86 @@ fib(20) = 6765</code></pre>
 <h2>What works</h2>
 
 <table>
-  <tr><th>Feature</th><th>Mapped to WASM</th></tr>
-  <tr><td><code>int</code> values</td><td><code>i32</code></td></tr>
-  <tr><td><code>bool</code> values</td><td><code>i32</code> (0 = false, 1 = true)</td></tr>
-  <tr><td><code>+ - * /</code></td><td><code>i32.add / sub / mul / div_s</code></td></tr>
-  <tr><td><code>&lt; &gt; &lt;= &gt;= == !=</code></td><td><code>i32.lt_s / gt_s / le_s / ge_s / eq / ne</code></td></tr>
-  <tr><td><code>let name = ...</code> in a fn</td><td>WASM local slot (i32)</td></tr>
-  <tr><td><code>if (cond) { ... } else { ... }</code></td><td><code>if (blocktype i32) ... else ... end</code></td></tr>
-  <tr><td>Top-level <code>let f = fn(...) { ... }</code></td><td>One WASM function per binding</td></tr>
-  <tr><td>Recursive + mutually recursive calls</td><td><code>call $fn</code> by index</td></tr>
-  <tr><td>Top-level non-fn lets</td><td>Inlined as locals of an implicit <code>main</code> export</td></tr>
+  <tr><th>Phase</th><th>Feature</th><th>How it maps to WASM</th></tr>
+  <tr><td>6.A</td><td><code>int</code>, <code>bool</code>, arithmetic, comparisons</td><td><code>i32</code> raw, then tagged via the 6.B Value layout.</td></tr>
+  <tr><td>6.A</td><td>Local <code>let</code>, <code>if/else</code>, blocks</td><td>WASM local slots, structured <code>if (blocktype i32) ... else ... end</code>.</td></tr>
+  <tr><td>6.A</td><td>Top-level fns, recursion, mutual recursion</td><td>One WASM function per binding, <code>call $fn</code> by index.</td></tr>
+  <tr><td>6.B</td><td>Tagged Values + bump allocator</td><td>8-byte cells, byte 0 = tag (1=int, 2=bool, 3=str, 4=unit, 5=list, 6=dict, 7=closure), bytes 4–7 = data/ptr.</td></tr>
+  <tr><td>6.C</td><td>Strings + 13 <code>str_*</code> / <code>char_*</code> builtins</td><td>STR Value points to <code>{len:i32, bytes:[u8]}</code>; helpers like <code>str_concat</code>, <code>str_find</code>, <code>str_chars</code>, <code>int_of_str</code> compiled to memory ops.</td></tr>
+  <tr><td>6.D</td><td>Lists + dicts</td><td>LIST is <code>{len:i32, items:[i32]}</code>; DICT is <code>{n:i32, entries:[{key_ptr, value_ptr}]}</code>. <code>list_new(a, b, c)</code> inlined as alloc + per-item store.</td></tr>
+  <tr><td>6.E</td><td>First-class fn values + closures</td><td>Anonymous Fn nodes lifted to top-level fns with signature <code>(env_ptr, ...args) -&gt; i32</code>. Closure env block laid out as <code>[table_idx, cap_0, cap_1, ...]</code>; closure Value is tag=7 + env_ptr. Indirect call via funcref TABLE + <code>call_indirect</code>.</td></tr>
+  <tr><td>6.F</td><td><code>match</code> with all 8 pattern kinds</td><td>If-else chains with <code>i32.and</code> for sub-pattern combination; literal / wildcard / var / list / dict / cons / or / guarded.</td></tr>
+  <tr><td>6.G</td><td>6 effects via host imports</td><td><code>js.print</code> / <code>js.now</code> / <code>js.random_int</code> / <code>js.net_fetch</code> / <code>js.read_file</code> / <code>js.write_file</code>. Exported <code>alloc</code> lets the host write strings into WASM memory before returning a block pointer.</td></tr>
 </table>
 
-<p>Nine end-to-end tests (<code>test/wasm-backend.test.ts</code>) cover trivial literals, arithmetic, if/else, fn calls, recursive fib, factorial, mutual recursion (is_even/is_odd), bool-as-return, and a <code>WebAssembly.validate</code> round-trip. Each test runs the same source through both the pen-built WASM backend and the TS interpreter and asserts the results match.</p>
+<p>88 end-to-end tests in <code>test/wasm-backend.test.ts</code> cover each piece. Every test runs the same source through both the pen-built WASM backend and the TS interpreter and asserts the results match.</p>
+
+<h2>How closures work (Phase 6.E)</h2>
+
+<p>An anonymous <code>fn(x) { x + d }</code> appearing inside <code>fn(d) { fn(x) { x + d } }</code> is the canonical closure: the inner fn captures <code>d</code> from the outer's scope. WASM has no native closures — every fn lives in a flat fn table with a fixed signature. So the backend does <strong>closure conversion</strong>:</p>
+
+<ol>
+  <li><strong>Free-variable analysis</strong>: <code>find_free_vars</code> walks each anonymous fn's body, computing which names it references that aren't parameters, locals, top-level fns, or builtins.</li>
+  <li><strong>Lifting</strong>: <code>collect_lifted_fns</code> assigns each anonymous Fn a top-level WASM function index plus a table index. Its signature becomes <code>(env_ptr, ...original_params) -&gt; i32</code>.</li>
+  <li><strong>Env block layout</strong>: when a Fn-literal expression is evaluated, the backend allocates <code>4 + 4*N</code> bytes where N is the number of captures. The first 4 bytes hold the table index; the next slots hold each captured Value pointer.</li>
+  <li><strong>Closure Value</strong>: the env block pointer is wrapped in a CLOSURE-tagged 8-byte cell (tag=7, bytes 4–7 = env_ptr). That's a first-class value: storeable in locals, passable as arguments, returnable.</li>
+  <li><strong>Indirect call</strong>: calling <code>f(x)</code> where <code>f</code> is a local holding a closure Value: load env_ptr from <code>f+4</code>, push it as the first arg, push user args, load table_idx from <code>env_ptr+0</code>, <code>call_indirect</code>.</li>
+  <li><strong>Capture prelude</strong>: the lifted fn's body starts with a generated prelude that loads each captured value from <code>env_ptr+(4+i*4)</code> into a local slot, so the body's <code>x + d</code> compiles to a plain <code>local.get</code> for <code>d</code>.</li>
+</ol>
+
+<pre><code>let make_adder = fn(d) {
+  fn(x) { x + d }
+};
+let add5 = make_adder(5);
+add5(37);  // 42</code></pre>
+
+<p>Two closures from the same <code>make_adder</code> capture distinct values:</p>
+
+<pre><code>let add1 = make_adder(1);
+let add10 = make_adder(10);
+add1(5) + add10(5);  // 6 + 15 = 21</code></pre>
 
 <h2>What's out of scope (documented honestly)</h2>
 
-<p>Each item below is genuinely a separate, substantial project. None of them are MVP cuts dressed up as "future work" — they were excluded with eyes open because doing them right means a different design conversation.</p>
-
 <table>
   <tr><th>Excluded</th><th>What it would take</th></tr>
-  <tr><td>Strings</td><td>WASM linear-memory string layout (length-prefixed bytes), string builtins reimplemented against memory, possibly a string-interning table.</td></tr>
-  <tr><td>Lists / dicts</td><td>Heap allocator in WASM memory; layout for variable-length sequences and hash buckets; GC strategy (mark-sweep or refcount).</td></tr>
-  <tr><td>Closures with captures</td><td>Closure-conversion pass: lift captured vars into a heap-allocated environment struct; pass an env pointer alongside the call.</td></tr>
-  <tr><td>First-class fn values</td><td>WASM <code>funcref</code> + <code>table</code> + <code>call_indirect</code>; would also need type indices for every fn signature actually called indirectly.</td></tr>
-  <tr><td>Effects (print / fetch / ...)</td><td>WASM imports for each host function; effect-log side table maintained in linear memory; the host runtime needs to vend the imports.</td></tr>
-  <tr><td>Snapshot / pause / resume</td><td>CPS transform on the AST so every function returns an explicit continuation; pause becomes "save continuation + heap, exit". This is a paper-sized change.</td></tr>
-  <tr><td><code>match</code> expressions</td><td>Pattern-compile-to-WASM equivalent of the current bytecode pattern compiler; or a structured-CFG recovery pass on existing bytecode.</td></tr>
+  <tr><td>Floats</td><td>Add <code>f64</code> Value tag + arithmetic helpers; parser already accepts float literals.</td></tr>
+  <tr><td>Arity-3+ closures</td><td>Each new arity needs a new type index in the type section; mechanical extension.</td></tr>
+  <tr><td>Captures from across multiple nested fns</td><td>The current find_free_vars handles each level locally — nested captures would need recursive env chains or flattened capture lists.</td></tr>
+  <tr><td>Snapshot / pause / resume (Phase 6.H)</td><td><strong>Architectural change.</strong> WASM's structured-stack execution model has no native way to suspend a fn mid-execution and serialize its continuation. The two paths: (1) CPS transform on the AST so every fn returns an explicit continuation, then pause = "save continuation + heap, exit"; or (2) ship a Penelope-bytecode-interpreter compiled to WASM and snapshot the bytecode VM state. Either is a paper-sized design conversation, not a bolt-on.</td></tr>
 </table>
 
-<p>If you need any of these, run the program through the regular interpreter or the JIT. The WASM backend is for the hot-path subset where you actually benefit from native execution — recursive math, bit-twiddling, decision trees over ints.</p>
+<p>For pause/resume today, run programs through the regular interpreter or the JIT. The WASM backend is for the hot-path subset where you actually benefit from native execution.</p>
 
 <h2>How it's built</h2>
 
-<p>The backend is one file, <code>std/wasm.pen</code> (~360 lines of Penelope), with no host helpers. It depends only on <code>std/iter.pen</code> (HOFs over lists). Structure:</p>
+<p>One file: <code>std/wasm.pen</code> (~4500 lines of Penelope). Depends only on <code>std/iter.pen</code>. Structure:</p>
 
 <ol>
-  <li><strong>LEB128 encoders</strong> — <code>leb128_u</code> for unsigned (sizes, indexes), <code>leb128_s_nonneg</code> for signed-but-non-negative (the <code>i32.const</code> operand; negative literals are desugared to <code>0 - N</code> by the parser, so this restriction is fine).</li>
-  <li><strong>Byte-buffer helpers</strong> — buffers are plain Penelope lists of ints. <code>vec_of_bytes</code>, <code>name_bytes</code>, <code>str_to_bytes</code> + an ASCII lookup table (Penelope has no <code>char_code</code> builtin).</li>
-  <li><strong>Two-pass compilation</strong> — pass 1 collects top-level fn-binding names and assigns indexes (incl. <code>main</code>); pass 2 emits each fn body's WASM instructions.</li>
-  <li><strong>AST → instructions</strong> — <code>compile_expr</code> walks the AST, recurses through <code>BinOp</code> / <code>If</code> / <code>Block</code> / <code>Call</code> / <code>Var</code> / literal nodes, and emits the corresponding WASM opcode bytes.</li>
-  <li><strong>Local-slot allocation</strong> — <code>prebuild_env</code> walks a fn body once to assign every <code>let</code> name a WASM local index. WASM locals are flat, so even let-bindings inside nested <code>if</code> branches share the single per-fn slot pool.</li>
-  <li><strong>Module assembler</strong> — wraps each section in <code>(id, length, payload)</code>, glues them in spec order (type → function → export → code), prepends the <code>\\0asm\\01\\00\\00\\00</code> header.</li>
+  <li><strong>LEB128 encoders</strong> — <code>leb128_u</code> for unsigned (sizes, indexes), <code>leb128_s_nonneg</code> for signed-but-non-negative literals.</li>
+  <li><strong>Byte-buffer helpers</strong> — buffers are plain Penelope lists of ints. <code>vec_of_bytes</code>, <code>name_bytes</code>, <code>str_to_bytes</code>.</li>
+  <li><strong>Three-pass compilation</strong> — pass 1 collects top-level fn names and assigns indexes; pass 2 finds all anonymous Fn nodes and assigns lifted fn_idx + table_idx + captures; pass 3 emits each fn body's WASM instructions.</li>
+  <li><strong>AST → instructions</strong> — <code>compile_expr</code> walks the AST and emits opcode bytes. Builtins (<code>print</code>, <code>str_concat</code>, <code>list_get</code>, ...) are intercepted and routed to compiled-in helpers.</li>
+  <li><strong>45 helper fns</strong> emitted into the code section: allocator, tag wrappers (<code>make_int</code>, <code>make_bool</code>, ...), tag unwrappers, string/list/dict helpers, char predicates, host-import shims, and <code>make_closure</code>.</li>
+  <li><strong>Module assembler</strong> — type → import → function → table → memory → global → export → element → code. Wraps each section in <code>(id, length, payload)</code>, prepends the <code>\0asm\01\00\00\00</code> header.</li>
 </ol>
 
 <h2>Why this matters</h2>
 
-<p>Before Phase 6.A, "Penelope can compile Penelope" meant "to Penelope bytecode that the TS VM runs." That's already a real fixpoint, but the bytecode lives or dies with the TS host.</p>
+<p>A Penelope program, written by a user, parsed by a Penelope-implemented parser, compiled by a Penelope-implemented WASM backend, runs in any environment that supports WebAssembly — Node, browsers, Cloudflare Workers, Wasmtime, the WASM runtime baked into your phone. The TS implementation is the bootstrap stage; for the WASM-targetable subset of the language, the TS code is now optional, not load-bearing.</p>
 
-<p>Phase 6.A breaks the language out of the host. A Penelope program, written by a user, parsed by a Penelope-implemented parser, compiled by a Penelope-implemented WASM backend, runs in any environment that supports WebAssembly — Node, browsers, Cloudflare Workers, Wasmtime, the wasm runtime baked into your phone. The TS implementation is the bootstrap stage; once you have a WASM-targetable self-hosted frontend, the TS code becomes optional, not load-bearing.</p>
-
-<p>The int-only subset is intentionally where the WASM story is cleanest: no GC, no host imports, no continuation transforms. Each excluded feature in the table above is a known path to extend, and each one is its own design conversation that deserves its own pass. The current ~360-line backend is the seed crystal that makes those next steps concrete instead of speculative.</p>
-
-<h2>What's next</h2>
-
+<p>Each phase from 6.A to 6.G expanded that subset:</p>
 <ul>
-  <li><strong>Phase 6.B (potential)</strong>: WASM target for strings + lists via a small allocator in linear memory. Would let the self-hosted parser/compiler itself emit to WASM and self-host on the WASM runtime.</li>
-  <li><strong>Phase 6.C (potential)</strong>: CPS transform → snapshot/pause in WASM, so the durable-execution model works in WASM environments (Cloudflare Workers being the obvious target).</li>
+  <li><strong>6.A</strong>: ints + control flow + top-level fns. <em>"Recursive math runs natively."</em></li>
+  <li><strong>6.B</strong>: tagged Values + heap. <em>"Multiple types coexist."</em></li>
+  <li><strong>6.C</strong>: strings + 13 builtins. <em>"Text processing runs natively."</em></li>
+  <li><strong>6.D</strong>: lists + dicts. <em>"Data structures work."</em></li>
+  <li><strong>6.E</strong>: closures + first-class fns. <em>"Higher-order code works."</em></li>
+  <li><strong>6.F</strong>: <code>match</code>. <em>"Pattern matching works."</em></li>
+  <li><strong>6.G</strong>: 6 host effects. <em>"I/O works — print, time, randomness, fetch, file read/write."</em></li>
 </ul>
+
+<p>What's left in the language vs the WASM target is essentially: floats, snapshot/resume, and a handful of edge cases. For everything else, the WASM backend is the path forward.</p>
 
 <footer>
   © 2026 Airing · <a href="https://github.com/airingursb/Penelope">github.com/airingursb/Penelope</a>
