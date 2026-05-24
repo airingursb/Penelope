@@ -152,7 +152,7 @@ let IMPORT_JS_RANDOM_INT = 2;
 
 // Helper functions (indexes shown are ABSOLUTE — they already include the
 // IMPORT_FN_COUNT offset, since user code calls helpers via the global fn idx).
-let HELPER_FN_COUNT = 23;
+let HELPER_FN_COUNT = 30;
 let H_ALLOC               = 3;
 let H_MAKE_INT            = 4;
 let H_MAKE_BOOL           = 5;
@@ -176,6 +176,13 @@ let H_LIST_SET            = 22;
 let H_LIST_SLICE          = 23;
 let H_LIST_CONCAT         = 24;
 let H_LIST_REVERSE        = 25;
+let H_STR_EQ              = 26;
+let H_MAKE_DICT_FROM_DATA = 27;
+let H_DICT_NEW            = 28;
+let H_DICT_GET            = 29;
+let H_DICT_HAS            = 30;
+let H_DICT_SET            = 31;
+let H_DICT_KEYS           = 32;
 
 // Type indices we reserve up front (one per distinct fn signature used by
 // helpers + imports).
@@ -330,6 +337,11 @@ let builtin_helper_for = fn(name) {
     "list_slice" => H_LIST_SLICE,
     "list_concat" => H_LIST_CONCAT,
     "list_reverse" => H_LIST_REVERSE,
+    "dict_new" => H_DICT_NEW,
+    "dict_get" => H_DICT_GET,
+    "dict_has" => H_DICT_HAS,
+    "dict_set" => H_DICT_SET,
+    "dict_keys" => H_DICT_KEYS,
     _ => 0 - 1,
   }
 };
@@ -1859,6 +1871,585 @@ let helper_list_reverse_body = fn() {
   make_code_entry(4, body)
 };
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Dict helpers (Phase 6.D dicts).
+// A DICT Value cell points to a {len:i32, entries:[(key:i32, val:i32)]} block
+// where each entry is 8 bytes (key STR-Value-ptr followed by val Value-ptr).
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// str_eq(s1, s2) -> i32 (raw 0/1). Used by dict_get/has/set for key lookup.
+/// Locals beyond params: d1=2, d2=3, l1=4, i=5
+let helper_str_eq_body = fn() {
+  let body = list_new();
+  // d1 = load(s1+4); d2 = load(s2+4)
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 0);
+  let body = list_push(body, OP_I32_LOAD);
+  let body = list_concat(body, memarg(2, 4));
+  let body = list_push(body, OP_LOCAL_SET);
+  let body = list_push(body, 2);
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 1);
+  let body = list_push(body, OP_I32_LOAD);
+  let body = list_concat(body, memarg(2, 4));
+  let body = list_push(body, OP_LOCAL_SET);
+  let body = list_push(body, 3);
+  // l1 = load(d1+0); compare with load(d2+0)
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 2);
+  let body = list_push(body, OP_I32_LOAD);
+  let body = list_concat(body, memarg(2, 0));
+  let body = list_push(body, OP_LOCAL_TEE);
+  let body = list_push(body, 4);
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 3);
+  let body = list_push(body, OP_I32_LOAD);
+  let body = list_concat(body, memarg(2, 0));
+  let body = list_push(body, OP_I32_NE);
+  let body = list_push(body, OP_IF);
+  let body = list_push(body, BLOCKTYPE_VOID);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(0)));
+  let body = list_push(body, OP_RETURN);
+  let body = list_push(body, OP_END);
+  // i = 0
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(0)));
+  let body = list_push(body, OP_LOCAL_SET);
+  let body = list_push(body, 5);
+  // loop comparing bytes
+  let body = list_push(body, OP_BLOCK);
+  let body = list_push(body, BLOCKTYPE_VOID);
+  let body = list_push(body, OP_LOOP);
+  let body = list_push(body, BLOCKTYPE_VOID);
+  // if i >= l1, return 1
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 5);
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 4);
+  let body = list_push(body, OP_I32_GE_S);
+  let body = list_push(body, OP_IF);
+  let body = list_push(body, BLOCKTYPE_VOID);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(1)));
+  let body = list_push(body, OP_RETURN);
+  let body = list_push(body, OP_END);
+  // load8(d1+4+i), load8(d2+4+i), compare
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 2);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(4)));
+  let body = list_push(body, OP_I32_ADD);
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 5);
+  let body = list_push(body, OP_I32_ADD);
+  let body = list_push(body, OP_I32_LOAD8_U);
+  let body = list_concat(body, memarg(0, 0));
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 3);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(4)));
+  let body = list_push(body, OP_I32_ADD);
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 5);
+  let body = list_push(body, OP_I32_ADD);
+  let body = list_push(body, OP_I32_LOAD8_U);
+  let body = list_concat(body, memarg(0, 0));
+  let body = list_push(body, OP_I32_NE);
+  let body = list_push(body, OP_IF);
+  let body = list_push(body, BLOCKTYPE_VOID);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(0)));
+  let body = list_push(body, OP_RETURN);
+  let body = list_push(body, OP_END);
+  // i++
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 5);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(1)));
+  let body = list_push(body, OP_I32_ADD);
+  let body = list_push(body, OP_LOCAL_SET);
+  let body = list_push(body, 5);
+  // br 0 (continue loop)
+  let body = list_push(body, OP_BR);
+  let body = list_concat(body, leb128_u(0));
+  let body = list_push(body, OP_END);   // end loop
+  let body = list_push(body, OP_END);   // end block
+  // unreachable (loop only exits via return)
+  let body = list_push(body, OP_UNREACHABLE);
+  make_code_entry(4, body)
+};
+
+/// make_dict_from_data(block_ptr) -> i32 — wraps block into DICT Value cell.
+let helper_make_dict_from_data_body = fn() {
+  let body = list_new();
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(8)));
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_CALL), leb128_u(H_ALLOC)));
+  let body = list_push(body, OP_LOCAL_SET);
+  let body = list_push(body, 1);
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 1);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(TAG_DICT)));
+  let body = list_push(body, OP_I32_STORE8);
+  let body = list_concat(body, memarg(0, 0));
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 1);
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 0);
+  let body = list_push(body, OP_I32_STORE);
+  let body = list_concat(body, memarg(2, 4));
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 1);
+  make_code_entry(1, body)
+};
+
+/// dict_new() -> i32 — allocates an empty {len=0} block, wraps as DICT.
+let helper_dict_new_body = fn() {
+  let body = list_new();
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(4)));
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_CALL), leb128_u(H_ALLOC)));
+  let body = list_push(body, OP_LOCAL_TEE);
+  let body = list_push(body, 0);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(0)));
+  let body = list_push(body, OP_I32_STORE);
+  let body = list_concat(body, memarg(2, 0));
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 0);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_CALL), leb128_u(H_MAKE_DICT_FROM_DATA)));
+  make_code_entry(1, body)
+};
+
+/// dict_get(d, k) -> Value
+/// Linear search; returns value Value or unit if not found.
+/// Locals: d_block=2, len=3, i=4, entry_ptr=5
+let helper_dict_get_body = fn() {
+  let body = list_new();
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 0);
+  let body = list_push(body, OP_I32_LOAD);
+  let body = list_concat(body, memarg(2, 4));
+  let body = list_push(body, OP_LOCAL_SET);
+  let body = list_push(body, 2);
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 2);
+  let body = list_push(body, OP_I32_LOAD);
+  let body = list_concat(body, memarg(2, 0));
+  let body = list_push(body, OP_LOCAL_SET);
+  let body = list_push(body, 3);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(0)));
+  let body = list_push(body, OP_LOCAL_SET);
+  let body = list_push(body, 4);
+  // loop
+  let body = list_push(body, OP_BLOCK);
+  let body = list_push(body, BLOCKTYPE_VOID);
+  let body = list_push(body, OP_LOOP);
+  let body = list_push(body, BLOCKTYPE_VOID);
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 4);
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 3);
+  let body = list_push(body, OP_I32_GE_S);
+  let body = list_push(body, OP_BR_IF);
+  let body = list_concat(body, leb128_u(1));
+  // entry_ptr = d_block + 4 + i*8
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 2);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(4)));
+  let body = list_push(body, OP_I32_ADD);
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 4);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(8)));
+  let body = list_push(body, OP_I32_MUL);
+  let body = list_push(body, OP_I32_ADD);
+  let body = list_push(body, OP_LOCAL_SET);
+  let body = list_push(body, 5);
+  // if str_eq(load(entry_ptr), k) { return load(entry_ptr+4) }
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 5);
+  let body = list_push(body, OP_I32_LOAD);
+  let body = list_concat(body, memarg(2, 0));
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 1);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_CALL), leb128_u(H_STR_EQ)));
+  let body = list_push(body, OP_IF);
+  let body = list_push(body, BLOCKTYPE_VOID);
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 5);
+  let body = list_push(body, OP_I32_LOAD);
+  let body = list_concat(body, memarg(2, 4));
+  let body = list_push(body, OP_RETURN);
+  let body = list_push(body, OP_END);
+  // i++; br 0
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 4);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(1)));
+  let body = list_push(body, OP_I32_ADD);
+  let body = list_push(body, OP_LOCAL_SET);
+  let body = list_push(body, 4);
+  let body = list_push(body, OP_BR);
+  let body = list_concat(body, leb128_u(0));
+  let body = list_push(body, OP_END);   // end loop
+  let body = list_push(body, OP_END);   // end block
+  // not found: return make_unit()
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_CALL), leb128_u(H_MAKE_UNIT)));
+  make_code_entry(4, body)
+};
+
+/// dict_has(d, k) -> i32 (bool Value)
+/// Same loop shape as dict_get but returns true/false instead of the value.
+let helper_dict_has_body = fn() {
+  let body = list_new();
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 0);
+  let body = list_push(body, OP_I32_LOAD);
+  let body = list_concat(body, memarg(2, 4));
+  let body = list_push(body, OP_LOCAL_SET);
+  let body = list_push(body, 2);
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 2);
+  let body = list_push(body, OP_I32_LOAD);
+  let body = list_concat(body, memarg(2, 0));
+  let body = list_push(body, OP_LOCAL_SET);
+  let body = list_push(body, 3);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(0)));
+  let body = list_push(body, OP_LOCAL_SET);
+  let body = list_push(body, 4);
+  let body = list_push(body, OP_BLOCK);
+  let body = list_push(body, BLOCKTYPE_VOID);
+  let body = list_push(body, OP_LOOP);
+  let body = list_push(body, BLOCKTYPE_VOID);
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 4);
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 3);
+  let body = list_push(body, OP_I32_GE_S);
+  let body = list_push(body, OP_BR_IF);
+  let body = list_concat(body, leb128_u(1));
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 2);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(4)));
+  let body = list_push(body, OP_I32_ADD);
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 4);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(8)));
+  let body = list_push(body, OP_I32_MUL);
+  let body = list_push(body, OP_I32_ADD);
+  let body = list_push(body, OP_I32_LOAD);
+  let body = list_concat(body, memarg(2, 0));
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 1);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_CALL), leb128_u(H_STR_EQ)));
+  let body = list_push(body, OP_IF);
+  let body = list_push(body, BLOCKTYPE_VOID);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(1)));
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_CALL), leb128_u(H_MAKE_BOOL)));
+  let body = list_push(body, OP_RETURN);
+  let body = list_push(body, OP_END);
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 4);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(1)));
+  let body = list_push(body, OP_I32_ADD);
+  let body = list_push(body, OP_LOCAL_SET);
+  let body = list_push(body, 4);
+  let body = list_push(body, OP_BR);
+  let body = list_concat(body, leb128_u(0));
+  let body = list_push(body, OP_END);
+  let body = list_push(body, OP_END);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(0)));
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_CALL), leb128_u(H_MAKE_BOOL)));
+  make_code_entry(3, body)
+};
+
+/// dict_set(d, k, v) -> i32 (new DICT Value)
+/// First scans existing entries — if key matches, copies whole block and
+/// replaces that entry's value. Otherwise appends a new entry.
+/// Locals: d_block=3, len=4, i=5, entry_ptr=6, new_block=7, found_idx=8
+let helper_dict_set_body = fn() {
+  let body = list_new();
+  // d_block = load(d+4); len = load(d_block)
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 0);
+  let body = list_push(body, OP_I32_LOAD);
+  let body = list_concat(body, memarg(2, 4));
+  let body = list_push(body, OP_LOCAL_SET);
+  let body = list_push(body, 3);
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 3);
+  let body = list_push(body, OP_I32_LOAD);
+  let body = list_concat(body, memarg(2, 0));
+  let body = list_push(body, OP_LOCAL_SET);
+  let body = list_push(body, 4);
+  // found_idx = -1
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(0)));
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(1)));
+  let body = list_push(body, OP_I32_SUB);
+  let body = list_push(body, OP_LOCAL_SET);
+  let body = list_push(body, 8);
+  // i = 0
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(0)));
+  let body = list_push(body, OP_LOCAL_SET);
+  let body = list_push(body, 5);
+  // scan loop: find existing key
+  let body = list_push(body, OP_BLOCK);
+  let body = list_push(body, BLOCKTYPE_VOID);
+  let body = list_push(body, OP_LOOP);
+  let body = list_push(body, BLOCKTYPE_VOID);
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 5);
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 4);
+  let body = list_push(body, OP_I32_GE_S);
+  let body = list_push(body, OP_BR_IF);
+  let body = list_concat(body, leb128_u(1));
+  // entry_ptr = d_block + 4 + i*8
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 3);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(4)));
+  let body = list_push(body, OP_I32_ADD);
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 5);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(8)));
+  let body = list_push(body, OP_I32_MUL);
+  let body = list_push(body, OP_I32_ADD);
+  let body = list_push(body, OP_LOCAL_SET);
+  let body = list_push(body, 6);
+  // if str_eq(load(entry_ptr), k) { found_idx = i; break }
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 6);
+  let body = list_push(body, OP_I32_LOAD);
+  let body = list_concat(body, memarg(2, 0));
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 1);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_CALL), leb128_u(H_STR_EQ)));
+  let body = list_push(body, OP_IF);
+  let body = list_push(body, BLOCKTYPE_VOID);
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 5);
+  let body = list_push(body, OP_LOCAL_SET);
+  let body = list_push(body, 8);
+  // br depths from inside this if: 0=if, 1=loop, 2=block. br 2 exits the block.
+  let body = list_push(body, OP_BR);
+  let body = list_concat(body, leb128_u(2));
+  let body = list_push(body, OP_END);
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 5);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(1)));
+  let body = list_push(body, OP_I32_ADD);
+  let body = list_push(body, OP_LOCAL_SET);
+  let body = list_push(body, 5);
+  let body = list_push(body, OP_BR);
+  let body = list_concat(body, leb128_u(0));
+  let body = list_push(body, OP_END);
+  let body = list_push(body, OP_END);
+  // If found_idx >= 0: copy block as-is, replace val at entry[found_idx].val
+  // Else: alloc bigger block, copy, append new entry
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 8);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(0)));
+  let body = list_push(body, OP_I32_GE_S);
+  let body = list_push(body, OP_IF);
+  let body = list_push(body, BLOCKTYPE_VOID);
+  // === REPLACE path ===
+  // new_block = alloc(4 + len*8); store len; memory.copy entries; replace val
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(4)));
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 4);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(8)));
+  let body = list_push(body, OP_I32_MUL);
+  let body = list_push(body, OP_I32_ADD);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_CALL), leb128_u(H_ALLOC)));
+  let body = list_push(body, OP_LOCAL_SET);
+  let body = list_push(body, 7);
+  // store len
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 7);
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 4);
+  let body = list_push(body, OP_I32_STORE);
+  let body = list_concat(body, memarg(2, 0));
+  // memory.copy(new_block + 4, d_block + 4, len * 8)
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 7);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(4)));
+  let body = list_push(body, OP_I32_ADD);
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 3);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(4)));
+  let body = list_push(body, OP_I32_ADD);
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 4);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(8)));
+  let body = list_push(body, OP_I32_MUL);
+  let body = list_concat(body, WASM_MEMORY_COPY());
+  // store v at new_block + 4 + found_idx * 8 + 4
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 7);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(4)));
+  let body = list_push(body, OP_I32_ADD);
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 8);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(8)));
+  let body = list_push(body, OP_I32_MUL);
+  let body = list_push(body, OP_I32_ADD);
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 2);
+  let body = list_push(body, OP_I32_STORE);
+  let body = list_concat(body, memarg(2, 4));
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 7);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_CALL), leb128_u(H_MAKE_DICT_FROM_DATA)));
+  let body = list_push(body, OP_RETURN);
+  let body = list_push(body, OP_END);
+  // === APPEND path ===
+  // new_block = alloc(4 + (len+1)*8); store len+1; copy old; append (k, v)
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(4)));
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 4);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(1)));
+  let body = list_push(body, OP_I32_ADD);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(8)));
+  let body = list_push(body, OP_I32_MUL);
+  let body = list_push(body, OP_I32_ADD);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_CALL), leb128_u(H_ALLOC)));
+  let body = list_push(body, OP_LOCAL_SET);
+  let body = list_push(body, 7);
+  // store new length
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 7);
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 4);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(1)));
+  let body = list_push(body, OP_I32_ADD);
+  let body = list_push(body, OP_I32_STORE);
+  let body = list_concat(body, memarg(2, 0));
+  // copy old entries
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 7);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(4)));
+  let body = list_push(body, OP_I32_ADD);
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 3);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(4)));
+  let body = list_push(body, OP_I32_ADD);
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 4);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(8)));
+  let body = list_push(body, OP_I32_MUL);
+  let body = list_concat(body, WASM_MEMORY_COPY());
+  // write new key at offset 4 + len*8
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 7);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(4)));
+  let body = list_push(body, OP_I32_ADD);
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 4);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(8)));
+  let body = list_push(body, OP_I32_MUL);
+  let body = list_push(body, OP_I32_ADD);
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 1);
+  let body = list_push(body, OP_I32_STORE);
+  let body = list_concat(body, memarg(2, 0));
+  // write new val at offset 4 + len*8 + 4
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 7);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(4)));
+  let body = list_push(body, OP_I32_ADD);
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 4);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(8)));
+  let body = list_push(body, OP_I32_MUL);
+  let body = list_push(body, OP_I32_ADD);
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 2);
+  let body = list_push(body, OP_I32_STORE);
+  let body = list_concat(body, memarg(2, 4));
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 7);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_CALL), leb128_u(H_MAKE_DICT_FROM_DATA)));
+  make_code_entry(6, body)
+};
+
+/// dict_keys(d) -> LIST of key STR Values
+/// Locals: d_block=1, len=2, list_block=3, i=4, entry_ptr=5
+let helper_dict_keys_body = fn() {
+  let body = list_new();
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 0);
+  let body = list_push(body, OP_I32_LOAD);
+  let body = list_concat(body, memarg(2, 4));
+  let body = list_push(body, OP_LOCAL_SET);
+  let body = list_push(body, 1);
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 1);
+  let body = list_push(body, OP_I32_LOAD);
+  let body = list_concat(body, memarg(2, 0));
+  let body = list_push(body, OP_LOCAL_SET);
+  let body = list_push(body, 2);
+  // list_block = alloc(4 + len*4)
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(4)));
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 2);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(4)));
+  let body = list_push(body, OP_I32_MUL);
+  let body = list_push(body, OP_I32_ADD);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_CALL), leb128_u(H_ALLOC)));
+  let body = list_push(body, OP_LOCAL_SET);
+  let body = list_push(body, 3);
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 3);
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 2);
+  let body = list_push(body, OP_I32_STORE);
+  let body = list_concat(body, memarg(2, 0));
+  // loop: copy keys
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(0)));
+  let body = list_push(body, OP_LOCAL_SET);
+  let body = list_push(body, 4);
+  let body = list_push(body, OP_BLOCK);
+  let body = list_push(body, BLOCKTYPE_VOID);
+  let body = list_push(body, OP_LOOP);
+  let body = list_push(body, BLOCKTYPE_VOID);
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 4);
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 2);
+  let body = list_push(body, OP_I32_GE_S);
+  let body = list_push(body, OP_BR_IF);
+  let body = list_concat(body, leb128_u(1));
+  // store list_block[4 + i*4] ← load(d_block[4 + i*8])
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 3);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(4)));
+  let body = list_push(body, OP_I32_ADD);
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 4);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(4)));
+  let body = list_push(body, OP_I32_MUL);
+  let body = list_push(body, OP_I32_ADD);
+  // value: load(d_block + 4 + i*8)
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 1);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(4)));
+  let body = list_push(body, OP_I32_ADD);
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 4);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(8)));
+  let body = list_push(body, OP_I32_MUL);
+  let body = list_push(body, OP_I32_ADD);
+  let body = list_push(body, OP_I32_LOAD);
+  let body = list_concat(body, memarg(2, 0));
+  let body = list_push(body, OP_I32_STORE);
+  let body = list_concat(body, memarg(2, 0));
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 4);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(1)));
+  let body = list_push(body, OP_I32_ADD);
+  let body = list_push(body, OP_LOCAL_SET);
+  let body = list_push(body, 4);
+  let body = list_push(body, OP_BR);
+  let body = list_concat(body, leb128_u(0));
+  let body = list_push(body, OP_END);
+  let body = list_push(body, OP_END);
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 3);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_CALL), leb128_u(H_MAKE_LIST_FROM_DATA)));
+  make_code_entry(5, body)
+};
+
 /// print(s: i32) -> i32 (unit)
 /// Extracts ptr+len from a STR Value, calls the imported js_print, returns unit.
 let helper_print_body = fn() {
@@ -1919,7 +2510,9 @@ let type_section = fn(ast, fn_table) {
   let base = list_push(base, make_type(1));
   let base = list_push(base, make_type(2));
   let base = list_push(base, make_void_type_2());
-  // Reserve 2 type slots (indexes 4 & 5) for arity-3 helper fns (list_set, list_slice).
+  // Reserve 3 type slots (indexes 4-6) for arity-3 helper fns
+  // (list_set, list_slice, dict_set).
+  let base = list_push(base, make_type(3));
   let base = list_push(base, make_type(3));
   let base = list_push(base, make_type(3));
   // For each user fn with arity > 2, emit an extra type.
@@ -1948,9 +2541,9 @@ let type_idx_for_arity = fn(arity, extras_offset) {
   if (arity == 0) { TYPE_IDX_0_TO_I32 }
   else { if (arity == 1) { TYPE_IDX_1_TO_I32 }
     else { if (arity == 2) { TYPE_IDX_2_TO_I32 }
-      // Base types occupy 0..3; reserved helper arity-3 types occupy 4-5;
-      // user fns with arity > 2 start at 6.
-      else { 6 + extras_offset } } }
+      // Base types occupy 0..3; reserved helper arity-3 types occupy 4-6;
+      // user fns with arity > 2 start at 7.
+      else { 7 + extras_offset } } }
 };
 
 /// Function section: list of type-indexes, one per function (helpers + user + main).
@@ -1984,6 +2577,13 @@ let function_section = fn(ast, fn_count) {
   let helper_indexes = list_push(helper_indexes, 4 + 1);                // list_slice (second arity-3 extra)
   let helper_indexes = list_push(helper_indexes, TYPE_IDX_2_TO_I32);   // list_concat
   let helper_indexes = list_push(helper_indexes, TYPE_IDX_1_TO_I32);   // list_reverse
+  let helper_indexes = list_push(helper_indexes, TYPE_IDX_2_TO_I32);   // str_eq
+  let helper_indexes = list_push(helper_indexes, TYPE_IDX_1_TO_I32);   // make_dict_from_data
+  let helper_indexes = list_push(helper_indexes, TYPE_IDX_0_TO_I32);   // dict_new
+  let helper_indexes = list_push(helper_indexes, TYPE_IDX_2_TO_I32);   // dict_get
+  let helper_indexes = list_push(helper_indexes, TYPE_IDX_2_TO_I32);   // dict_has
+  let helper_indexes = list_push(helper_indexes, 4 + 2);                // dict_set (third arity-3 reserved slot)
+  let helper_indexes = list_push(helper_indexes, TYPE_IDX_1_TO_I32);   // dict_keys
   // User fns, in source order — track how many high-arity extras we've used.
   let user_acc = list_reduce(stmts, dict_set(dict_set(dict_new(),
     "indexes", list_new()), "extras_used", 0), fn(acc, id) {
@@ -2088,6 +2688,13 @@ let code_section = fn(ast, fn_table) {
   let helpers = list_concat(helpers, helper_list_slice_body());
   let helpers = list_concat(helpers, helper_list_concat_body());
   let helpers = list_concat(helpers, helper_list_reverse_body());
+  let helpers = list_concat(helpers, helper_str_eq_body());
+  let helpers = list_concat(helpers, helper_make_dict_from_data_body());
+  let helpers = list_concat(helpers, helper_dict_new_body());
+  let helpers = list_concat(helpers, helper_dict_get_body());
+  let helpers = list_concat(helpers, helper_dict_has_body());
+  let helpers = list_concat(helpers, helper_dict_set_body());
+  let helpers = list_concat(helpers, helper_dict_keys_body());
 
   let root = ast_get(ast, dict_get(ast, "rootId"));
   let stmts = dict_get(root, "stmtIds");
