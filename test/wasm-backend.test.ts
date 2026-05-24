@@ -471,6 +471,54 @@ test('wasm backend (6.D): list of strings + iteration prints each', async () => 
   expect(captured).toEqual(['alpha', 'beta', 'gamma']);
 });
 
+test('wasm backend (6.D tier-2): list_set replaces at index, original preserved', async () => {
+  const source = `
+    let a = list_new(1, 2, 3);
+    let b = list_set(a, 1, 99);
+    let r = list_get(a, 1) + list_get(b, 1);
+    r;
+  `;
+  const bytes = await penEmitWasm(source);
+  expect(await runWasmMain(bytes)).toBe(101);   // 2 + 99
+});
+
+test('wasm backend (6.D tier-2): list_slice picks subrange', async () => {
+  const source = `
+    let xs = list_new(10, 20, 30, 40, 50);
+    let ys = list_slice(xs, 1, 4);
+    let r = list_len(ys) * 100 + list_get(ys, 0) + list_get(ys, 2);
+    r;
+  `;
+  const bytes = await penEmitWasm(source);
+  // ys = [20, 30, 40]; len*100 + 20 + 40 = 360
+  expect(await runWasmMain(bytes)).toBe(360);
+});
+
+test('wasm backend (6.D tier-2): list_concat joins two lists', async () => {
+  const source = `
+    let a = list_new(1, 2);
+    let b = list_new(3, 4, 5);
+    let c = list_concat(a, b);
+    let r = list_len(c) + list_get(c, 4);
+    r;
+  `;
+  const bytes = await penEmitWasm(source);
+  // c = [1,2,3,4,5] len=5; get(4)=5; 5+5=10
+  expect(await runWasmMain(bytes)).toBe(10);
+});
+
+test('wasm backend (6.D tier-2): list_reverse reverses order', async () => {
+  const source = `
+    let xs = list_new(1, 2, 3, 4);
+    let ys = list_reverse(xs);
+    let r = list_get(ys, 0) * 1000 + list_get(ys, 1) * 100 + list_get(ys, 2) * 10 + list_get(ys, 3);
+    r;
+  `;
+  const bytes = await penEmitWasm(source);
+  // ys = [4, 3, 2, 1]; 4000 + 300 + 20 + 1 = 4321
+  expect(await runWasmMain(bytes)).toBe(4321);
+});
+
 test('wasm backend (6.C): memory export — can decode string bytes from heap', async () => {
   const source = 'let s = "hello"; let r = str_length(s); r;';
   const bytes = await penEmitWasm(source);
