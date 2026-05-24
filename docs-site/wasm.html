@@ -63,7 +63,7 @@ fib(20) = 6765</code></pre>
   <tr><td>6.G</td><td>6 effects via host imports</td><td><code>js.print</code> / <code>js.now</code> / <code>js.random_int</code> / <code>js.net_fetch</code> / <code>js.read_file</code> / <code>js.write_file</code>. Exported <code>alloc</code> lets the host write strings into WASM memory before returning a block pointer.</td></tr>
 </table>
 
-<p>88 end-to-end tests in <code>test/wasm-backend.test.ts</code> cover each piece. Every test runs the same source through both the pen-built WASM backend and the TS interpreter and asserts the results match.</p>
+<p>96 end-to-end tests in <code>test/wasm-backend.test.ts</code> cover each piece. Every test runs the same source through both the pen-built WASM backend and the TS interpreter and asserts the results match.</p>
 
 <h2>How closures work (Phase 6.E)</h2>
 
@@ -104,7 +104,7 @@ add1(5) + add10(5);  // 6 + 15 = 21</code></pre>
 
 <h2>How it's built</h2>
 
-<p>One file: <code>std/wasm.pen</code> (~4500 lines of Penelope). Depends only on <code>std/iter.pen</code>. Structure:</p>
+<p>One file: <code>std/wasm.pen</code> (~5400 lines of Penelope). Depends only on <code>std/iter.pen</code>. Structure:</p>
 
 <ol>
   <li><strong>LEB128 encoders</strong> — <code>leb128_u</code> for unsigned (sizes, indexes), <code>leb128_s_nonneg</code> for signed-but-non-negative literals.</li>

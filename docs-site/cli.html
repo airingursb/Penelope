@@ -152,14 +152,19 @@ resumed (frame@line 14) — printing: 42</code></pre>
 
 <h2>pen wasm</h2>
 
-<p>Compile a <code>.pen</code> source to a WebAssembly module via the Penelope-implemented backend (<code>std/wasm.pen</code>). Handles the int-only subset of Penelope — see the <a href="wasm.html">WASM page</a> for the precise scope. Output is a standard <code>.wasm</code> file loadable by any WASM runtime (Node, browsers, Cloudflare Workers, Wasmtime).</p>
+<p>Compile a <code>.pen</code> source to a WebAssembly module via the Penelope-implemented backend (<code>std/wasm.pen</code>). Handles a large subset of the language — ints/bools, strings, lists/dicts, closures + first-class fns, <code>match</code>, and 6 effects via host imports. See the <a href="wasm.html">WASM page</a> for the precise scope and what's still excluded (floats, snapshot/pause/resume). Output is a standard <code>.wasm</code> file loadable by any WASM runtime (Node, browsers, Cloudflare Workers, Wasmtime).</p>
 
 <pre><code>$ pen wasm examples/09-fib.pen --out fib.wasm
-wrote fib.wasm (80 bytes)
+wrote fib.wasm
 
 $ node -e "
   const m = await WebAssembly.compile(require('fs').readFileSync('fib.wasm'));
-  const i = await WebAssembly.instantiate(m);
+  const i = await WebAssembly.instantiate(m, { js: {
+    print: (p, l) =&gt; { /* read UTF-8 from memory[p..p+l] */ },
+    now: () =&gt; Date.now(),
+    random_int: (lo, hi) =&gt; lo + Math.floor(Math.random() * (hi - lo)),
+    net_fetch: () =&gt; 0, read_file: () =&gt; 0, write_file: () =&gt; {},
+  }});
   console.log('fib(20) =', i.exports.main());
 "
 fib(20) = 6765</code></pre>
