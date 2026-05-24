@@ -519,6 +519,78 @@ test('wasm backend (6.D tier-2): list_reverse reverses order', async () => {
   expect(await runWasmMain(bytes)).toBe(4321);
 });
 
+// ── Phase 6.D: dicts ─────────────────────────────────────────────────────────
+
+test('wasm backend (6.D dicts): dict_new + dict_set + dict_get', async () => {
+  const source = `
+    let d = dict_set(dict_set(dict_new(), "k", 42), "j", 99);
+    let r = dict_get(d, "k");
+    r;
+  `;
+  const bytes = await penEmitWasm(source);
+  expect(await runWasmMain(bytes)).toBe(42);
+});
+
+test('wasm backend (6.D dicts): dict_set replaces existing key', async () => {
+  const source = `
+    let d = dict_set(dict_set(dict_set(dict_new(), "n", 1), "n", 2), "n", 3);
+    let r = dict_get(d, "n");
+    r;
+  `;
+  const bytes = await penEmitWasm(source);
+  expect(await runWasmMain(bytes)).toBe(3);
+});
+
+test('wasm backend (6.D dicts): dict_has finds + misses', async () => {
+  const source = `
+    let d = dict_set(dict_set(dict_new(), "x", 1), "y", 2);
+    let r = if (dict_has(d, "x")) { 100 } else { 0 };
+    let r2 = if (dict_has(d, "z")) { 10 } else { 0 };
+    let total = r + r2;
+    total;
+  `;
+  const bytes = await penEmitWasm(source);
+  expect(await runWasmMain(bytes)).toBe(100);
+});
+
+test('wasm backend (6.D dicts): dict_keys returns list of keys', async () => {
+  const source = `
+    let d = dict_set(dict_set(dict_set(dict_new(), "a", 1), "b", 2), "c", 3);
+    let ks = dict_keys(d);
+    let r = list_len(ks);
+    r;
+  `;
+  const bytes = await penEmitWasm(source);
+  expect(await runWasmMain(bytes)).toBe(3);
+});
+
+test('wasm backend (6.D dicts): dict immutability — old preserved after set', async () => {
+  const source = `
+    let a = dict_set(dict_new(), "k", 1);
+    let b = dict_set(a, "k", 999);
+    let r = dict_get(a, "k") + dict_get(b, "k");
+    r;
+  `;
+  const bytes = await penEmitWasm(source);
+  // a["k"] = 1; b["k"] = 999; 1 + 999 = 1000
+  expect(await runWasmMain(bytes)).toBe(1000);
+});
+
+test('wasm backend (6.D dicts): nested dict_get via iteration over keys', async () => {
+  const source = `
+    let total_values = fn(d, ks, i) {
+      if (i >= list_len(ks)) { 0 }
+      else { dict_get(d, list_get(ks, i)) + total_values(d, ks, i + 1) }
+    };
+    let d = dict_set(dict_set(dict_set(dict_new(), "a", 10), "b", 20), "c", 30);
+    let ks = dict_keys(d);
+    let r = total_values(d, ks, 0);
+    r;
+  `;
+  const bytes = await penEmitWasm(source);
+  expect(await runWasmMain(bytes)).toBe(60);
+});
+
 test('wasm backend (6.C): memory export — can decode string bytes from heap', async () => {
   const source = 'let s = "hello"; let r = str_length(s); r;';
   const bytes = await penEmitWasm(source);
