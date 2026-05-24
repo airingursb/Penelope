@@ -947,6 +947,60 @@ test('wasm backend (6.F tier-3): dict pattern with missing key falls through', a
   expect(await runWasmMain(bytes)).toBe(99);
 });
 
+// ── Phase 6.C tier 3: str_find / int_of_str / str_chars ──────────────────────
+
+test('wasm backend (6.C tier-3): str_find returns index of substring', async () => {
+  const source = 'let r = str_find("hello world", "world"); r;';
+  const bytes = await penEmitWasm(source);
+  expect(await runWasmMain(bytes)).toBe(6);
+});
+
+test('wasm backend (6.C tier-3): str_find returns -1 when not found', async () => {
+  const source = 'let r = str_find("hello", "xyz"); r;';
+  const bytes = await penEmitWasm(source);
+  expect(await runWasmMain(bytes)).toBe(-1);
+});
+
+test('wasm backend (6.C tier-3): str_find at start', async () => {
+  const source = 'let r = str_find("hello", "hel"); r;';
+  const bytes = await penEmitWasm(source);
+  expect(await runWasmMain(bytes)).toBe(0);
+});
+
+test('wasm backend (6.C tier-3): int_of_str positive', async () => {
+  const source = 'let r = int_of_str("12345"); r;';
+  const bytes = await penEmitWasm(source);
+  expect(await runWasmMain(bytes)).toBe(12345);
+});
+
+test('wasm backend (6.C tier-3): int_of_str negative', async () => {
+  const source = 'let r = int_of_str("-42"); r;';
+  const bytes = await penEmitWasm(source);
+  expect(await runWasmMain(bytes)).toBe(-42);
+});
+
+test('wasm backend (6.C tier-3): str_chars returns list of single-char strings', async () => {
+  const source = 'let r = list_len(str_chars("hello")); r;';
+  const bytes = await penEmitWasm(source);
+  expect(await runWasmMain(bytes)).toBe(5);
+});
+
+test('wasm backend (6.C tier-3): str_chars + iteration prints each char', async () => {
+  const source = `
+    let go = fn(xs, i) {
+      if (i >= list_len(xs)) { 0 }
+      else { print(list_get(xs, i)); go(xs, i + 1) }
+    };
+    let chars = str_chars("hi");
+    go(chars, 0);
+    0;
+  `;
+  const captured: string[] = [];
+  const bytes = await penEmitWasm(source);
+  await runWasmMain(bytes, captured);
+  expect(captured).toEqual(['h', 'i']);
+});
+
 test('wasm backend (6.C): memory export — can decode string bytes from heap', async () => {
   const source = 'let s = "hello"; let r = str_length(s); r;';
   const bytes = await penEmitWasm(source);
