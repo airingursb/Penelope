@@ -406,6 +406,71 @@ test('wasm backend (6.F): match negative int literal', async () => {
   expect(await runWasmMain(bytes)).toBe(-5);
 });
 
+// ── Phase 6.D: lists (basics) ────────────────────────────────────────────────
+
+test('wasm backend (6.D): list_new + list_len', async () => {
+  const source = 'let xs = list_new(10, 20, 30); let r = list_len(xs); r;';
+  const bytes = await penEmitWasm(source);
+  expect(await runWasmMain(bytes)).toBe(3);
+});
+
+test('wasm backend (6.D): list_new with 0 items', async () => {
+  const source = 'let xs = list_new(); let r = list_len(xs); r;';
+  const bytes = await penEmitWasm(source);
+  expect(await runWasmMain(bytes)).toBe(0);
+});
+
+test('wasm backend (6.D): list_get retrieves element by index', async () => {
+  const source = 'let xs = list_new(100, 200, 300, 400); let r = list_get(xs, 2); r;';
+  const bytes = await penEmitWasm(source);
+  expect(await runWasmMain(bytes)).toBe(300);
+});
+
+test('wasm backend (6.D): list_push appends + immutable original preserved', async () => {
+  const source = `
+    let a = list_new(1, 2);
+    let b = list_push(a, 3);
+    let r = list_get(b, 2) + list_len(a);
+    r;
+  `;
+  const bytes = await penEmitWasm(source);
+  // b = [1, 2, 3], list_get(b, 2) = 3; a = [1, 2], list_len(a) = 2 ; sum = 5
+  expect(await runWasmMain(bytes)).toBe(5);
+});
+
+test('wasm backend (6.D): list with recursive sum', async () => {
+  const source = `
+    let sum = fn(xs, i) {
+      if (i >= list_len(xs)) { 0 }
+      else { list_get(xs, i) + sum(xs, i + 1) }
+    };
+    let xs = list_new(10, 20, 30, 40);
+    let r = sum(xs, 0);
+    r;
+  `;
+  const bytes = await penEmitWasm(source);
+  expect(await runWasmMain(bytes)).toBe(100);
+});
+
+test('wasm backend (6.D): list of strings + iteration prints each', async () => {
+  const source = `
+    let print_each = fn(xs, i) {
+      if (i >= list_len(xs)) { 0 }
+      else {
+        print(list_get(xs, i));
+        print_each(xs, i + 1)
+      }
+    };
+    let xs = list_new("alpha", "beta", "gamma");
+    print_each(xs, 0);
+    0;
+  `;
+  const captured: string[] = [];
+  const bytes = await penEmitWasm(source);
+  await runWasmMain(bytes, captured);
+  expect(captured).toEqual(['alpha', 'beta', 'gamma']);
+});
+
 test('wasm backend (6.C): memory export — can decode string bytes from heap', async () => {
   const source = 'let s = "hello"; let r = str_length(s); r;';
   const bytes = await penEmitWasm(source);
