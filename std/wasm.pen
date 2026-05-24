@@ -597,7 +597,35 @@ let emit_pattern_check = fn(pat, scratch_idx, env, fn_table) {
       let eq = list_push(list_new(), OP_I32_EQ);
       list_concat(load, list_concat(load_tag, list_concat(lit, eq)))
     },
-    _ => panic("wasm: match pattern kind '" + kind + "' not yet implemented (6.F covers int/bool/unit/wildcard/var)"),
+    "str" => {
+      // Push scratch; build literal STR value inline; str_eq.
+      let load_scrut = list_concat(list_push(list_new(), OP_LOCAL_GET), leb128_u(scratch_idx));
+      let lit_str = emit_string_literal(dict_get(pat, "value"), env);
+      let call_eq = list_concat(list_push(list_new(), OP_CALL), leb128_u(H_STR_EQ));
+      list_concat(load_scrut, list_concat(lit_str, call_eq))
+    },
+    "or" => {
+      // a | b | c — short-circuit chain via nested if/else returning bool.
+      // Each alternative emits its own pattern check; we OR them by nesting:
+      //   check_a; if(i32){ i32.const 1 } else { check_b; if(i32){1} else {...} }
+      let patterns = dict_get(pat, "patterns");
+      let n = list_len(patterns);
+      let go = fn(i) {
+        if (i >= n) {
+          list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(0))
+        } else {
+          let one = emit_pattern_check(list_get(patterns, i), scratch_idx, env, fn_table);
+          let rest = go(i + 1);
+          let with_if = list_push(list_push(one, OP_IF), BLOCKTYPE_I32);
+          let with_then = list_concat(with_if,
+            list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(1)));
+          let with_else = list_push(with_then, OP_ELSE);
+          list_push(list_concat(with_else, rest), OP_END)
+        }
+      };
+      go(0)
+    },
+    _ => panic("wasm: match pattern kind '" + kind + "' not yet implemented"),
   }
 };
 
@@ -615,11 +643,27 @@ let compile_match = fn(node, ast, env, fn_table) {
       list_concat(list_push(list_new(), OP_CALL), leb128_u(H_MAKE_UNIT))
     } else {
       let arm = list_get(arms, i);
-      let check = emit_pattern_check(dict_get(arm, "pattern"), scratch, env, fn_table);
+      let pat_check = emit_pattern_check(dict_get(arm, "pattern"), scratch, env, fn_table);
       let body_bytes = compile_expr(ast_get(ast, dict_get(arm, "bodyId")), ast, env, fn_table);
       let rest = go(i + 1);
-      // check ; if (i32 blocktype) body else rest end
-      let with_if = list_push(list_push(check, OP_IF), BLOCKTYPE_I32);
+      // If an `if guard` is present, combine: pat AND unwrap_bool(guard_expr).
+      // (Pattern check must run first to bind vars before guard evaluates.)
+      let combined_check = if (dict_has(arm, "guardId")) {
+        let guard_id = dict_get(arm, "guardId");
+        // pat_check leaves bool. If true, run guard expr & unwrap_bool.
+        // If false, short-circuit to 0.
+        // Use nested if: pat_check; if(i32){ guard_expr; unwrap_bool } else { 0 }
+        let g_bytes = compile_expr(ast_get(ast, guard_id), ast, env, fn_table);
+        let g_unwrap = list_concat(list_push(list_new(), OP_CALL), leb128_u(H_UNWRAP_BOOL));
+        let guard_chain = list_concat(g_bytes, g_unwrap);
+        let with_if = list_push(list_push(pat_check, OP_IF), BLOCKTYPE_I32);
+        let with_then = list_concat(with_if, guard_chain);
+        let with_else = list_push(with_then, OP_ELSE);
+        let zero = list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(0));
+        list_push(list_concat(with_else, zero), OP_END)
+      } else { pat_check };
+      // combined_check ; if (i32 blocktype) body else rest end
+      let with_if = list_push(list_push(combined_check, OP_IF), BLOCKTYPE_I32);
       let with_then = list_concat(with_if, body_bytes);
       let with_else = list_push(with_then, OP_ELSE);
       list_push(list_concat(with_else, rest), OP_END)
