@@ -478,9 +478,85 @@ let compile_expr = fn(node, ast, env, fn_table) {
     "StringLit" => emit_string_literal(dict_get(node, "value"), env),
     "Pause" => panic("wasm: pause not yet implemented (Phase 6.H)"),
     "Fn" => panic("wasm: nested fn definitions not yet implemented (Phase 6.E)"),
-    "Match" => panic("wasm: match not yet implemented (Phase 6.F)"),
+    "Match" => compile_match(node, ast, env, fn_table),
     _ => panic("wasm: unsupported node kind '" + kind + "'"),
   }
+};
+
+/// Emit code that pushes a bool (1 = matched, 0 = no match) for one pattern.
+/// On match, also performs any bindings (var pattern → local.set var_local).
+/// scratch_idx is the local holding the scrutinee Value pointer.
+let emit_pattern_check = fn(pat, scratch_idx, env, fn_table) {
+  let kind = dict_get(pat, "kind");
+  match kind {
+    "wildcard" => list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(1)),
+    "var" => {
+      let var_idx = dict_get(env, dict_get(pat, "name"));
+      let load = list_concat(list_push(list_new(), OP_LOCAL_GET), leb128_u(scratch_idx));
+      let store = list_concat(list_push(list_new(), OP_LOCAL_SET), leb128_u(var_idx));
+      let push_true = list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(1));
+      list_concat(load, list_concat(store, push_true))
+    },
+    "int" => {
+      let load = list_concat(list_push(list_new(), OP_LOCAL_GET), leb128_u(scratch_idx));
+      let unwrap = list_concat(list_push(list_new(), OP_CALL), leb128_u(H_UNWRAP_INT));
+      let v = dict_get(pat, "value");
+      // Handle negative ints via 0 - N
+      let lit = if (v < 0) {
+        let z = list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(0));
+        let abs = list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(0 - v));
+        list_push(list_concat(z, abs), OP_I32_SUB)
+      } else {
+        list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(v))
+      };
+      let eq = list_push(list_new(), OP_I32_EQ);
+      list_concat(load, list_concat(unwrap, list_concat(lit, eq)))
+    },
+    "bool" => {
+      let load = list_concat(list_push(list_new(), OP_LOCAL_GET), leb128_u(scratch_idx));
+      let unwrap = list_concat(list_push(list_new(), OP_CALL), leb128_u(H_UNWRAP_BOOL));
+      let v = if (dict_get(pat, "value")) { 1 } else { 0 };
+      let lit = list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(v));
+      let eq = list_push(list_new(), OP_I32_EQ);
+      list_concat(load, list_concat(unwrap, list_concat(lit, eq)))
+    },
+    "unit" => {
+      // Just check the tag byte equals TAG_UNIT — unit cells carry no value.
+      let load = list_concat(list_push(list_new(), OP_LOCAL_GET), leb128_u(scratch_idx));
+      let load_tag = list_concat(list_push(list_new(), OP_I32_LOAD8_U), memarg(0, 0));
+      let lit = list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(TAG_UNIT));
+      let eq = list_push(list_new(), OP_I32_EQ);
+      list_concat(load, list_concat(load_tag, list_concat(lit, eq)))
+    },
+    _ => panic("wasm: match pattern kind '" + kind + "' not yet implemented (6.F covers int/bool/unit/wildcard/var)"),
+  }
+};
+
+/// compile_match: emit a chain of nested ifs over the arms. Each arm:
+///   emit_pattern_check → if true { body } else { rest }
+/// Final fallthrough returns make_unit().
+let compile_match = fn(node, ast, env, fn_table) {
+  let scratch = dict_get(env, "__match_" + dict_get(node, "id") + "__");
+  let arms = dict_get(node, "arms");
+  let scrut_bytes = compile_expr(ast_get(ast, dict_get(node, "scrutineeId")), ast, env, fn_table);
+  let scrut_save = list_concat(list_push(list_new(), OP_LOCAL_SET), leb128_u(scratch));
+  let go = fn(i) {
+    if (i >= list_len(arms)) {
+      // No arm matched: push unit.
+      list_concat(list_push(list_new(), OP_CALL), leb128_u(H_MAKE_UNIT))
+    } else {
+      let arm = list_get(arms, i);
+      let check = emit_pattern_check(dict_get(arm, "pattern"), scratch, env, fn_table);
+      let body_bytes = compile_expr(ast_get(ast, dict_get(arm, "bodyId")), ast, env, fn_table);
+      let rest = go(i + 1);
+      // check ; if (i32 blocktype) body else rest end
+      let with_if = list_push(list_push(check, OP_IF), BLOCKTYPE_I32);
+      let with_then = list_concat(with_if, body_bytes);
+      let with_else = list_push(with_then, OP_ELSE);
+      list_push(list_concat(with_else, rest), OP_END)
+    }
+  };
+  list_concat(scrut_bytes, list_concat(scrut_save, go(0)))
 };
 
 let compile_block_expr = fn(node, ast, env, fn_table) {
@@ -571,7 +647,30 @@ let prebuild_env = fn(node, ast, env, next_idx) {
           };
           pbe_args(0, env, next_idx)
         } else {
+        if (kind == "Match") {
+          // Reserve one scratch local for this match's scrutinee, keyed by node id.
+          let env2 = dict_set(env, "__match_" + dict_get(node, "id") + "__", next_idx);
+          let scrut_r = prebuild_env(ast_get(ast, dict_get(node, "scrutineeId")), ast, env2, next_idx + 1);
+          let arms = dict_get(node, "arms");
+          let go_arms = fn(i, env_acc, next_acc) {
+            if (i >= list_len(arms)) {
+              dict_set(dict_set(dict_new(), "env", env_acc), "next", next_acc)
+            } else {
+              let arm = list_get(arms, i);
+              let pat = dict_get(arm, "pattern");
+              // var pattern: allocate a local for the bound name
+              let env3 = if (dict_get(pat, "kind") == "var") {
+                dict_set(env_acc, dict_get(pat, "name"), next_acc)
+              } else { env_acc };
+              let next3 = if (dict_get(pat, "kind") == "var") { next_acc + 1 } else { next_acc };
+              let r = prebuild_env(ast_get(ast, dict_get(arm, "bodyId")), ast, env3, next3);
+              go_arms(i + 1, dict_get(r, "env"), dict_get(r, "next"))
+            }
+          };
+          go_arms(0, dict_get(scrut_r, "env"), dict_get(scrut_r, "next"))
+        } else {
           dict_set(dict_set(dict_new(), "env", env), "next", next_idx)
+        }
         }
       }
     }

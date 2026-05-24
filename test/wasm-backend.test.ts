@@ -294,6 +294,118 @@ test('wasm backend (6.G): print + now compose', async () => {
   expect(captured).toEqual(['t=1700000000']);
 });
 
+// ── Phase 6.F: match expressions ────────────────────────────────────────────
+
+test('wasm backend (6.F): match with int literals', async () => {
+  const source = `
+    let classify = fn(n) {
+      match n {
+        0 => 100,
+        1 => 200,
+        2 => 300,
+        _ => 999,
+      }
+    };
+    let r = classify(1);
+    r;
+  `;
+  const bytes = await penEmitWasm(source);
+  expect(await runWasmMain(bytes)).toBe(200);
+});
+
+test('wasm backend (6.F): match wildcard fall-through', async () => {
+  const source = `
+    let f = fn(n) {
+      match n {
+        0 => 1,
+        _ => 0,
+      }
+    };
+    let r = f(42);
+    r;
+  `;
+  const bytes = await penEmitWasm(source);
+  expect(await runWasmMain(bytes)).toBe(0);
+});
+
+test('wasm backend (6.F): match var binding', async () => {
+  const source = `
+    let describe = fn(n) {
+      match n {
+        0 => 0,
+        x => x + 100,
+      }
+    };
+    let r = describe(7);
+    r;
+  `;
+  const bytes = await penEmitWasm(source);
+  expect(await runWasmMain(bytes)).toBe(107);
+});
+
+test('wasm backend (6.F): match with bool patterns', async () => {
+  const source = `
+    let onoff = fn(b) {
+      match b {
+        true => 1,
+        false => 0,
+      }
+    };
+    let r = onoff(true);
+    r;
+  `;
+  const bytes = await penEmitWasm(source);
+  expect(await runWasmMain(bytes)).toBe(1);
+});
+
+test('wasm backend (6.F): match unit pattern', async () => {
+  const source = `
+    let f = fn(u) {
+      match u {
+        () => 42,
+        _ => 0,
+      }
+    };
+    let r = f(());
+    r;
+  `;
+  const bytes = await penEmitWasm(source);
+  expect(await runWasmMain(bytes)).toBe(42);
+});
+
+test('wasm backend (6.F): nested match', async () => {
+  const source = `
+    let step = fn(state, input) {
+      match state {
+        0 => match input {
+          1 => 10,
+          _ => 0,
+        },
+        _ => 99,
+      }
+    };
+    let r = step(0, 1);
+    r;
+  `;
+  const bytes = await penEmitWasm(source);
+  expect(await runWasmMain(bytes)).toBe(10);
+});
+
+test('wasm backend (6.F): match negative int literal', async () => {
+  const source = `
+    let f = fn(n) {
+      match n {
+        0 => 1000,
+        x => x,
+      }
+    };
+    let r = f(0 - 5);
+    r;
+  `;
+  const bytes = await penEmitWasm(source);
+  expect(await runWasmMain(bytes)).toBe(-5);
+});
+
 test('wasm backend (6.C): memory export — can decode string bytes from heap', async () => {
   const source = 'let s = "hello"; let r = str_length(s); r;';
   const bytes = await penEmitWasm(source);
