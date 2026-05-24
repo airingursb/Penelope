@@ -1016,3 +1016,96 @@ test('wasm backend (6.C): memory export — can decode string bytes from heap', 
   const mem = new Uint8Array((inst.exports.memory as WebAssembly.Memory).buffer);
   expect(mem.length).toBeGreaterThan(0);
 });
+
+test('wasm backend (6.E tier-1): fn literal passed and called indirectly', async () => {
+  const source = `
+    let apply = fn(f, x) { f(x) };
+    apply(fn(x) { x + 1 }, 41);
+  `;
+  const bytes = await penEmitWasm(source);
+  expect(await runWasmMain(bytes)).toBe(42);
+});
+
+test('wasm backend (6.E tier-1): fn literal stored in local, then called via direct path', async () => {
+  // Top-level `let f = fn(...)` is a direct call (f is in fn_table).
+  const source = `
+    let f = fn(x) { x * 2 };
+    f(21);
+  `;
+  const bytes = await penEmitWasm(source);
+  expect(await runWasmMain(bytes)).toBe(42);
+});
+
+test('wasm backend (6.E tier-1): inner fn-literal stored in local, called indirectly', async () => {
+  const source = `
+    let outer = fn() {
+      let g = fn(x) { x + 1 };
+      g(41)
+    };
+    outer();
+  `;
+  const bytes = await penEmitWasm(source);
+  expect(await runWasmMain(bytes)).toBe(42);
+});
+
+test('wasm backend (6.E tier-1): zero-arg fn-literal via indirect call', async () => {
+  const source = `
+    let outer = fn() {
+      let g = fn() { 99 };
+      g()
+    };
+    outer();
+  `;
+  const bytes = await penEmitWasm(source);
+  expect(await runWasmMain(bytes)).toBe(99);
+});
+
+test('wasm backend (6.E tier-2): closure captures a param (make_adder)', async () => {
+  const source = `
+    let make_adder = fn(d) {
+      fn(x) { x + d }
+    };
+    let add5 = make_adder(5);
+    add5(37);
+  `;
+  const bytes = await penEmitWasm(source);
+  expect(await runWasmMain(bytes)).toBe(42);
+});
+
+test('wasm backend (6.E tier-2): closure captures multiple values', async () => {
+  const source = `
+    let outer = fn(a, b) {
+      let f = fn(x) { (a + b) + x };
+      f(10)
+    };
+    outer(1, 2);
+  `;
+  const bytes = await penEmitWasm(source);
+  expect(await runWasmMain(bytes)).toBe(13);
+});
+
+test('wasm backend (6.E tier-2): closure captures local let-binding', async () => {
+  const source = `
+    let outer = fn() {
+      let n = 100;
+      let f = fn() { n };
+      f()
+    };
+    outer();
+  `;
+  const bytes = await penEmitWasm(source);
+  expect(await runWasmMain(bytes)).toBe(100);
+});
+
+test('wasm backend (6.E tier-2): two closures from same outer capture distinct values', async () => {
+  const source = `
+    let make_adder = fn(d) {
+      fn(x) { x + d }
+    };
+    let add1 = make_adder(1);
+    let add10 = make_adder(10);
+    add1(5) + add10(5);
+  `;
+  const bytes = await penEmitWasm(source);
+  expect(await runWasmMain(bytes)).toBe(21);
+});
