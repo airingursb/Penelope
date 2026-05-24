@@ -591,6 +591,101 @@ test('wasm backend (6.D dicts): nested dict_get via iteration over keys', async 
   expect(await runWasmMain(bytes)).toBe(60);
 });
 
+// ── Phase 6.F tier 2: str / or / guard patterns ──────────────────────────────
+
+test('wasm backend (6.F tier-2): str literal pattern', async () => {
+  const source = `
+    let classify = fn(s) {
+      match s {
+        "yes" => 1,
+        "no" => 0,
+        _ => 99,
+      }
+    };
+    let r = classify("no");
+    r;
+  `;
+  const bytes = await penEmitWasm(source);
+  expect(await runWasmMain(bytes)).toBe(0);
+});
+
+test('wasm backend (6.F tier-2): or-pattern matches any alternative', async () => {
+  const source = `
+    let small = fn(n) {
+      match n {
+        1 | 2 | 3 => 100,
+        _ => 0,
+      }
+    };
+    let r = small(2);
+    r;
+  `;
+  const bytes = await penEmitWasm(source);
+  expect(await runWasmMain(bytes)).toBe(100);
+});
+
+test('wasm backend (6.F tier-2): or-pattern falls through when none match', async () => {
+  const source = `
+    let f = fn(n) {
+      match n {
+        1 | 2 | 3 => 100,
+        _ => 999,
+      }
+    };
+    let r = f(99);
+    r;
+  `;
+  const bytes = await penEmitWasm(source);
+  expect(await runWasmMain(bytes)).toBe(999);
+});
+
+test('wasm backend (6.F tier-2): guard arm — fires when guard true', async () => {
+  const source = `
+    let f = fn(n) {
+      match n {
+        x if x > 100 => 1,
+        x if x > 10 => 2,
+        _ => 3,
+      }
+    };
+    let r = f(50);
+    r;
+  `;
+  const bytes = await penEmitWasm(source);
+  expect(await runWasmMain(bytes)).toBe(2);
+});
+
+test('wasm backend (6.F tier-2): guard arm — falls through when guard false', async () => {
+  const source = `
+    let f = fn(n) {
+      match n {
+        x if x > 100 => 1,
+        _ => 99,
+      }
+    };
+    let r = f(5);
+    r;
+  `;
+  const bytes = await penEmitWasm(source);
+  expect(await runWasmMain(bytes)).toBe(99);
+});
+
+test('wasm backend (6.F tier-2): or + str literals combined', async () => {
+  const source = `
+    let classify = fn(s) {
+      match s {
+        "GET" | "HEAD" | "OPTIONS" => 1,
+        "POST" | "PUT" | "DELETE" => 2,
+        _ => 0,
+      }
+    };
+    let r = classify("PUT");
+    r;
+  `;
+  const bytes = await penEmitWasm(source);
+  expect(await runWasmMain(bytes)).toBe(2);
+});
+
 test('wasm backend (6.C): memory export — can decode string bytes from heap', async () => {
   const source = 'let s = "hello"; let r = str_length(s); r;';
   const bytes = await penEmitWasm(source);
