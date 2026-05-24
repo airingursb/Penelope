@@ -144,67 +144,80 @@ let EXPORT_KIND_FUNC = 0;
 //   indexes IMPORT_FN_COUNT+HELPER_FN_COUNT..     : user fns (incl. main)
 //
 // Host imports, in order:
-//   0  js_print(ptr: i32, len: i32) -> ()
-//   1  js_now() -> i32                            (returns ms-epoch)
-//   2  js_random_int(lo: i32, hi: i32) -> i32
-let IMPORT_FN_COUNT = 3;
+//   0  js_print(ptr, len) -> ()
+//   1  js_now() -> i32
+//   2  js_random_int(lo, hi) -> i32
+//   3  js_net_fetch(url_ptr, url_len) -> i32       (returns block ptr to {len, bytes})
+//   4  js_read_file(path_ptr, path_len) -> i32     (returns block ptr to {len, bytes})
+//   5  js_write_file(path_ptr, path_len, body_ptr, body_len) -> ()
+let IMPORT_FN_COUNT = 6;
 let IMPORT_JS_PRINT      = 0;
 let IMPORT_JS_NOW        = 1;
 let IMPORT_JS_RANDOM_INT = 2;
+let IMPORT_JS_NET_FETCH  = 3;
+let IMPORT_JS_READ_FILE  = 4;
+let IMPORT_JS_WRITE_FILE = 5;
 
 // Helper functions (indexes shown are ABSOLUTE — they already include the
 // IMPORT_FN_COUNT offset, since user code calls helpers via the global fn idx).
-let HELPER_FN_COUNT = 38;
-let H_ALLOC               = 3;
-let H_MAKE_INT            = 4;
-let H_MAKE_BOOL           = 5;
-let H_MAKE_UNIT           = 6;
-let H_UNWRAP_INT          = 7;
-let H_UNWRAP_BOOL         = 8;
-let H_MAKE_STR_FROM_DATA  = 9;
-let H_STR_CONCAT          = 10;
-let H_STR_LENGTH          = 11;
-let H_INT_TO_STR          = 12;
-let H_TO_STR              = 13;
-let H_PLUS_DISPATCH       = 14;
-let H_PRINT               = 15;
-let H_NOW                 = 16;
-let H_RANDOM_INT          = 17;
-let H_MAKE_LIST_FROM_DATA = 18;
-let H_LIST_LEN            = 19;
-let H_LIST_GET            = 20;
-let H_LIST_PUSH           = 21;
-let H_LIST_SET            = 22;
-let H_LIST_SLICE          = 23;
-let H_LIST_CONCAT         = 24;
-let H_LIST_REVERSE        = 25;
-let H_STR_EQ              = 26;
-let H_MAKE_DICT_FROM_DATA = 27;
-let H_DICT_NEW            = 28;
-let H_DICT_GET            = 29;
-let H_DICT_HAS            = 30;
-let H_DICT_SET            = 31;
-let H_DICT_KEYS           = 32;
-let H_STR_AT              = 33;
-let H_STR_SLICE           = 34;
-let H_STR_STARTS_WITH     = 35;
-let H_STR_ENDS_WITH       = 36;
-let H_CHAR_IS_DIGIT       = 37;
-let H_CHAR_IS_ALPHA       = 38;
-let H_CHAR_IS_ALPHANUM    = 39;
-let H_CHAR_IS_WHITESPACE  = 40;
+// Helpers shift up with IMPORT_FN_COUNT. Computed from IMPORT_FN_COUNT so that
+// adding more imports just bumps that constant and the rest follows.
+let HELPER_FN_COUNT = 41;
+let H_ALLOC               = IMPORT_FN_COUNT + 0;
+let H_MAKE_INT            = IMPORT_FN_COUNT + 1;
+let H_MAKE_BOOL           = IMPORT_FN_COUNT + 2;
+let H_MAKE_UNIT           = IMPORT_FN_COUNT + 3;
+let H_UNWRAP_INT          = IMPORT_FN_COUNT + 4;
+let H_UNWRAP_BOOL         = IMPORT_FN_COUNT + 5;
+let H_MAKE_STR_FROM_DATA  = IMPORT_FN_COUNT + 6;
+let H_STR_CONCAT          = IMPORT_FN_COUNT + 7;
+let H_STR_LENGTH          = IMPORT_FN_COUNT + 8;
+let H_INT_TO_STR          = IMPORT_FN_COUNT + 9;
+let H_TO_STR              = IMPORT_FN_COUNT + 10;
+let H_PLUS_DISPATCH       = IMPORT_FN_COUNT + 11;
+let H_PRINT               = IMPORT_FN_COUNT + 12;
+let H_NOW                 = IMPORT_FN_COUNT + 13;
+let H_RANDOM_INT          = IMPORT_FN_COUNT + 14;
+let H_MAKE_LIST_FROM_DATA = IMPORT_FN_COUNT + 15;
+let H_LIST_LEN            = IMPORT_FN_COUNT + 16;
+let H_LIST_GET            = IMPORT_FN_COUNT + 17;
+let H_LIST_PUSH           = IMPORT_FN_COUNT + 18;
+let H_LIST_SET            = IMPORT_FN_COUNT + 19;
+let H_LIST_SLICE          = IMPORT_FN_COUNT + 20;
+let H_LIST_CONCAT         = IMPORT_FN_COUNT + 21;
+let H_LIST_REVERSE        = IMPORT_FN_COUNT + 22;
+let H_STR_EQ              = IMPORT_FN_COUNT + 23;
+let H_MAKE_DICT_FROM_DATA = IMPORT_FN_COUNT + 24;
+let H_DICT_NEW            = IMPORT_FN_COUNT + 25;
+let H_DICT_GET            = IMPORT_FN_COUNT + 26;
+let H_DICT_HAS            = IMPORT_FN_COUNT + 27;
+let H_DICT_SET            = IMPORT_FN_COUNT + 28;
+let H_DICT_KEYS           = IMPORT_FN_COUNT + 29;
+let H_STR_AT              = IMPORT_FN_COUNT + 30;
+let H_STR_SLICE           = IMPORT_FN_COUNT + 31;
+let H_STR_STARTS_WITH     = IMPORT_FN_COUNT + 32;
+let H_STR_ENDS_WITH       = IMPORT_FN_COUNT + 33;
+let H_CHAR_IS_DIGIT       = IMPORT_FN_COUNT + 34;
+let H_CHAR_IS_ALPHA       = IMPORT_FN_COUNT + 35;
+let H_CHAR_IS_ALPHANUM    = IMPORT_FN_COUNT + 36;
+let H_CHAR_IS_WHITESPACE  = IMPORT_FN_COUNT + 37;
+let H_NET_FETCH           = IMPORT_FN_COUNT + 38;
+let H_READ_FILE           = IMPORT_FN_COUNT + 39;
+let H_WRITE_FILE          = IMPORT_FN_COUNT + 40;
 
 // Type indices we reserve up front (one per distinct fn signature used by
 // helpers + imports).
 //   type 0: () -> i32
 //   type 1: (i32) -> i32
 //   type 2: (i32, i32) -> i32
-//   type 3: (i32, i32) -> ()     [for js_print import]
+//   type 3: (i32, i32) -> ()                  [for js_print]
+//   type 4: (i32, i32, i32, i32) -> ()        [for js_write_file]
 // User fns reuse one of types 0-2 depending on their arity.
-let TYPE_IDX_0_TO_I32  = 0;
-let TYPE_IDX_1_TO_I32  = 1;
-let TYPE_IDX_2_TO_I32  = 2;
-let TYPE_IDX_2_TO_VOID = 3;
+let TYPE_IDX_0_TO_I32   = 0;
+let TYPE_IDX_1_TO_I32   = 1;
+let TYPE_IDX_2_TO_I32   = 2;
+let TYPE_IDX_2_TO_VOID  = 3;
+let TYPE_IDX_4_TO_VOID  = 4;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Byte-buffer helpers.
@@ -360,6 +373,9 @@ let builtin_helper_for = fn(name) {
     "char_is_alpha" => H_CHAR_IS_ALPHA,
     "char_is_alphanum" => H_CHAR_IS_ALPHANUM,
     "char_is_whitespace" => H_CHAR_IS_WHITESPACE,
+    "net_fetch" => H_NET_FETCH,
+    "read_file" => H_READ_FILE,
+    "write_file" => H_WRITE_FILE,
     _ => 0 - 1,
   }
 };
@@ -2983,6 +2999,80 @@ let helper_char_is_whitespace_body = fn() {
   make_code_entry(1, body)
 };
 
+/// net_fetch(url_str) -> str_val
+/// Extracts url's ptr+len, calls js_net_fetch (which returns a block_ptr),
+/// wraps the block as a STR Value.
+let helper_net_fetch_body = fn() {
+  let body = list_new();
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 0);
+  let body = list_push(body, OP_I32_LOAD);
+  let body = list_concat(body, memarg(2, 4));
+  let body = list_push(body, OP_LOCAL_TEE);
+  let body = list_push(body, 1);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(4)));
+  let body = list_push(body, OP_I32_ADD);
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 1);
+  let body = list_push(body, OP_I32_LOAD);
+  let body = list_concat(body, memarg(2, 0));
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_CALL), leb128_u(IMPORT_JS_NET_FETCH)));
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_CALL), leb128_u(H_MAKE_STR_FROM_DATA)));
+  make_code_entry(1, body)
+};
+
+/// read_file(path_str) -> str_val — same shape as net_fetch.
+let helper_read_file_body = fn() {
+  let body = list_new();
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 0);
+  let body = list_push(body, OP_I32_LOAD);
+  let body = list_concat(body, memarg(2, 4));
+  let body = list_push(body, OP_LOCAL_TEE);
+  let body = list_push(body, 1);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(4)));
+  let body = list_push(body, OP_I32_ADD);
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 1);
+  let body = list_push(body, OP_I32_LOAD);
+  let body = list_concat(body, memarg(2, 0));
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_CALL), leb128_u(IMPORT_JS_READ_FILE)));
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_CALL), leb128_u(H_MAKE_STR_FROM_DATA)));
+  make_code_entry(1, body)
+};
+
+/// write_file(path_str, body_str) -> unit_val
+let helper_write_file_body = fn() {
+  let body = list_new();
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 0);
+  let body = list_push(body, OP_I32_LOAD);
+  let body = list_concat(body, memarg(2, 4));
+  let body = list_push(body, OP_LOCAL_TEE);
+  let body = list_push(body, 2);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(4)));
+  let body = list_push(body, OP_I32_ADD);
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 2);
+  let body = list_push(body, OP_I32_LOAD);
+  let body = list_concat(body, memarg(2, 0));
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 1);
+  let body = list_push(body, OP_I32_LOAD);
+  let body = list_concat(body, memarg(2, 4));
+  let body = list_push(body, OP_LOCAL_TEE);
+  let body = list_push(body, 3);
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(4)));
+  let body = list_push(body, OP_I32_ADD);
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 3);
+  let body = list_push(body, OP_I32_LOAD);
+  let body = list_concat(body, memarg(2, 0));
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_CALL), leb128_u(IMPORT_JS_WRITE_FILE)));
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_CALL), leb128_u(H_MAKE_UNIT)));
+  make_code_entry(2, body)
+};
+
 /// print(s: i32) -> i32 (unit)
 /// Extracts ptr+len from a STR Value, calls the imported js_print, returns unit.
 let helper_print_body = fn() {
@@ -3031,10 +3121,9 @@ let type_section = fn(ast, fn_table) {
     let results_vec = list_concat(leb128_u(1), list_push(list_new(), TYPE_I32));
     list_concat(list_push(list_new(), 96), list_concat(params_vec, results_vec))
   };
-  let make_void_type_2 = fn() {
-    // (i32, i32) -> ()
-    let params_vec = list_concat(leb128_u(2),
-      list_push(list_push(list_new(), TYPE_I32), TYPE_I32));
+  let make_void_type = fn(arity) {
+    let params_vec = list_concat(leb128_u(arity),
+      list_reduce(list_range(0, arity), list_new(), fn(a, _i) { list_push(a, TYPE_I32) }));
     let results_vec = leb128_u(0);
     list_concat(list_push(list_new(), 96), list_concat(params_vec, results_vec))
   };
@@ -3042,8 +3131,9 @@ let type_section = fn(ast, fn_table) {
   let base = list_push(base, make_type(0));
   let base = list_push(base, make_type(1));
   let base = list_push(base, make_type(2));
-  let base = list_push(base, make_void_type_2());
-  // Reserve 4 type slots (indexes 4-7) for arity-3 helper fns
+  let base = list_push(base, make_void_type(2));
+  let base = list_push(base, make_void_type(4));   // for js_write_file
+  // Reserve 4 type slots (indexes 5-8) for arity-3 helper fns
   // (list_set, list_slice, dict_set, str_slice).
   let base = list_push(base, make_type(3));
   let base = list_push(base, make_type(3));
@@ -3075,9 +3165,9 @@ let type_idx_for_arity = fn(arity, extras_offset) {
   if (arity == 0) { TYPE_IDX_0_TO_I32 }
   else { if (arity == 1) { TYPE_IDX_1_TO_I32 }
     else { if (arity == 2) { TYPE_IDX_2_TO_I32 }
-      // Base types occupy 0..3; reserved helper arity-3 types occupy 4-7;
-      // user fns with arity > 2 start at 8.
-      else { 8 + extras_offset } } }
+      // Base types occupy 0..4; reserved arity-3 helper types occupy 5-8;
+      // user fns with arity > 2 start at 9.
+      else { 9 + extras_offset } } }
 };
 
 /// Function section: list of type-indexes, one per function (helpers + user + main).
@@ -3107,8 +3197,8 @@ let function_section = fn(ast, fn_count) {
   let helper_indexes = list_push(helper_indexes, TYPE_IDX_2_TO_I32);   // list_get
   let helper_indexes = list_push(helper_indexes, TYPE_IDX_2_TO_I32);   // list_push
   // list_set takes 3 args — needs an arity-3 type at the end of the type vector.
-  let helper_indexes = list_push(helper_indexes, 4 + 0);                // list_set (first arity-3 extra)
-  let helper_indexes = list_push(helper_indexes, 4 + 1);                // list_slice (second arity-3 extra)
+  let helper_indexes = list_push(helper_indexes, 5 + 0);                // list_set (first arity-3 extra)
+  let helper_indexes = list_push(helper_indexes, 5 + 1);                // list_slice (second arity-3 extra)
   let helper_indexes = list_push(helper_indexes, TYPE_IDX_2_TO_I32);   // list_concat
   let helper_indexes = list_push(helper_indexes, TYPE_IDX_1_TO_I32);   // list_reverse
   let helper_indexes = list_push(helper_indexes, TYPE_IDX_2_TO_I32);   // str_eq
@@ -3116,16 +3206,19 @@ let function_section = fn(ast, fn_count) {
   let helper_indexes = list_push(helper_indexes, TYPE_IDX_0_TO_I32);   // dict_new
   let helper_indexes = list_push(helper_indexes, TYPE_IDX_2_TO_I32);   // dict_get
   let helper_indexes = list_push(helper_indexes, TYPE_IDX_2_TO_I32);   // dict_has
-  let helper_indexes = list_push(helper_indexes, 4 + 2);                // dict_set (third arity-3 reserved slot)
+  let helper_indexes = list_push(helper_indexes, 5 + 2);                // dict_set (third arity-3 reserved slot)
   let helper_indexes = list_push(helper_indexes, TYPE_IDX_1_TO_I32);   // dict_keys
   let helper_indexes = list_push(helper_indexes, TYPE_IDX_2_TO_I32);   // str_at
-  let helper_indexes = list_push(helper_indexes, 4 + 3);                // str_slice (4th arity-3 type — need to reserve)
+  let helper_indexes = list_push(helper_indexes, 5 + 3);                // str_slice (4th arity-3 type — need to reserve)
   let helper_indexes = list_push(helper_indexes, TYPE_IDX_2_TO_I32);   // str_starts_with
   let helper_indexes = list_push(helper_indexes, TYPE_IDX_2_TO_I32);   // str_ends_with
   let helper_indexes = list_push(helper_indexes, TYPE_IDX_1_TO_I32);   // char_is_digit
   let helper_indexes = list_push(helper_indexes, TYPE_IDX_1_TO_I32);   // char_is_alpha
   let helper_indexes = list_push(helper_indexes, TYPE_IDX_1_TO_I32);   // char_is_alphanum
   let helper_indexes = list_push(helper_indexes, TYPE_IDX_1_TO_I32);   // char_is_whitespace
+  let helper_indexes = list_push(helper_indexes, TYPE_IDX_1_TO_I32);   // net_fetch
+  let helper_indexes = list_push(helper_indexes, TYPE_IDX_1_TO_I32);   // read_file
+  let helper_indexes = list_push(helper_indexes, TYPE_IDX_2_TO_I32);   // write_file
   // User fns, in source order — track how many high-arity extras we've used.
   let user_acc = list_reduce(stmts, dict_set(dict_set(dict_new(),
     "indexes", list_new()), "extras_used", 0), fn(acc, id) {
@@ -3168,6 +3261,9 @@ let import_section = fn() {
   let imports = list_concat(imports, make_import("js", "print", TYPE_IDX_2_TO_VOID));
   let imports = list_concat(imports, make_import("js", "now", TYPE_IDX_0_TO_I32));
   let imports = list_concat(imports, make_import("js", "random_int", TYPE_IDX_2_TO_I32));
+  let imports = list_concat(imports, make_import("js", "net_fetch", TYPE_IDX_2_TO_I32));
+  let imports = list_concat(imports, make_import("js", "read_file", TYPE_IDX_2_TO_I32));
+  let imports = list_concat(imports, make_import("js", "write_file", TYPE_IDX_4_TO_VOID));
   let payload = list_concat(leb128_u(IMPORT_FN_COUNT), imports);
   wrap_section(SECTION_IMPORT, payload)
 };
@@ -3192,15 +3288,19 @@ let global_section = fn() {
   wrap_section(SECTION_GLOBAL, payload)
 };
 
-/// Export section: export "main" (last fn) AND "memory" (for the host to read
-/// strings/lists back out of linear memory).
+/// Export section: export "main" (last fn), "memory" (for the host to read
+/// string/list bytes from linear memory), AND "alloc" (so host imports like
+/// js_net_fetch and js_read_file can allocate space in WASM memory to write
+/// their results into before returning a block pointer).
 let export_section = fn(fn_count) {
   let main_idx = fn_count - 1;
   let main_entry = list_concat(name_bytes("main"),
     list_concat(list_push(list_new(), EXPORT_KIND_FUNC), leb128_u(main_idx)));
   let mem_entry = list_concat(name_bytes("memory"),
-    list_concat(list_push(list_new(), 2), leb128_u(0)));   // kind 2 = memory, index 0
-  let payload = list_concat(leb128_u(2), list_concat(main_entry, mem_entry));
+    list_concat(list_push(list_new(), 2), leb128_u(0)));
+  let alloc_entry = list_concat(name_bytes("alloc"),
+    list_concat(list_push(list_new(), EXPORT_KIND_FUNC), leb128_u(H_ALLOC)));
+  let payload = list_concat(leb128_u(3), list_concat(main_entry, list_concat(mem_entry, alloc_entry)));
   wrap_section(SECTION_EXPORT, payload)
 };
 
@@ -3245,6 +3345,9 @@ let code_section = fn(ast, fn_table) {
   let helpers = list_concat(helpers, helper_char_is_alpha_body());
   let helpers = list_concat(helpers, helper_char_is_alphanum_body());
   let helpers = list_concat(helpers, helper_char_is_whitespace_body());
+  let helpers = list_concat(helpers, helper_net_fetch_body());
+  let helpers = list_concat(helpers, helper_read_file_body());
+  let helpers = list_concat(helpers, helper_write_file_body());
 
   let root = ast_get(ast, dict_get(ast, "rootId"));
   let stmts = dict_get(root, "stmtIds");
