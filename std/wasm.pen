@@ -639,9 +639,6 @@ let emit_pattern_check = fn(pat, scratch_idx, env, fn_table) {
       list_concat(load_scrut, list_concat(lit_str, call_eq))
     },
     "or" => {
-      // a | b | c — short-circuit chain via nested if/else returning bool.
-      // Each alternative emits its own pattern check; we OR them by nesting:
-      //   check_a; if(i32){ i32.const 1 } else { check_b; if(i32){1} else {...} }
       let patterns = dict_get(pat, "patterns");
       let n = list_len(patterns);
       let go = fn(i) {
@@ -659,8 +656,144 @@ let emit_pattern_check = fn(pat, scratch_idx, env, fn_table) {
       };
       go(0)
     },
+    "list" => emit_list_pattern_check(pat, scratch_idx, env, fn_table),
+    "dict" => emit_dict_pattern_check(pat, scratch_idx, env, fn_table),
     _ => panic("wasm: match pattern kind '" + kind + "' not yet implemented"),
   }
+};
+
+/// Emit code that pushes a Value pointer of `list_get(scratch, idx_const)`.
+let emit_load_item = fn(scratch_idx, idx_const) {
+  let body = list_concat(list_push(list_new(), OP_LOCAL_GET), leb128_u(scratch_idx));
+  // i_val = make_int(idx_const)
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(idx_const)));
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_CALL), leb128_u(H_MAKE_INT)));
+  list_concat(body, list_concat(list_push(list_new(), OP_CALL), leb128_u(H_LIST_GET)))
+};
+
+/// Find the sub-scratch local for the enclosing Match — looked up via the env.
+/// We thread the match id via a synthetic key. For 6.F we use a single shared
+/// sub-scratch (env["__sub_<match_id>__"]); flat patterns reuse it.
+let find_sub_scratch = fn(env) {
+  // Look for any key starting with "__sub_" — there's only one per match scope.
+  // Hack: we know the env contains one. Iterate keys.
+  let keys = dict_keys(env);
+  let go = fn(i) {
+    if (i >= list_len(keys)) { panic("wasm: no __sub_ scratch in env (internal)") }
+    else {
+      let k = list_get(keys, i);
+      if (str_starts_with(k, "__sub_")) { dict_get(env, k) }
+      else { go(i + 1) }
+    }
+  };
+  go(0)
+};
+
+/// list pattern: check tag==LIST + length + each item + optional rest binding.
+let emit_list_pattern_check = fn(pat, scratch_idx, env, fn_table) {
+  let items = dict_get(pat, "items");
+  let n_items = list_len(items);
+  let has_rest = dict_has(pat, "rest");
+  let sub = find_sub_scratch(env);
+  // tag check
+  let tag_check = list_concat(list_push(list_new(), OP_LOCAL_GET), leb128_u(scratch_idx));
+  let tag_check = list_concat(tag_check, list_concat(list_push(list_new(), OP_I32_LOAD8_U), memarg(0, 0)));
+  let tag_check = list_concat(tag_check, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(TAG_LIST)));
+  let tag_check = list_push(tag_check, OP_I32_EQ);
+  // length check: unwrap_int(list_len(scrut)) vs n_items
+  let len_check = list_concat(list_push(list_new(), OP_LOCAL_GET), leb128_u(scratch_idx));
+  let len_check = list_concat(len_check, list_concat(list_push(list_new(), OP_CALL), leb128_u(H_LIST_LEN)));
+  let len_check = list_concat(len_check, list_concat(list_push(list_new(), OP_CALL), leb128_u(H_UNWRAP_INT)));
+  let len_check = list_concat(len_check, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(n_items)));
+  let len_op = if (has_rest) { OP_I32_GE_S } else { OP_I32_EQ };
+  let len_check = list_push(len_check, len_op);
+  // Combine tag AND length first.
+  let combined = list_push(list_concat(tag_check, len_check), OP_I32_AND);
+  // Check each item via emit_pattern_check on sub-scratch (sub = list_get(scrut, i))
+  let go = fn(i, acc) {
+    if (i >= n_items) { acc }
+    else {
+      // Compute item pattern check: store list_get(scrut, i) in sub, then check
+      let store_sub = list_concat(emit_load_item(scratch_idx, i),
+        list_concat(list_push(list_new(), OP_LOCAL_SET), leb128_u(sub)));
+      let item_check = emit_pattern_check(list_get(items, i), sub, env, fn_table);
+      let combined_item = list_concat(store_sub, item_check);
+      // AND with running accumulator
+      let new_acc = list_push(list_concat(acc, combined_item), OP_I32_AND);
+      go(i + 1, new_acc)
+    }
+  };
+  let with_items = go(0, combined);
+  // If has_rest, ALSO emit binding code for rest = list_slice(scrut, n_items, list_len(scrut))
+  // Binding code runs after the AND (so even if pattern fails, binding may have
+  // happened — but that's fine, the arm body won't be reached).
+  if (has_rest) {
+    let rest_idx = dict_get(env, dict_get(pat, "rest"));
+    // list_slice(scrut, make_int(n_items), list_len(scrut))
+    let scrut_load = list_concat(list_push(list_new(), OP_LOCAL_GET), leb128_u(scratch_idx));
+    let n_int = list_concat(list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(n_items)),
+      list_concat(list_push(list_new(), OP_CALL), leb128_u(H_MAKE_INT)));
+    let len_call = list_concat(list_concat(list_push(list_new(), OP_LOCAL_GET), leb128_u(scratch_idx)),
+      list_concat(list_push(list_new(), OP_CALL), leb128_u(H_LIST_LEN)));
+    let slice = list_concat(scrut_load, list_concat(n_int, list_concat(len_call,
+      list_concat(list_push(list_new(), OP_CALL), leb128_u(H_LIST_SLICE)))));
+    let bind = list_concat(slice, list_concat(list_push(list_new(), OP_LOCAL_SET), leb128_u(rest_idx)));
+    // bind has no value on stack. Need to leave the bool on stack after.
+    // Wrap: pop bool, do bind, push bool back. Use a tmp local? Or restructure.
+    // Easier: pre-bind (before the bool check pushes), but that's wrong if no match.
+    // Simplest: do bind only inside an `if (combined_check)` — but we need the bool result.
+    // Strategy: use local.tee on the bool to keep it. local.tee saves but doesn't pop.
+    // Wait, simpler: store bool, do binding only if bool==1, restore bool.
+    let store_bool = list_concat(list_push(list_new(), OP_LOCAL_SET), leb128_u(sub));
+    // After AND-ing items, store result in sub, conditionally bind rest, push result back
+    let with_save = list_concat(with_items, store_bool);
+    let cond_bind = list_concat(list_concat(list_push(list_new(), OP_LOCAL_GET), leb128_u(sub)),
+      list_concat(list_push(list_new(), OP_IF), list_push(list_new(), BLOCKTYPE_VOID)));
+    let cond_bind = list_concat(cond_bind, bind);
+    let cond_bind = list_push(cond_bind, OP_END);
+    let result = list_concat(list_concat(with_save, cond_bind),
+      list_concat(list_push(list_new(), OP_LOCAL_GET), leb128_u(sub)));
+    result
+  } else {
+    with_items
+  }
+};
+
+/// dict pattern: check tag==DICT + each entry's key exists + recursive pat on its value.
+let emit_dict_pattern_check = fn(pat, scratch_idx, env, fn_table) {
+  let entries = dict_get(pat, "entries");
+  let sub = find_sub_scratch(env);
+  // tag check
+  let tag_check = list_concat(list_push(list_new(), OP_LOCAL_GET), leb128_u(scratch_idx));
+  let tag_check = list_concat(tag_check, list_concat(list_push(list_new(), OP_I32_LOAD8_U), memarg(0, 0)));
+  let tag_check = list_concat(tag_check, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(TAG_DICT)));
+  let tag_check = list_push(tag_check, OP_I32_EQ);
+  let go = fn(i, acc) {
+    if (i >= list_len(entries)) { acc }
+    else {
+      let entry = list_get(entries, i);
+      let key = dict_get(entry, "key");
+      // dict_has(scrut, key)
+      let scrut1 = list_concat(list_push(list_new(), OP_LOCAL_GET), leb128_u(scratch_idx));
+      let key_str1 = emit_string_literal(key, env);
+      let has_check = list_concat(scrut1, list_concat(key_str1,
+        list_concat(list_push(list_new(), OP_CALL), leb128_u(H_DICT_HAS))));
+      let has_unwrap = list_concat(has_check, list_concat(list_push(list_new(), OP_CALL), leb128_u(H_UNWRAP_BOOL)));
+      // Get value: dict_get(scrut, key); store in sub
+      let scrut2 = list_concat(list_push(list_new(), OP_LOCAL_GET), leb128_u(scratch_idx));
+      let key_str2 = emit_string_literal(key, env);
+      let get_value = list_concat(scrut2, list_concat(key_str2,
+        list_concat(list_push(list_new(), OP_CALL), leb128_u(H_DICT_GET))));
+      let store_sub = list_concat(get_value, list_concat(list_push(list_new(), OP_LOCAL_SET), leb128_u(sub)));
+      // Now check sub-pattern against sub
+      let sub_check = emit_pattern_check(dict_get(entry, "pattern"), sub, env, fn_table);
+      // Combine: has AND store-sub-then-sub-check
+      let entry_combined = list_push(list_concat(has_unwrap, list_concat(store_sub, sub_check)), OP_I32_AND);
+      let new_acc = list_push(list_concat(acc, entry_combined), OP_I32_AND);
+      go(i + 1, new_acc)
+    }
+  };
+  go(0, tag_check)
 };
 
 /// compile_match: emit a chain of nested ifs over the arms. Each arm:
@@ -741,6 +874,61 @@ let compile_stmt_in_fn = fn(stmt, ast, env, fn_table) {
   }
 };
 
+/// Walk a pattern and allocate locals for every var binding it introduces.
+/// Returns {env, next} like prebuild_env does.
+let collect_pattern_bindings = fn(pat, env, next) {
+  let kind = dict_get(pat, "kind");
+  if (kind == "var") {
+    dict_set(dict_set(dict_new(), "env", dict_set(env, dict_get(pat, "name"), next)),
+      "next", next + 1)
+  } else {
+    if (kind == "or") {
+      // or-pattern: alternatives must agree on bindings; we walk only the first
+      // (Penelope enforces "no bindings inside or" anyway).
+      let pats = dict_get(pat, "patterns");
+      if (list_len(pats) > 0) {
+        collect_pattern_bindings(list_get(pats, 0), env, next)
+      } else { dict_set(dict_set(dict_new(), "env", env), "next", next) }
+    } else {
+      if (kind == "list") {
+        let items = dict_get(pat, "items");
+        let go = fn(i, env_acc, next_acc) {
+          if (i >= list_len(items)) {
+            // After items, allocate rest binding if present.
+            if (dict_has(pat, "rest")) {
+              dict_set(dict_set(dict_new(),
+                "env", dict_set(env_acc, dict_get(pat, "rest"), next_acc)),
+                "next", next_acc + 1)
+            } else {
+              dict_set(dict_set(dict_new(), "env", env_acc), "next", next_acc)
+            }
+          } else {
+            let r = collect_pattern_bindings(list_get(items, i), env_acc, next_acc);
+            go(i + 1, dict_get(r, "env"), dict_get(r, "next"))
+          }
+        };
+        go(0, env, next)
+      } else {
+        if (kind == "dict") {
+          let entries = dict_get(pat, "entries");
+          let go = fn(i, env_acc, next_acc) {
+            if (i >= list_len(entries)) {
+              dict_set(dict_set(dict_new(), "env", env_acc), "next", next_acc)
+            } else {
+              let entry = list_get(entries, i);
+              let r = collect_pattern_bindings(dict_get(entry, "pattern"), env_acc, next_acc);
+              go(i + 1, dict_get(r, "env"), dict_get(r, "next"))
+            }
+          };
+          go(0, env, next)
+        } else {
+          dict_set(dict_set(dict_new(), "env", env), "next", next)
+        }
+      }
+    }
+  }
+};
+
 let prebuild_env = fn(node, ast, env, next_idx) {
   let kind = dict_get(node, "kind");
   if (kind == "Block") {
@@ -795,9 +983,12 @@ let prebuild_env = fn(node, ast, env, next_idx) {
           pbe_args(0, env, next_idx)
         } else {
         if (kind == "Match") {
-          // Reserve one scratch local for this match's scrutinee, keyed by node id.
+          // 2 scratch locals per match: scrutinee + a sub-scratch used by
+          // list/dict patterns for the item/value temporary (since recursive
+          // pattern checks need a different scratch idx).
           let env2 = dict_set(env, "__match_" + dict_get(node, "id") + "__", next_idx);
-          let scrut_r = prebuild_env(ast_get(ast, dict_get(node, "scrutineeId")), ast, env2, next_idx + 1);
+          let env3 = dict_set(env2, "__sub_" + dict_get(node, "id") + "__", next_idx + 1);
+          let scrut_r = prebuild_env(ast_get(ast, dict_get(node, "scrutineeId")), ast, env3, next_idx + 2);
           let arms = dict_get(node, "arms");
           let go_arms = fn(i, env_acc, next_acc) {
             if (i >= list_len(arms)) {
@@ -805,12 +996,10 @@ let prebuild_env = fn(node, ast, env, next_idx) {
             } else {
               let arm = list_get(arms, i);
               let pat = dict_get(arm, "pattern");
-              // var pattern: allocate a local for the bound name
-              let env3 = if (dict_get(pat, "kind") == "var") {
-                dict_set(env_acc, dict_get(pat, "name"), next_acc)
-              } else { env_acc };
-              let next3 = if (dict_get(pat, "kind") == "var") { next_acc + 1 } else { next_acc };
-              let r = prebuild_env(ast_get(ast, dict_get(arm, "bodyId")), ast, env3, next3);
+              let bound = collect_pattern_bindings(pat, env_acc, next_acc);
+              let env_b = dict_get(bound, "env");
+              let next_b = dict_get(bound, "next");
+              let r = prebuild_env(ast_get(ast, dict_get(arm, "bodyId")), ast, env_b, next_b);
               go_arms(i + 1, dict_get(r, "env"), dict_get(r, "next"))
             }
           };
