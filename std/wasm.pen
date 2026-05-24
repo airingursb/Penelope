@@ -127,6 +127,7 @@ let BLOCKTYPE_I32 = 127;
 let BLOCKTYPE_VOID = 64;
 
 let SECTION_TYPE = 1;
+let SECTION_IMPORT = 2;
 let SECTION_FUNCTION = 3;
 let SECTION_MEMORY = 5;
 let SECTION_GLOBAL = 6;
@@ -135,42 +136,44 @@ let SECTION_CODE = 10;
 
 let EXPORT_KIND_FUNC = 0;
 
-// How many built-in helper functions occupy the low indexes — every user fn
-// gets shifted up by this many slots. The helpers, in order:
-//   0  alloc(size: i32) -> i32
-//   1  make_int(v: i32) -> i32
-//   2  make_bool(v: i32) -> i32
-//   3  make_unit() -> i32
-//   4  unwrap_int(ptr: i32) -> i32
-//   5  unwrap_bool(ptr: i32) -> i32
-//   6  make_str_from_data(block_ptr: i32) -> i32    // wraps a {len,bytes} block into a STR Value
-//   7  str_concat(s1: i32, s2: i32) -> i32          // concat two STR Values
-//   8  str_length(s: i32) -> i32                    // returns int Value
-//   9  int_to_str(v: i32) -> i32                    // converts int Value to STR Value
-//   10 to_str(v: i32) -> i32                        // dispatches on tag
-//   11 plus_dispatch(l: i32, r: i32) -> i32         // BIN_OP + dispatch (int add or str concat)
-let HELPER_FN_COUNT = 12;
-let H_ALLOC = 0;
-let H_MAKE_INT = 1;
-let H_MAKE_BOOL = 2;
-let H_MAKE_UNIT = 3;
-let H_UNWRAP_INT = 4;
-let H_UNWRAP_BOOL = 5;
-let H_MAKE_STR_FROM_DATA = 6;
-let H_STR_CONCAT = 7;
-let H_STR_LENGTH = 8;
-let H_INT_TO_STR = 9;
-let H_TO_STR = 10;
-let H_PLUS_DISPATCH = 11;
+// Module-level fn index layout:
+//   indexes 0..IMPORT_FN_COUNT-1                  : host imports (Phase 6.G)
+//   indexes IMPORT_FN_COUNT..IMPORT+HELPER-1      : internal helper functions
+//   indexes IMPORT_FN_COUNT+HELPER_FN_COUNT..     : user fns (incl. main)
+//
+// Host imports, in order:
+//   0  js_print(ptr: i32, len: i32) -> ()
+let IMPORT_FN_COUNT = 1;
+let IMPORT_JS_PRINT = 0;
 
-// Type indices we reserve up front (one per distinct helper signature).
+// Helper functions (indexes shown are ABSOLUTE — they already include the
+// IMPORT_FN_COUNT offset, since user code calls helpers via the global fn idx).
+let HELPER_FN_COUNT = 13;
+let H_ALLOC              = 1;
+let H_MAKE_INT           = 2;
+let H_MAKE_BOOL          = 3;
+let H_MAKE_UNIT          = 4;
+let H_UNWRAP_INT         = 5;
+let H_UNWRAP_BOOL        = 6;
+let H_MAKE_STR_FROM_DATA = 7;
+let H_STR_CONCAT         = 8;
+let H_STR_LENGTH         = 9;
+let H_INT_TO_STR         = 10;
+let H_TO_STR             = 11;
+let H_PLUS_DISPATCH      = 12;
+let H_PRINT              = 13;
+
+// Type indices we reserve up front (one per distinct fn signature used by
+// helpers + imports).
 //   type 0: () -> i32
 //   type 1: (i32) -> i32
 //   type 2: (i32, i32) -> i32
-// User fns reuse one of these depending on their arity.
-let TYPE_IDX_0_TO_I32 = 0;
-let TYPE_IDX_1_TO_I32 = 1;
-let TYPE_IDX_2_TO_I32 = 2;
+//   type 3: (i32, i32) -> ()     [for js_print import]
+// User fns reuse one of types 0-2 depending on their arity.
+let TYPE_IDX_0_TO_I32  = 0;
+let TYPE_IDX_1_TO_I32  = 1;
+let TYPE_IDX_2_TO_I32  = 2;
+let TYPE_IDX_2_TO_VOID = 3;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Byte-buffer helpers.
@@ -224,8 +227,8 @@ let ast_get = fn(ast, id) { dict_get(dict_get(ast, "nodes"), id) };
 let is_fn_node = fn(n) { dict_get(n, "kind") == "Fn" };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Top-level fn collection. fn indexes start at HELPER_FN_COUNT (helpers
-// occupy the low slots).
+// Top-level fn collection. fn indexes start at IMPORT_FN_COUNT + HELPER_FN_COUNT
+// (imports + helpers occupy the low slots).
 // ─────────────────────────────────────────────────────────────────────────────
 
 let collect_fns = fn(ast) {
@@ -245,7 +248,7 @@ let collect_fns = fn(ast) {
       } else { go(i + 1, table, count) }
     }
   };
-  go(0, dict_new(), HELPER_FN_COUNT)
+  go(0, dict_new(), IMPORT_FN_COUNT + HELPER_FN_COUNT)
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -303,6 +306,7 @@ let builtin_helper_for = fn(name) {
   match name {
     "to_str" => H_TO_STR,
     "str_length" => H_STR_LENGTH,
+    "print" => H_PRINT,
     _ => 0 - 1,
   }
 };
@@ -647,7 +651,20 @@ let compile_main = fn(ast, fn_table) {
             leb128_u(dict_get(env, name)));
           list_concat(acc, list_concat(val_bytes, set_bytes))
         }
-      } else { acc }
+      } else {
+        // ExprStmt — emit its bytes, drop the resulting Value pointer (since
+        // we don't bind it). This is what makes `print(...);` execute its
+        // side effects even though we don't use the return.
+        // BUT: skip the FINAL result_id — its expression is emitted separately
+        // below as the unwrapped main return value.
+        if (k == "ExprStmt") {
+          if (id == result_id) { acc }
+          else {
+            let val_bytes = compile_expr(ast_get(ast, dict_get(stmt, "exprId")), ast, env, fn_table);
+            list_concat(acc, list_push(val_bytes, OP_DROP))
+          }
+        } else { acc }
+      }
     });
     let result_stmt = ast_get(ast, result_id);
     // Final: push the Value pointer of the result onto the stack.
@@ -1171,6 +1188,32 @@ let helper_plus_dispatch_body = fn() {
   make_code_entry(0, body)
 };
 
+/// print(s: i32) -> i32 (unit)
+/// Extracts ptr+len from a STR Value, calls the imported js_print, returns unit.
+let helper_print_body = fn() {
+  let body = list_new();
+  // d = load(s + 4)   -- block ptr
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 0);
+  let body = list_push(body, OP_I32_LOAD);
+  let body = list_concat(body, memarg(2, 4));
+  let body = list_push(body, OP_LOCAL_TEE);
+  let body = list_push(body, 1);
+  // ptr = d + 4
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_I32_CONST), leb128_s_nonneg(4)));
+  let body = list_push(body, OP_I32_ADD);
+  // len = load(d + 0) -- need d again
+  let body = list_push(body, OP_LOCAL_GET);
+  let body = list_push(body, 1);
+  let body = list_push(body, OP_I32_LOAD);
+  let body = list_concat(body, memarg(2, 0));
+  // call js_print (import index 0)
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_CALL), leb128_u(IMPORT_JS_PRINT)));
+  // return make_unit()
+  let body = list_concat(body, list_concat(list_push(list_new(), OP_CALL), leb128_u(H_MAKE_UNIT)));
+  make_code_entry(1, body)
+};
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Module sections.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1180,10 +1223,11 @@ let wrap_section = fn(section_id, payload) {
     list_concat(leb128_u(list_len(payload)), payload))
 };
 
-/// Type section: 3 fixed function-type slots reused by helpers and user fns.
+/// Type section: 4 fixed function-type slots:
 ///   type 0 : () -> i32
 ///   type 1 : (i32) -> i32
 ///   type 2 : (i32, i32) -> i32
+///   type 3 : (i32, i32) -> ()        [for js_print import]
 /// Plus one extra type per user fn whose arity exceeds 2.
 let type_section = fn(ast, fn_table) {
   let make_type = fn(arity) {
@@ -1192,11 +1236,18 @@ let type_section = fn(ast, fn_table) {
     let results_vec = list_concat(leb128_u(1), list_push(list_new(), TYPE_I32));
     list_concat(list_push(list_new(), 96), list_concat(params_vec, results_vec))
   };
-  // Always emit types 0, 1, 2 first.
+  let make_void_type_2 = fn() {
+    // (i32, i32) -> ()
+    let params_vec = list_concat(leb128_u(2),
+      list_push(list_push(list_new(), TYPE_I32), TYPE_I32));
+    let results_vec = leb128_u(0);
+    list_concat(list_push(list_new(), 96), list_concat(params_vec, results_vec))
+  };
   let base = list_new();
   let base = list_push(base, make_type(0));
   let base = list_push(base, make_type(1));
   let base = list_push(base, make_type(2));
+  let base = list_push(base, make_void_type_2());
   // For each user fn with arity > 2, emit an extra type.
   let root = ast_get(ast, dict_get(ast, "rootId"));
   let stmts = dict_get(root, "stmtIds");
@@ -1223,7 +1274,7 @@ let type_idx_for_arity = fn(arity, extras_offset) {
   if (arity == 0) { TYPE_IDX_0_TO_I32 }
   else { if (arity == 1) { TYPE_IDX_1_TO_I32 }
     else { if (arity == 2) { TYPE_IDX_2_TO_I32 }
-      else { 3 + extras_offset } } }
+      else { 4 + extras_offset } } }   // 4 = number of base types
 };
 
 /// Function section: list of type-indexes, one per function (helpers + user + main).
@@ -1245,6 +1296,7 @@ let function_section = fn(ast, fn_count) {
   let helper_indexes = list_push(helper_indexes, TYPE_IDX_1_TO_I32);   // int_to_str
   let helper_indexes = list_push(helper_indexes, TYPE_IDX_1_TO_I32);   // to_str
   let helper_indexes = list_push(helper_indexes, TYPE_IDX_2_TO_I32);   // plus_dispatch
+  let helper_indexes = list_push(helper_indexes, TYPE_IDX_1_TO_I32);   // print (returns unit Value ptr)
   // User fns, in source order — track how many high-arity extras we've used.
   let user_acc = list_reduce(stmts, dict_set(dict_set(dict_new(),
     "indexes", list_new()), "extras_used", 0), fn(acc, id) {
@@ -1264,9 +1316,23 @@ let function_section = fn(ast, fn_count) {
   let user_indexes = dict_get(user_acc, "indexes");
   // main: ()->i32 = type 0.
   let all_indexes = list_concat(helper_indexes, list_push(user_indexes, TYPE_IDX_0_TO_I32));
-  let payload = list_concat(leb128_u(fn_count),
+  // Function section lists only LOCALLY-defined fns (imports are declared separately).
+  let local_fn_count = fn_count - IMPORT_FN_COUNT;
+  let payload = list_concat(leb128_u(local_fn_count),
     list_reduce(all_indexes, list_new(), fn(a, i) { list_concat(a, leb128_u(i)) }));
   wrap_section(SECTION_FUNCTION, payload)
+};
+
+/// Import section: declare host imports (Phase 6.G effects).
+/// Currently: js_print (module "js", name "print", type 3 = (i32,i32) -> ()).
+let import_section = fn() {
+  let entry = list_new();
+  let entry = list_concat(entry, name_bytes("js"));            // module name
+  let entry = list_concat(entry, name_bytes("print"));         // import name
+  let entry = list_push(entry, 0);                              // kind 0 = func
+  let entry = list_concat(entry, leb128_u(TYPE_IDX_2_TO_VOID)); // type index
+  let payload = list_concat(leb128_u(1), entry);
+  wrap_section(SECTION_IMPORT, payload)
 };
 
 /// Memory section: 16 pages (1 MB) initially, no max. Allocator bumps without
@@ -1316,6 +1382,7 @@ let code_section = fn(ast, fn_table) {
   let helpers = list_concat(helpers, helper_int_to_str_body());
   let helpers = list_concat(helpers, helper_to_str_body());
   let helpers = list_concat(helpers, helper_plus_dispatch_body());
+  let helpers = list_concat(helpers, helper_print_body());
 
   let root = ast_get(ast, dict_get(ast, "rootId"));
   let stmts = dict_get(root, "stmtIds");
@@ -1357,9 +1424,10 @@ let pen_to_wasm = fn(ast) {
 
   list_concat(header,
     list_concat(type_section(ast, fn_table),
-      list_concat(function_section(ast, fn_count),
-        list_concat(memory_section(),
-          list_concat(global_section(),
-            list_concat(export_section(fn_count),
-              code_section(ast, fn_table)))))))
+      list_concat(import_section(),
+        list_concat(function_section(ast, fn_count),
+          list_concat(memory_section(),
+            list_concat(global_section(),
+              list_concat(export_section(fn_count),
+                code_section(ast, fn_table))))))))
 };
