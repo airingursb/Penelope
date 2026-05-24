@@ -79,21 +79,50 @@ function tsRunForBinding(source: string, bindingName: string): number {
 //   js.print(ptr, len)        — captures output lines if capturedPrint given
 //   js.now()                  — fixed test time (1_700_000_000_000) for determinism
 //   js.random_int(lo, hi)     — fixed seed sequence for determinism
-async function runWasmMain(bytes: Uint8Array, capturedPrint?: string[]): Promise<number> {
+async function runWasmMain(
+  bytes: Uint8Array,
+  capturedPrint?: string[],
+  hostFs?: Map<string, string>,
+  netResponse?: string,
+): Promise<number> {
   const mod = await WebAssembly.compile(bytes);
   let randomCount = 0;
+  const writeStringToWasm = (s: string): number => {
+    const bytes = new TextEncoder().encode(s);
+    const blockPtr = (inst.exports.alloc as (n: number) => number)(4 + bytes.length);
+    const mem = new Uint8Array((inst.exports.memory as WebAssembly.Memory).buffer);
+    new DataView(mem.buffer).setInt32(blockPtr, bytes.length, true);
+    mem.set(bytes, blockPtr + 4);
+    return blockPtr;
+  };
+  const readStringFromWasm = (ptr: number, len: number): string => {
+    const mem = new Uint8Array((inst.exports.memory as WebAssembly.Memory).buffer);
+    return new TextDecoder('utf-8').decode(mem.slice(ptr, ptr + len));
+  };
   const inst: WebAssembly.Instance = await WebAssembly.instantiate(mod, {
     js: {
       print: (ptr: number, len: number): void => {
-        const mem = new Uint8Array((inst.exports.memory as WebAssembly.Memory).buffer);
-        const s = new TextDecoder('utf-8').decode(mem.slice(ptr, ptr + len));
+        const s = readStringFromWasm(ptr, len);
         if (capturedPrint) capturedPrint.push(s);
         else process.stdout.write(s + '\n');
       },
-      now: (): number => 1_700_000_000,   // a fixed seconds-epoch value for test determinism
+      now: (): number => 1_700_000_000,
       random_int: (lo: number, hi: number): number => {
         randomCount++;
         return lo + (randomCount % Math.max(1, hi - lo + 1));
+      },
+      net_fetch: (urlPtr: number, urlLen: number): number => {
+        readStringFromWasm(urlPtr, urlLen);   // url (unused in test stub)
+        return writeStringToWasm(netResponse ?? 'OK');
+      },
+      read_file: (pathPtr: number, pathLen: number): number => {
+        const path = readStringFromWasm(pathPtr, pathLen);
+        return writeStringToWasm(hostFs?.get(path) ?? '');
+      },
+      write_file: (pathPtr: number, pathLen: number, bodyPtr: number, bodyLen: number): void => {
+        const path = readStringFromWasm(pathPtr, pathLen);
+        const body = readStringFromWasm(bodyPtr, bodyLen);
+        if (hostFs) hostFs.set(path, body);
       },
     },
   });
@@ -774,12 +803,50 @@ test('wasm backend (6.C tier-2): char_is_whitespace', async () => {
   expect(await runWasmMain(bytes)).toBe(111);
 });
 
+// ── Phase 6.G tier 2: IO effects (net_fetch / read_file / write_file) ────────
+
+test('wasm backend (6.G tier-2): net_fetch returns host response, str_length works on it', async () => {
+  const source = 'let r = str_length(net_fetch("https://api.test")); r;';
+  const bytes = await penEmitWasm(source);
+  expect(await runWasmMain(bytes, undefined, undefined, 'response-body')).toBe('response-body'.length);
+});
+
+test('wasm backend (6.G tier-2): read_file reads from host-backed map', async () => {
+  const fs = new Map([['/tmp/foo', 'hello-from-disk']]);
+  const source = 'let r = str_length(read_file("/tmp/foo")); r;';
+  const bytes = await penEmitWasm(source);
+  expect(await runWasmMain(bytes, undefined, fs)).toBe('hello-from-disk'.length);
+});
+
+test('wasm backend (6.G tier-2): write_file persists to host-backed map, read_file gets it back', async () => {
+  const fs = new Map<string, string>();
+  const source = `
+    write_file("/tmp/x", "stored content");
+    let r = str_length(read_file("/tmp/x"));
+    r;
+  `;
+  const bytes = await penEmitWasm(source);
+  expect(await runWasmMain(bytes, undefined, fs)).toBe('stored content'.length);
+  expect(fs.get('/tmp/x')).toBe('stored content');
+});
+
+test('wasm backend (6.G tier-2): net_fetch + print compose', async () => {
+  const source = 'print("body: " + net_fetch("https://x")); 0;';
+  const captured: string[] = [];
+  const bytes = await penEmitWasm(source);
+  await runWasmMain(bytes, captured, undefined, 'XYZ');
+  expect(captured).toEqual(['body: XYZ']);
+});
+
 test('wasm backend (6.C): memory export — can decode string bytes from heap', async () => {
   const source = 'let s = "hello"; let r = str_length(s); r;';
   const bytes = await penEmitWasm(source);
   const mod = await WebAssembly.compile(bytes);
   const inst = await WebAssembly.instantiate(mod, {
-    js: { print: () => {}, now: () => 0, random_int: (lo: number) => lo },
+    js: {
+      print: () => {}, now: () => 0, random_int: (lo: number) => lo,
+      net_fetch: () => 0, read_file: () => 0, write_file: () => {},
+    },
   });
   expect(inst.exports.memory).toBeInstanceOf(WebAssembly.Memory);
   (inst.exports.main as () => number)();
